@@ -1,0 +1,8 @@
+build/
+build-*/
+.cache/
+*.gguf
+models/
+compile_commands.json
+.vscode/
+.idea/
