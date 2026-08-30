@@ -12,12 +12,24 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO / "vendor" / "llama.cpp" / "gguf-py"))
+
+# same resolution order as CMakeLists.txt: npm package first, then a manually
+# placed vendor tree
+_CANDIDATES = [
+    REPO / "node_modules" / "@jx-holdings" / "llama-cpp-source",
+    REPO / "vendor" / "llama.cpp",
+]
+try:
+    LLAMA_SRC = next(p for p in _CANDIDATES if (p / "CMakeLists.txt").exists())
+except StopIteration:
+    sys.exit("error: llama.cpp source tree not found - run: npm ci")
+
+sys.path.insert(0, str(LLAMA_SRC / "gguf-py"))
 
 import numpy as np  # noqa: E402
 import gguf  # noqa: E402
 
-VOCAB_SRC = REPO / "vendor" / "llama.cpp" / "models" / "ggml-vocab-llama-spm.gguf"
+VOCAB_SRC = LLAMA_SRC / "models" / "ggml-vocab-llama-spm.gguf"
 
 N_VOCAB = 32000
 N_EMBD  = 64

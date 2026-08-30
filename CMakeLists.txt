@@ -41,19 +41,41 @@ endif()
 
 # ---------------------------------------------------------------------------
 # Vendored llama.cpp — only the libraries, none of its tools/examples.
+#
+# The source tree comes from the npm registry (@jx-holdings/llama-cpp-source,
+# installed by `npm ci` into node_modules) so the build's only external input
+# is an npm package. Resolution order:
+#   1. -DJX_ENGINE_LLAMA_DIR=<path>          explicit override
+#   2. node_modules/@jx-holdings/llama-cpp-source   (canonical: npm ci)
+#   3. vendor/llama.cpp                      manually placed source tree
 # ---------------------------------------------------------------------------
 set(LLAMA_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TOOLS    OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_APP      OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_COMMON   ON  CACHE BOOL "" FORCE)
 set(LLAMA_CURL           OFF CACHE BOOL "" FORCE)
 
-if (NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/vendor/llama.cpp/CMakeLists.txt)
-    message(FATAL_ERROR "vendor/llama.cpp is missing - run: git submodule update --init --recursive")
+set(JX_ENGINE_LLAMA_DIR "" CACHE PATH "Path to the llama.cpp source tree (overrides auto-detection)")
+
+if (JX_ENGINE_LLAMA_DIR)
+    set(JX_LLAMA_SRC ${JX_ENGINE_LLAMA_DIR})
+elseif (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@jx-holdings/llama-cpp-source/CMakeLists.txt)
+    set(JX_LLAMA_SRC ${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@jx-holdings/llama-cpp-source)
+elseif (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/vendor/llama.cpp/CMakeLists.txt)
+    set(JX_LLAMA_SRC ${CMAKE_CURRENT_SOURCE_DIR}/vendor/llama.cpp)
+else()
+    message(FATAL_ERROR "llama.cpp source tree not found - run: npm ci")
 endif()
 
-add_subdirectory(vendor/llama.cpp)
+if (NOT EXISTS ${JX_LLAMA_SRC}/CMakeLists.txt)
+    message(FATAL_ERROR "'${JX_LLAMA_SRC}' is not a llama.cpp source tree")
+endif()
+
+message(STATUS "jx-engine: using llama.cpp source at ${JX_LLAMA_SRC}")
+
+add_subdirectory(${JX_LLAMA_SRC} ${CMAKE_BINARY_DIR}/llama.cpp)
 
 # ---------------------------------------------------------------------------
 # jx-engine binary
@@ -70,9 +92,9 @@ target_compile_definitions(jx-engine PRIVATE
 )
 
 target_include_directories(jx-engine PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/llama.cpp/common
-    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/llama.cpp/vendor
-    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/llama.cpp/vendor/cpp-httplib
+    ${JX_LLAMA_SRC}/common
+    ${JX_LLAMA_SRC}/vendor
+    ${JX_LLAMA_SRC}/vendor/cpp-httplib
 )
 
 find_package(Threads REQUIRED)

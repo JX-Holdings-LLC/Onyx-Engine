@@ -3,32 +3,60 @@
 ## Prerequisites
 
 - CMake ≥ 3.16
+- Node.js/npm, to fetch the vendored llama.cpp source tree (see below)
 - A C++17 compiler (the project sets `CMAKE_CXX_STANDARD 17`,
   `CMAKE_CXX_STANDARD_REQUIRED ON`)
 - A C compiler (llama.cpp/ggml build C sources too — `CMakeLists.txt`
   declares `LANGUAGES C CXX`)
-- Git, with submodule support, to fetch `vendor/llama.cpp`
 - Ninja (optional) — any CMake generator works; Ninja is just faster for
   incremental builds
 - Threads (`find_package(Threads REQUIRED)`), which is part of the standard
   toolchain on all supported platforms
 
-## Submodule init
+## Fetching the llama.cpp source (`npm ci`)
 
-`vendor/llama.cpp` is a pinned git submodule. `CMakeLists.txt` checks for
-`vendor/llama.cpp/CMakeLists.txt` and fails the configure step with a clear
-message if it is missing, so this step cannot be skipped silently:
+The build's only external input is llama.cpp's C/C++ source tree, vendored
+as the npm package `@jx-holdings/llama-cpp-source` (a pinned, pruned copy of
+llama.cpp — C/C++ sources, not a Node.js library) and declared as a
+dependency in `package.json`:
 
 ```bash
-git submodule update --init --recursive
+npm ci   # or: npm install
 ```
+
+This installs the source tree into `node_modules/@jx-holdings/llama-cpp-source`.
+`CMakeLists.txt` resolves the llama.cpp source tree in this order:
+
+1. `-DJX_ENGINE_LLAMA_DIR=<path>` — explicit override, if passed
+2. `node_modules/@jx-holdings/llama-cpp-source` — canonical, from `npm ci`
+3. `vendor/llama.cpp` — a manually placed source tree (gitignored; fallback
+   only, e.g. for offline work without npm)
+
+If none of the three is present, the configure step fails with a clear
+message (`llama.cpp source tree not found - run: npm ci`), so this step
+cannot be skipped silently.
+
+> **`npm ci` doesn't work yet.** `@jx-holdings/llama-cpp-source` has not been
+> published to the npm registry, so `npm ci`/`npm install` currently fails
+> with a 404/not-found error. Until the maintainer publishes it (see
+> ["Packaging & publishing the vendor source package"](#packaging--publishing-the-vendor-source-package)
+> below), install it locally from a tarball instead:
+>
+> ```bash
+> packaging/make-vendor-package.sh
+> npm install ./packaging/dist/jx-holdings-llama-cpp-source-*.tgz --no-save
+> ```
+>
+> This is exactly how the npm-based build was verified during development.
 
 ## CPU build
 
 ```bash
-cmake -B build
-cmake --build build
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target jx-engine -j
 ```
+
+(Equivalently: `npm run build`, which runs both `cmake` steps.)
 
 This produces `build/jx-engine`. No acceleration option is required — CPU
 execution is the default in both `jx-engine` (llama.cpp's CPU/ggml backend
@@ -97,6 +125,7 @@ To keep the build to just what `jx-engine` links against,
 | `LLAMA_BUILD_EXAMPLES` | `OFF` | no llama.cpp example binaries |
 | `LLAMA_BUILD_TOOLS` | `OFF` | no llama.cpp CLI tools |
 | `LLAMA_BUILD_SERVER` | `OFF` | upstream's own `llama-server` is not built |
+| `LLAMA_BUILD_APP` | `OFF` | no llama.cpp app binary |
 | `LLAMA_BUILD_COMMON` | `ON` | the `common` library `jx-engine` depends on is built |
 | `LLAMA_CURL` | `OFF` | no libcurl dependency pulled in |
 
@@ -116,3 +145,63 @@ shipped as a single self-contained binary.
 `PROJECT_VERSION` (from `project(jx-engine VERSION 0.1.0 ...)`) is baked
 into the binary as the `JX_ENGINE_VERSION` preprocessor define, which is
 what `jx-engine --version` and the `Server:` HTTP response header report.
+
+## Packaging & publishing the vendor source package
+
+This section is for maintainers upgrading or publishing the vendored
+llama.cpp source, not for people building `jx-engine`. Consumers just run
+`npm ci`.
+
+`packaging/make-vendor-package.sh` builds `@jx-holdings/llama-cpp-source`
+from a pinned llama.cpp commit:
+
+```bash
+packaging/make-vendor-package.sh [path-to-llama.cpp-checkout]
+```
+
+- **Pin.** The commit, package version, and llama.cpp's own CMake project
+  version are hardcoded at the top of the script (currently commit
+  `9723942adc51ec2f2b7c9dcc86842934c479b336`, package version
+  `0.3.0-b10711.g9723942ad`).
+- **Source.** With an argument, it stages from that local llama.cpp
+  checkout. Without one, it downloads the pinned commit's tarball from
+  GitHub into `packaging/dist/` — this is the only point in the whole
+  workflow that needs network access, and it's only needed for packaging,
+  never for building `jx-engine` itself.
+- **Pruning.** It stages a copy of the source tree with `docs/`, `tests/`,
+  `examples/`, `benches/`, `media/`, `pocs/`, `ci/`, `app/`, `conversion/`,
+  `requirements/`/`requirements.txt`, and `.git*`/`.devops` removed, plus all
+  of `models/` except `ggml-vocab-llama-spm.gguf` (the vocab file
+  `scripts/make-tiny-model.py` reads to build its smoke-test model).
+- **`.gitignore` stripping.** `npm pack` honors any `.gitignore` files it
+  finds unless a `.npmignore` is present, and llama.cpp's own `.gitignore`
+  would silently drop files the package needs (e.g. `*.gguf`). The script
+  deletes every `.gitignore` in the staged tree and writes a minimal
+  `.npmignore` instead, so nothing is dropped that the pruning step
+  intentionally kept.
+- **Package metadata.** It writes the staged tree's `package.json`
+  (name, version, description, license, `homepage`, `repository`, plus
+  `llamaCppCommit`/`llamaCppUpstream` fields recording provenance), then
+  runs `npm pack` to produce `packaging/dist/jx-holdings-llama-cpp-source-<version>.tgz`.
+
+To publish, once the tarball is built:
+
+```bash
+npm publish packaging/dist/jx-holdings-llama-cpp-source-*.tgz --access public
+```
+
+This needs npm credentials with publish rights on the `@jx-holdings` scope.
+If that scope isn't available to you, rename it — it appears in exactly two
+places: the `PKG_NAME` variable in `packaging/make-vendor-package.sh`, and
+the `@jx-holdings/llama-cpp-source` dependency name in `package.json`.
+
+**Until it's published**, `npm ci`/`npm install` fails on a clean checkout;
+use `npm install ./packaging/dist/<tarball>.tgz --no-save` as a local
+workaround after running the packaging script (see the note under
+["Fetching the llama.cpp source"](#fetching-the-llama.cpp-source-npm-ci)
+above).
+
+**After the first publish**, run `npm install` once in a clean checkout and
+commit the `package-lock.json` it generates, so that `npm ci` gives
+reproducible, lockfile-pinned installs going forward. No `package-lock.json`
+is committed yet.

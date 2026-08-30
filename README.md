@@ -1,10 +1,10 @@
 # JX Engine
 
 JX Engine is a single-model, OpenAI-compatible model-serving binary built on
-[llama.cpp](https://github.com/ggml-org/llama.cpp) (vendored as a pinned git
-submodule at `vendor/llama.cpp`, currently `v0.3.0-90-g9723942ad`). One
-`jx-engine` process loads one GGUF model and serves it over HTTP on
-`127.0.0.1:<port>`.
+[llama.cpp](https://github.com/ggml-org/llama.cpp) (vendored as a pinned
+source tree, currently `v0.3.0-90-g9723942ad`, distributed as the npm package
+`@jx-holdings/llama-cpp-source`). One `jx-engine` process loads one GGUF
+model and serves it over HTTP on `127.0.0.1:<port>`.
 
 ## Relationship to JX Runtime
 
@@ -52,13 +52,16 @@ See [Roadmap](#roadmap) for what is explicitly out of scope for v1.
 ```bash
 git clone <this-repo>
 cd JX-Engine
-git submodule update --init --recursive
+npm ci   # or: npm install
 
-cmake -B build
-cmake --build build
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target jx-engine -j
 
 ./build/jx-engine -m model.gguf --port 8080
 ```
+
+(`npm run build` does the two `cmake` steps above in one command; `npm test`
+runs `scripts/smoke-test.sh`.)
 
 Then, in another terminal:
 
@@ -70,8 +73,41 @@ curl http://127.0.0.1:8080/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
+> **`npm ci` doesn't work yet.** `@jx-holdings/llama-cpp-source` has not been
+> published to the npm registry, so `npm ci`/`npm install` currently fails.
+> Until it's published, build the package locally and install it from the
+> tarball — see [Vendored source via npm](#vendored-source-via-npm) below and
+> [`docs/building.md`](docs/building.md).
+
 For acceleration builds (CUDA, Vulkan, Metal, ROCm, BLAS) see
 [`docs/building.md`](docs/building.md).
+
+## Vendored source via npm
+
+JX Engine's only external build input is llama.cpp's C/C++ source tree,
+distributed as the npm package `@jx-holdings/llama-cpp-source` — a pinned,
+pruned copy of llama.cpp (not a Node.js library). Using the npm registry as
+that channel, rather than a git submodule, means the build has exactly one
+trusted external source to fetch from and verify, instead of two (git +
+npm). `npm ci` installs it into `node_modules`, and `CMakeLists.txt` picks it
+up from there automatically. See
+["What llama.cpp's own build is told to skip"](docs/building.md#what-llamacpps-own-build-is-told-to-skip)
+and the [architecture doc](docs/architecture.md#build-layering) for the full
+source-resolution order (npm package → `-DJX_ENGINE_LLAMA_DIR` override →
+manually placed `vendor/llama.cpp`).
+
+**Status: not yet published.** `@jx-holdings/llama-cpp-source` is not on the
+npm registry today, so a fresh clone's `npm ci` fails until the maintainer
+runs `packaging/make-vendor-package.sh` and `npm publish <tarball> --access
+public`. Until then, build the tarball yourself and install it locally:
+
+```bash
+packaging/make-vendor-package.sh
+npm install ./packaging/dist/jx-holdings-llama-cpp-source-*.tgz --no-save
+```
+
+See [`docs/building.md`](docs/building.md#packaging--publishing-the-vendor-source-package)
+for the full packaging/publishing workflow.
 
 ## Endpoints
 
@@ -141,6 +177,7 @@ pass. See [`docs/jx-runtime-integration.md`](docs/jx-runtime-integration.md).
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE). The vendored `vendor/llama.cpp` submodule is
-its own project, also MIT-licensed, copyright the ggml/llama.cpp authors —
-see `vendor/llama.cpp/LICENSE` after running `git submodule update --init`.
+MIT. See [`LICENSE`](LICENSE). The vendored llama.cpp source
+(`@jx-holdings/llama-cpp-source`) is its own project, also MIT-licensed,
+copyright the ggml/llama.cpp authors — see its `LICENSE` file under
+`node_modules/@jx-holdings/llama-cpp-source/` after installing it.

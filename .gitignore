@@ -6,3 +6,6 @@ models/
 compile_commands.json
 .vscode/
 .idea/
+node_modules/
+packaging/dist/
+vendor/

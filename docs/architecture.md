@@ -147,25 +147,37 @@ being reimplemented in `jx-engine`:
 jx-engine (src/*.cpp)
     │  target_link_libraries: llama-common, llama, Threads::Threads
     ▼
-llama-common          (vendor/llama.cpp/common — chat templating, sampling,
+llama-common          (<llama src>/common — chat templating, sampling,
     │                   JSON, grammar-to-schema, tokenization helpers)
     ▼
-llama                 (vendor/llama.cpp — the core inference library:
+llama                 (<llama src> — the core inference library:
     │                   model loading, context, batched decode)
     ▼
-ggml                  (vendor/llama.cpp's tensor/compute library; CPU by
+ggml                  (<llama src>'s tensor/compute library; CPU by
                         default, CUDA/Vulkan/Metal/HIP/BLAS backends
                         selected via GGML_* CMake cache variables that
                         JX_ENGINE_CUDA/VULKAN/METAL/HIP/BLAS forward)
 ```
 
+`<llama src>` is the llama.cpp source tree `CMakeLists.txt` resolves at
+configure time, in this order:
+
+1. `-DJX_ENGINE_LLAMA_DIR=<path>` — explicit override
+2. `node_modules/@jx-holdings/llama-cpp-source` — the npm package installed
+   by `npm ci` (canonical path; see [`building.md`](building.md))
+3. `vendor/llama.cpp` — a manually placed source tree (gitignored, fallback
+   only)
+
+The build's only external input is the npm package: unlike the git submodule
+this replaced, nothing under `vendor/` is tracked by this repository or
+fetched automatically — it exists only as a manual escape hatch.
 `CMakeLists.txt` builds only the llama.cpp libraries it needs:
-`LLAMA_BUILD_TESTS`, `LLAMA_BUILD_EXAMPLES`, `LLAMA_BUILD_TOOLS`, and
-`LLAMA_BUILD_SERVER` are all forced `OFF` (so upstream's own `llama-server`
-and example binaries are never built), `LLAMA_BUILD_COMMON` is forced `ON`
-(so the `common` library `jx-engine` depends on is available), and
-`LLAMA_CURL` is forced `OFF`. `jx-engine`'s include paths pull directly from
-`vendor/llama.cpp/common`, `vendor/llama.cpp/vendor`, and
-`vendor/llama.cpp/vendor/cpp-httplib` — `cpp-httplib` (the HTTP server used
-in `server.cpp`) is llama.cpp's own vendored copy, not a separate dependency
-of this repository.
+`LLAMA_BUILD_TESTS`, `LLAMA_BUILD_EXAMPLES`, `LLAMA_BUILD_TOOLS`,
+`LLAMA_BUILD_SERVER`, and `LLAMA_BUILD_APP` are all forced `OFF` (so
+upstream's own `llama-server`, its app binary, and example binaries are
+never built), `LLAMA_BUILD_COMMON` is forced `ON` (so the `common` library
+`jx-engine` depends on is available), and `LLAMA_CURL` is forced `OFF`.
+`jx-engine`'s include paths pull directly from `<llama src>/common`,
+`<llama src>/vendor`, and `<llama src>/vendor/cpp-httplib` — `cpp-httplib`
+(the HTTP server used in `server.cpp`) is llama.cpp's own vendored copy, not
+a separate dependency of this repository.
