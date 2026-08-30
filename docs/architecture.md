@@ -163,7 +163,7 @@ ggml                  (<llama src>'s tensor/compute library; CPU by
 configure time, in this order:
 
 1. `-DJX_ENGINE_LLAMA_DIR=<path>` — explicit override
-2. `node_modules/@jx-holdings/llama-cpp-source` — the npm package installed
+2. `node_modules/@jxburros/llama-cpp-source` — the npm package installed
    by `npm ci` (canonical path; see [`building.md`](building.md))
 3. `vendor/llama.cpp` — a manually placed source tree (gitignored, fallback
    only)

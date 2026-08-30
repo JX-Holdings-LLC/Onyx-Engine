@@ -1,5 +1,5 @@
 {
-  "name": "@jx-holdings/jx-engine",
+  "name": "@jxburros/jx-engine",
   "version": "0.1.0",
   "private": true,
   "description": "JX Engine - OpenAI-compatible model-serving binary for JX Runtime. This package exists to fetch the build's only external input (the pinned llama.cpp source tree) from the npm registry; the binary itself is built with CMake.",
@@ -9,6 +9,6 @@
     "test": "bash scripts/smoke-test.sh"
   },
   "dependencies": {
-    "@jx-holdings/llama-cpp-source": "0.3.0-b10711.g9723942ad"
+    "@jxburros/llama-cpp-source": "0.3.0-b10711.g9723942ad"
   }
 }

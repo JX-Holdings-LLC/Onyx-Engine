@@ -3,7 +3,7 @@
 JX Engine is a single-model, OpenAI-compatible model-serving binary built on
 [llama.cpp](https://github.com/ggml-org/llama.cpp) (vendored as a pinned
 source tree, currently `v0.3.0-90-g9723942ad`, distributed as the npm package
-`@jx-holdings/llama-cpp-source`). One `jx-engine` process loads one GGUF
+`@jxburros/llama-cpp-source`). One `jx-engine` process loads one GGUF
 model and serves it over HTTP on `127.0.0.1:<port>`.
 
 ## Relationship to JX Runtime
@@ -73,7 +73,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
-> **`npm ci` doesn't work yet.** `@jx-holdings/llama-cpp-source` has not been
+> **`npm ci` doesn't work yet.** `@jxburros/llama-cpp-source` has not been
 > published to the npm registry, so `npm ci`/`npm install` currently fails.
 > Until it's published, build the package locally and install it from the
 > tarball — see [Vendored source via npm](#vendored-source-via-npm) below and
@@ -85,7 +85,7 @@ For acceleration builds (CUDA, Vulkan, Metal, ROCm, BLAS) see
 ## Vendored source via npm
 
 JX Engine's only external build input is llama.cpp's C/C++ source tree,
-distributed as the npm package `@jx-holdings/llama-cpp-source` — a pinned,
+distributed as the npm package `@jxburros/llama-cpp-source` — a pinned,
 pruned copy of llama.cpp (not a Node.js library). Using the npm registry as
 that channel, rather than a git submodule, means the build has exactly one
 trusted external source to fetch from and verify, instead of two (git +
@@ -96,14 +96,14 @@ and the [architecture doc](docs/architecture.md#build-layering) for the full
 source-resolution order (npm package → `-DJX_ENGINE_LLAMA_DIR` override →
 manually placed `vendor/llama.cpp`).
 
-**Status: not yet published.** `@jx-holdings/llama-cpp-source` is not on the
+**Status: not yet published.** `@jxburros/llama-cpp-source` is not on the
 npm registry today, so a fresh clone's `npm ci` fails until the maintainer
 runs `packaging/make-vendor-package.sh` and `npm publish <tarball> --access
 public`. Until then, build the tarball yourself and install it locally:
 
 ```bash
 packaging/make-vendor-package.sh
-npm install ./packaging/dist/jx-holdings-llama-cpp-source-*.tgz --no-save
+npm install ./packaging/dist/jxburros-llama-cpp-source-*.tgz --no-save
 ```
 
 See [`docs/building.md`](docs/building.md#packaging--publishing-the-vendor-source-package)
@@ -178,6 +178,6 @@ pass. See [`docs/jx-runtime-integration.md`](docs/jx-runtime-integration.md).
 ## License
 
 MIT. See [`LICENSE`](LICENSE). The vendored llama.cpp source
-(`@jx-holdings/llama-cpp-source`) is its own project, also MIT-licensed,
+(`@jxburros/llama-cpp-source`) is its own project, also MIT-licensed,
 copyright the ggml/llama.cpp authors — see its `LICENSE` file under
-`node_modules/@jx-holdings/llama-cpp-source/` after installing it.
+`node_modules/@jxburros/llama-cpp-source/` after installing it.

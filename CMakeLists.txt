@@ -42,11 +42,11 @@ endif()
 # ---------------------------------------------------------------------------
 # Vendored llama.cpp — only the libraries, none of its tools/examples.
 #
-# The source tree comes from the npm registry (@jx-holdings/llama-cpp-source,
+# The source tree comes from the npm registry (@jxburros/llama-cpp-source,
 # installed by `npm ci` into node_modules) so the build's only external input
 # is an npm package. Resolution order:
 #   1. -DJX_ENGINE_LLAMA_DIR=<path>          explicit override
-#   2. node_modules/@jx-holdings/llama-cpp-source   (canonical: npm ci)
+#   2. node_modules/@jxburros/llama-cpp-source   (canonical: npm ci)
 #   3. vendor/llama.cpp                      manually placed source tree
 # ---------------------------------------------------------------------------
 set(LLAMA_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
@@ -61,8 +61,8 @@ set(JX_ENGINE_LLAMA_DIR "" CACHE PATH "Path to the llama.cpp source tree (overri
 
 if (JX_ENGINE_LLAMA_DIR)
     set(JX_LLAMA_SRC ${JX_ENGINE_LLAMA_DIR})
-elseif (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@jx-holdings/llama-cpp-source/CMakeLists.txt)
-    set(JX_LLAMA_SRC ${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@jx-holdings/llama-cpp-source)
+elseif (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@jxburros/llama-cpp-source/CMakeLists.txt)
+    set(JX_LLAMA_SRC ${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@jxburros/llama-cpp-source)
 elseif (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/vendor/llama.cpp/CMakeLists.txt)
     set(JX_LLAMA_SRC ${CMAKE_CURRENT_SOURCE_DIR}/vendor/llama.cpp)
 else()

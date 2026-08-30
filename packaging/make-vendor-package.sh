@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the @jx-holdings/llama-cpp-source npm package: the pinned llama.cpp
+# Builds the @jxburros/llama-cpp-source npm package: the pinned llama.cpp
 # source tree, pruned to what jx-engine's build and test tooling need.
 #
 # This is the MAINTAINER packaging step (run once per llama.cpp upgrade, then
@@ -18,7 +18,7 @@ cd "$(dirname "$0")/.."
 # ---- pin -------------------------------------------------------------------
 LLAMA_COMMIT="9723942adc51ec2f2b7c9dcc86842934c479b336"
 LLAMA_VERSION="0.3.0"                 # llama.cpp's own CMake project version
-PKG_NAME="@jx-holdings/llama-cpp-source"
+PKG_NAME="@jxburros/llama-cpp-source"
 PKG_VERSION="${LLAMA_VERSION}-b10711.g${LLAMA_COMMIT:0:9}"
 # ----------------------------------------------------------------------------
 
@@ -81,7 +81,7 @@ EOF
 echo "packing ..."
 ( cd "$DIST" && npm pack ./package --silent )
 
-TARBALL=$(ls "$DIST"/jx-holdings-llama-cpp-source-*.tgz | tail -1)
+TARBALL=$(ls "$DIST"/jxburros-llama-cpp-source-*.tgz | tail -1)
 echo
 echo "wrote  $TARBALL"
 du -sh "$STAGE" "$TARBALL" | sed 's/^/  /'

@@ -16,7 +16,7 @@ REPO = Path(__file__).resolve().parent.parent
 # same resolution order as CMakeLists.txt: npm package first, then a manually
 # placed vendor tree
 _CANDIDATES = [
-    REPO / "node_modules" / "@jx-holdings" / "llama-cpp-source",
+    REPO / "node_modules" / "@jxburros" / "llama-cpp-source",
     REPO / "vendor" / "llama.cpp",
 ]
 try:

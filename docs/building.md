@@ -16,7 +16,7 @@
 ## Fetching the llama.cpp source (`npm ci`)
 
 The build's only external input is llama.cpp's C/C++ source tree, vendored
-as the npm package `@jx-holdings/llama-cpp-source` (a pinned, pruned copy of
+as the npm package `@jxburros/llama-cpp-source` (a pinned, pruned copy of
 llama.cpp — C/C++ sources, not a Node.js library) and declared as a
 dependency in `package.json`:
 
@@ -24,11 +24,11 @@ dependency in `package.json`:
 npm ci   # or: npm install
 ```
 
-This installs the source tree into `node_modules/@jx-holdings/llama-cpp-source`.
+This installs the source tree into `node_modules/@jxburros/llama-cpp-source`.
 `CMakeLists.txt` resolves the llama.cpp source tree in this order:
 
 1. `-DJX_ENGINE_LLAMA_DIR=<path>` — explicit override, if passed
-2. `node_modules/@jx-holdings/llama-cpp-source` — canonical, from `npm ci`
+2. `node_modules/@jxburros/llama-cpp-source` — canonical, from `npm ci`
 3. `vendor/llama.cpp` — a manually placed source tree (gitignored; fallback
    only, e.g. for offline work without npm)
 
@@ -36,7 +36,7 @@ If none of the three is present, the configure step fails with a clear
 message (`llama.cpp source tree not found - run: npm ci`), so this step
 cannot be skipped silently.
 
-> **`npm ci` doesn't work yet.** `@jx-holdings/llama-cpp-source` has not been
+> **`npm ci` doesn't work yet.** `@jxburros/llama-cpp-source` has not been
 > published to the npm registry, so `npm ci`/`npm install` currently fails
 > with a 404/not-found error. Until the maintainer publishes it (see
 > ["Packaging & publishing the vendor source package"](#packaging--publishing-the-vendor-source-package)
@@ -44,7 +44,7 @@ cannot be skipped silently.
 >
 > ```bash
 > packaging/make-vendor-package.sh
-> npm install ./packaging/dist/jx-holdings-llama-cpp-source-*.tgz --no-save
+> npm install ./packaging/dist/jxburros-llama-cpp-source-*.tgz --no-save
 > ```
 >
 > This is exactly how the npm-based build was verified during development.
@@ -152,7 +152,7 @@ This section is for maintainers upgrading or publishing the vendored
 llama.cpp source, not for people building `jx-engine`. Consumers just run
 `npm ci`.
 
-`packaging/make-vendor-package.sh` builds `@jx-holdings/llama-cpp-source`
+`packaging/make-vendor-package.sh` builds `@jxburros/llama-cpp-source`
 from a pinned llama.cpp commit:
 
 ```bash
@@ -182,18 +182,18 @@ packaging/make-vendor-package.sh [path-to-llama.cpp-checkout]
 - **Package metadata.** It writes the staged tree's `package.json`
   (name, version, description, license, `homepage`, `repository`, plus
   `llamaCppCommit`/`llamaCppUpstream` fields recording provenance), then
-  runs `npm pack` to produce `packaging/dist/jx-holdings-llama-cpp-source-<version>.tgz`.
+  runs `npm pack` to produce `packaging/dist/jxburros-llama-cpp-source-<version>.tgz`.
 
 To publish, once the tarball is built:
 
 ```bash
-npm publish packaging/dist/jx-holdings-llama-cpp-source-*.tgz --access public
+npm publish packaging/dist/jxburros-llama-cpp-source-*.tgz --access public
 ```
 
-This needs npm credentials with publish rights on the `@jx-holdings` scope.
+This needs npm credentials with publish rights on the `@jxburros` scope.
 If that scope isn't available to you, rename it — it appears in exactly two
 places: the `PKG_NAME` variable in `packaging/make-vendor-package.sh`, and
-the `@jx-holdings/llama-cpp-source` dependency name in `package.json`.
+the `@jxburros/llama-cpp-source` dependency name in `package.json`.
 
 **Until it's published**, `npm ci`/`npm install` fails on a clean checkout;
 use `npm install ./packaging/dist/<tarball>.tgz --no-save` as a local

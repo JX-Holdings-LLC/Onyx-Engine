@@ -9,13 +9,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 
 - Replaced the `vendor/llama.cpp` git submodule with the npm package
-  `@jx-holdings/llama-cpp-source` (a pinned, pruned llama.cpp source tree —
+  `@jxburros/llama-cpp-source` (a pinned, pruned llama.cpp source tree —
   C/C++ sources, not a Node.js library) as the build's only external input,
   declared as a dependency in the new `package.json` and installed to
   `node_modules` by `npm ci`/`npm install`. `.gitmodules` is removed.
 - `CMakeLists.txt` now resolves the llama.cpp source tree in order:
   `-DJX_ENGINE_LLAMA_DIR=<path>` override, then
-  `node_modules/@jx-holdings/llama-cpp-source`, then a manually placed
+  `node_modules/@jxburros/llama-cpp-source`, then a manually placed
   `vendor/llama.cpp` tree (gitignored, fallback only). `scripts/make-tiny-model.py`
   resolves the source tree with the same order (minus the CMake override).
 - `CMakeLists.txt` additionally forces `LLAMA_BUILD_APP=OFF`.
@@ -40,7 +40,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Initial implementation of `jx-engine`: a single-model, OpenAI-compatible
   model-serving binary built on a vendored, pinned llama.cpp source tree
-  (`@jx-holdings/llama-cpp-source`, an npm package — not yet published; see
+  (`@jxburros/llama-cpp-source`, an npm package — not yet published; see
   "Changed" above).
 - CLI argument parsing (`src/args.h`, `src/args.cpp`) covering model path,
   alias, chat template overrides, network binding, API-key auth, context /
