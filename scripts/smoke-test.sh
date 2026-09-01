@@ -10,12 +10,15 @@ cd "$(dirname "$0")/.."
 
 BIN="${1:-build/jx-engine}"
 MODEL="models-test/tiny-llama-random.gguf"
+MMPROJ="models-test/tiny-mmproj-random.gguf"
 PORT="${JX_SMOKE_PORT:-18190}"
 EMB_PORT=$((PORT + 1))
 NP_PORT=$((PORT + 2))
+MM_PORT=$((PORT + 3))
 BASE="http://127.0.0.1:$PORT"
 EMB_BASE="http://127.0.0.1:$EMB_PORT"
 NP_BASE="http://127.0.0.1:$NP_PORT"
+MM_BASE="http://127.0.0.1:$MM_PORT"
 
 PASS=0
 FAIL=0
@@ -41,13 +44,15 @@ json_has() { # url-args... jq-ish python expression reading parsed json as d
 }
 
 [ -x "$BIN" ] || { echo "error: binary '$BIN' not found (build first)"; exit 1; }
-[ -f "$MODEL" ] || python3 scripts/make-tiny-model.py "$MODEL"
+[ -f "$MODEL" ]  || python3 scripts/make-tiny-model.py "$MODEL"
+[ -f "$MMPROJ" ] || python3 scripts/make-tiny-mmproj.py "$MMPROJ"
 
 echo "== CLI"
 check "--version" bash -c "'$BIN' --version | grep -q jx-engine"
 check "--help lists --cache-reuse" bash -c "'$BIN' --help | grep -q -- --cache-reuse"
 check "--help lists --parallel" bash -c "'$BIN' --help | grep -q -- --parallel"
 check "--help lists --context-shift" bash -c "'$BIN' --help | grep -q -- --context-shift"
+check "--help lists --mmproj" bash -c "'$BIN' --help | grep -q -- --mmproj"
 
 echo "== starting generation instance on :$PORT"
 "$BIN" -m "$MODEL" --port "$PORT" -c 512 --alias tiny-test > /dev/null 2>&1 &
@@ -58,10 +63,13 @@ PIDS+=($!)
 echo "== starting 2-slot context-shift instance on :$NP_PORT"
 "$BIN" -m "$MODEL" --port "$NP_PORT" -c 512 -np 2 --context-shift --alias tiny-np2 > /dev/null 2>&1 &
 PIDS+=($!)
+echo "== starting multimodal instance on :$MM_PORT"
+"$BIN" -m "$MODEL" --port "$MM_PORT" -c 512 --mmproj "$MMPROJ" --alias tiny-mm > /dev/null 2>&1 &
+PIDS+=($!)
 
 for i in $(seq 1 100); do
     curl -sf "$BASE/health" > /dev/null 2>&1 && curl -sf "$EMB_BASE/health" > /dev/null 2>&1 \
-        && curl -sf "$NP_BASE/health" > /dev/null 2>&1 && break
+        && curl -sf "$NP_BASE/health" > /dev/null 2>&1 && curl -sf "$MM_BASE/health" > /dev/null 2>&1 && break
     sleep 0.2
 done
 
@@ -186,6 +194,77 @@ check "with --context-shift generation runs past the per-slot context" \
 check "the shifted instance still serves normal requests afterwards" \
     json_has 'd["usage"]["completion_tokens"] == 6' \
     -X POST "$NP_BASE/v1/completions" -d '{"prompt":"Hello again","max_tokens":6,"temperature":0}'
+
+echo "== multimodal (--mmproj)"
+check "GET /props reports no modalities without --mmproj" \
+    json_has 'd["modalities"]["vision"] is False and d["modalities"]["audio"] is False' "$BASE/props"
+# a bad projector must fail loudly at startup rather than silently serving
+# text-only, so the runtime never thinks it has vision when it does not
+GARBAGE_MMPROJ="$(mktemp)"
+printf 'not a gguf file at all\n' > "$GARBAGE_MMPROJ"
+check "--mmproj with a garbage file fails at startup" bash -c "
+    out=\$('$BIN' -m '$MODEL' --port $((PORT + 9)) --mmproj '$GARBAGE_MMPROJ' 2>&1); rc=\$?
+    [ \"\$rc\" != 0 ] && grep -qi mmproj <<< \"\$out\""
+check "--mmproj with a nonexistent file fails at startup" bash -c "
+    out=\$('$BIN' -m '$MODEL' --port $((PORT + 9)) --mmproj /nonexistent/projector.gguf 2>&1); rc=\$?
+    [ \"\$rc\" != 0 ] && grep -qi mmproj <<< \"\$out\""
+rm -f "$GARBAGE_MMPROJ"
+# 1x1 transparent PNG
+TINY_PNG_URI="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+check "image_url part without --mmproj is rejected (400)" bash -c "
+    body=\$(curl -s -w '\n%{http_code}' -X POST '$BASE/v1/chat/completions' \
+      -d '{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"what is this\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"$TINY_PNG_URI\"}}]}],\"max_tokens\":4}')
+    [ \"\$(tail -1 <<< \"\$body\")\" = 400 ] && grep -qi mmproj <<< \"\$body\""
+check "remote image URLs are rejected (400)" bash -c "
+    body=\$(curl -s -w '\n%{http_code}' -X POST '$BASE/v1/chat/completions' \
+      -d '{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"https://example.com/cat.png\"}}]}],\"max_tokens\":4}')
+    [ \"\$(tail -1 <<< \"\$body\")\" = 400 ]"
+
+echo "== multimodal instance (--mmproj)"
+check "GET /props reports vision on the --mmproj instance" \
+    json_has 'd["modalities"]["vision"] is True and d["modalities"]["audio"] is False' "$MM_BASE/props"
+check "audio parts rejected by a vision-only projector (400)" bash -c "
+    body=\$(curl -s -w '\n%{http_code}' -X POST '$MM_BASE/v1/chat/completions' \
+      -d '{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_audio\",\"input_audio\":{\"data\":\"UklGRg==\",\"format\":\"wav\"}}]}],\"max_tokens\":4}')
+    [ \"\$(tail -1 <<< \"\$body\")\" = 400 ] && grep -qi audio <<< \"\$body\""
+# an 8x8 RGB PNG, built here so the test needs no binary fixtures
+IMG_B64=$(python3 - <<'PYEOF'
+import base64, struct, zlib
+def chunk(t, d):
+    return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+w = h = 8
+rows = b''
+for y in range(h):
+    rows += b'\x00' + b''.join(bytes([(x * 30) % 256, (y * 30) % 256, 128]) for x in range(w))
+png = (b'\x89PNG\r\n\x1a\n'
+       + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
+       + chunk(b'IDAT', zlib.compress(rows))
+       + chunk(b'IEND', b''))
+print(base64.b64encode(png).decode())
+PYEOF
+)
+IMG_REQ="{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"describe this\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,$IMG_B64\"}}]}],\"max_tokens\":6,\"temperature\":0}"
+# the projector contributes 4 image positions, so prompt_tokens must exceed the
+# token count of the text alone
+check "chat completion with a data: URI image" \
+    json_has 'd["choices"][0]["message"]["role"] == "assistant" and d["usage"]["completion_tokens"] == 6 and d["usage"]["prompt_tokens"] > 4' \
+    -X POST "$MM_BASE/v1/chat/completions" -d "$IMG_REQ"
+check "a second image request reuses the slot cleanly" \
+    json_has 'd["usage"]["completion_tokens"] == 6 and d["timings"]["cache_n"] == 0' \
+    -X POST "$MM_BASE/v1/chat/completions" -d "$IMG_REQ"
+check "raw base64 (no data: URI) is accepted" \
+    json_has 'd["usage"]["completion_tokens"] == 4' \
+    -X POST "$MM_BASE/v1/chat/completions" \
+    -d "{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"$IMG_B64\"}}]}],\"max_tokens\":4}"
+check "text-only requests still work on the --mmproj instance" \
+    json_has 'd["usage"]["completion_tokens"] == 5' \
+    -X POST "$MM_BASE/v1/completions" -d '{"prompt":"Once upon a time","max_tokens":5}'
+check "streaming works with an image" bash -c "
+    out=\$(curl -sfN -X POST '$MM_BASE/v1/chat/completions' -d '$(python3 -c "
+import json,sys
+req = json.loads(sys.argv[1]); req['stream'] = True; print(json.dumps(req))
+" "$IMG_REQ")')
+    grep -q '^data: \[DONE\]' <<< \"\$out\" && grep -q '\"finish_reason\":\"length\"' <<< \"\$out\""
 
 echo
 echo "passed: $PASS, failed: $FAIL"

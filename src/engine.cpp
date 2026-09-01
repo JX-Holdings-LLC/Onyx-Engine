@@ -3,6 +3,8 @@
 #include "log.h"
 #include "sampling.h"
 
+#include "mtmd-helper.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -15,6 +17,9 @@ jx_engine::~jx_engine() {
         stop_ = true;
         q_cv_.notify_all();
         loop_thread_.join();
+    }
+    if (mctx_) {
+        mtmd_free(mctx_);
     }
     if (ctx_) {
         llama_free(ctx_);
@@ -97,6 +102,33 @@ bool jx_engine::load(const jx_args & args) {
     n_ctx_      = llama_n_ctx(ctx_);
     n_ctx_slot_ = llama_n_ctx_seq(ctx_);
     n_batch_    = (int32_t) cparams.n_batch;
+
+    if (!args.mmproj_path.empty()) {
+        mtmd_context_params mparams_mtmd = mtmd_context_params_default();
+        mparams_mtmd.use_gpu       = args.n_gpu_layers != 0;
+        mparams_mtmd.print_timings = args.verbose;
+        mparams_mtmd.n_threads     = (int) cparams.n_threads;
+        mparams_mtmd.flash_attn_type = cparams.flash_attn_type;
+
+        mctx_ = mtmd_init_from_file(args.mmproj_path.c_str(), model_, mparams_mtmd);
+        if (!mctx_) {
+            load_error_ = "failed to load multimodal projector from '" + args.mmproj_path + "' (--mmproj)";
+            return false;
+        }
+
+        // a media chunk occupies KV positions that cannot be prefix-matched
+        // token-by-token nor partially discarded, so both optimizations that
+        // splice a sequence's KV are off for the whole process (mirrors
+        // llama-server's load-time force-disable)
+        if (cache_reuse_ > 0) {
+            cache_reuse_ = 0;
+            fprintf(stderr, "warning: cache_reuse is not supported by multimodal, it will be disabled\n");
+        }
+        if (ctx_shift_) {
+            ctx_shift_ = false;
+            fprintf(stderr, "warning: context shift is not supported by multimodal, it will be disabled\n");
+        }
+    }
 
     if (ctx_shift_) {
         llama_memory_t mem = llama_get_memory(ctx_);
@@ -187,20 +219,27 @@ jx_gen_result jx_engine::generate(const jx_gen_params & params, const jx_token_c
         return res;
     }
 
+    if (!params.media.empty() && !mctx_) {
+        res.error = "this instance has no multimodal projector loaded (start with --mmproj)";
+        return res;
+    }
+
     auto req = std::make_shared<jx_gen_request>();
     req->params       = params;
     req->wants_pieces = (bool) cb;
 
-    std::vector<llama_token> & prompt = req->params.prompt_tokens;
-    if (prompt.empty()) {
-        // llama_decode needs at least one token; fall back to BOS
-        const llama_token bos = llama_vocab_bos(vocab_);
-        prompt.push_back(bos >= 0 ? bos : 0);
-    }
-    if (prompt.size() >= n_ctx_slot_) {
-        res.error = "prompt (" + std::to_string(prompt.size()) + " tokens) does not fit in the context window (" +
-                    std::to_string(n_ctx_slot_) + " tokens)";
-        return res;
+    if (req->params.media.empty()) {
+        std::vector<llama_token> & prompt = req->params.prompt_tokens;
+        if (prompt.empty()) {
+            // llama_decode needs at least one token; fall back to BOS
+            const llama_token bos = llama_vocab_bos(vocab_);
+            prompt.push_back(bos >= 0 ? bos : 0);
+        }
+        if (prompt.size() >= n_ctx_slot_) {
+            res.error = "prompt (" + std::to_string(prompt.size()) + " tokens) does not fit in the context window (" +
+                        std::to_string(n_ctx_slot_) + " tokens)";
+            return res;
+        }
     }
 
     // the sampler is built on the calling thread so that a bad grammar fails
@@ -416,7 +455,8 @@ bool jx_engine::admit_queued() {
                 continue;
             }
             size_t lcp = 0;
-            if (cache_reuse_ > 0 && req->params.cache_prompt) {
+            // media prompts are never prefix-matched (see prefill_media)
+            if (cache_reuse_ > 0 && req->params.cache_prompt && req->params.media.empty()) {
                 const size_t max_lcp = std::min(slot.cache_tokens.size(), req->params.prompt_tokens.size() - 1);
                 while (lcp < max_lcp && slot.cache_tokens[lcp] == req->params.prompt_tokens[lcp]) {
                     lcp++;
@@ -439,13 +479,14 @@ bool jx_engine::admit_queued() {
         }
 
         jx_slot & slot = *best;
-        slot.req      = req;
-        slot.prompt   = req->params.prompt_tokens;
-        slot.state    = jx_slot::JX_SLOT_PREFILL;
-        slot.i_batch  = -1;
-        slot.n_sent   = 0;
-        slot.t_start  = ggml_time_us();
-        slot.t_prompt = 0;
+        slot.req       = req;
+        slot.prompt    = req->params.prompt_tokens;
+        slot.has_media = !req->params.media.empty();
+        slot.state     = jx_slot::JX_SLOT_PREFILL;
+        slot.i_batch   = -1;
+        slot.n_sent    = 0;
+        slot.t_start   = ggml_time_us();
+        slot.t_prompt  = 0;
 
         req->result.n_prompt = (int32_t) slot.prompt.size();
 
@@ -453,7 +494,7 @@ bool jx_engine::admit_queued() {
         // least one prompt token to evaluate so there are fresh logits
         llama_memory_t mem = llama_get_memory(ctx_);
         size_t prefix = 0;
-        if (cache_reuse_ > 0 && req->params.cache_prompt && (int32_t) best_lcp >= cache_reuse_) {
+        if (cache_reuse_ > 0 && req->params.cache_prompt && !slot.has_media && (int32_t) best_lcp >= cache_reuse_) {
             prefix = best_lcp;
         }
         if (prefix > 0) {
@@ -467,6 +508,10 @@ bool jx_engine::admit_queued() {
         slot.n_past          = (int32_t) prefix;
 
         admitted = true;
+
+        if (slot.has_media) {
+            prefill_media(slot);
+        }
     }
 
     return admitted;
@@ -488,7 +533,12 @@ void jx_engine::build_batch(llama_batch & batch) {
         }
         slot.i_batch = batch.n_tokens;
         common_batch_add(batch, slot.sampled, slot.n_past, { slot.seq_id }, true);
-        slot.cache_tokens.push_back(slot.sampled);
+        if (!slot.has_media) {
+            // media slots never reuse their KV, so the mirror array they would
+            // be matched against is not maintained (and could not be: an image
+            // chunk's positions have no per-token ids)
+            slot.cache_tokens.push_back(slot.sampled);
+        }
         slot.n_past++;
     }
 
@@ -573,34 +623,7 @@ bool jx_engine::decode_batch(llama_batch & batch) {
             const int32_t tok_idx = slot.i_batch - off;
             slot.i_batch = -1;
 
-            jx_gen_request & req = *slot.req;
-            jx_gen_result  & res = req.result;
-
-            if (slot.state == jx_slot::JX_SLOT_PREFILL) {
-                slot.state    = jx_slot::JX_SLOT_GENERATE;
-                slot.t_prompt = ggml_time_us();
-                res.t_prompt_ms = (slot.t_prompt - slot.t_start) / 1000.0;
-            }
-
-            // v1 ordering: budget checks first, then sample from the logits
-            // this decode just produced
-            if (req.params.n_predict >= 0 && res.n_predicted >= req.params.n_predict) {
-                finish(slot, JX_FINISH_LENGTH);
-                continue;
-            }
-            if (slot.n_past >= (int32_t) n_ctx_slot_) {
-                if (!ctx_shift_ || !context_shift(slot)) {
-                    finish(slot, JX_FINISH_LENGTH);
-                    continue;
-                }
-            }
-
-            const llama_token tok = common_sampler_sample(req.smpl, ctx_, tok_idx);
-            common_sampler_accept(req.smpl, tok, true);
-            res.n_predicted++;
-            slot.sampled = tok;
-
-            on_sampled(slot);
+            sample_slot(slot, tok_idx);
         }
 
         off += n;
@@ -608,6 +631,120 @@ bool jx_engine::decode_batch(llama_batch & batch) {
     }
 
     return true;
+}
+
+// Prefills a media-bearing request. mtmd splits the rendered prompt (which
+// carries one media marker per buffer) plus the decoded buffers into
+// text/image/audio chunks, and each chunk is evaluated on this slot's
+// sequence.
+//
+// NOTE: this SERIALIZES the engine loop. mtmd_helper_eval_chunk_single runs
+// the vision/audio encoder and issues its own llama_decode calls, and is
+// documented as not thread-safe, so no other slot advances while a media
+// prompt is prefilling. That is the trade upstream makes too (its own slot
+// loop encodes media chunks inline); text-only requests are unaffected and
+// keep the interleaved chunked-prefill path in build_batch().
+bool jx_engine::prefill_media(jx_slot & slot) {
+    jx_gen_request & req = *slot.req;
+
+    auto fail = [&](const std::string & err) {
+        llama_memory_seq_rm(llama_get_memory(ctx_), slot.seq_id, -1, -1);
+        slot.n_past = 0;
+        slot.cache_tokens.clear();
+        finish(slot, JX_FINISH_STOP, err);
+        return false;
+    };
+
+    // MTMD_VIDEO is compiled out (see CMakeLists.txt), so the wrapper's
+    // video_ctx is always null and only the bitmap needs freeing
+    mtmd::bitmaps bitmaps;
+    for (const auto & buf : req.params.media) {
+        auto out = mtmd_helper_bitmap_init_from_buf(mctx_, buf.data(), buf.size(),
+                                                    /* placeholder */ false,
+                                                    mtmd_helper_init_opt_default());
+        if (!out.bitmap) {
+            return fail("failed to decode media input (unsupported or corrupt image/audio data)");
+        }
+        bitmaps.entries.emplace_back(out.bitmap);
+    }
+
+    mtmd_input_text text {
+        /* text          */ req.params.prompt_text.c_str(),
+        /* text_len      */ req.params.prompt_text.size(),
+        /* add_special   */ true,
+        /* parse_special */ true,
+    };
+
+    mtmd::input_chunks chunks(mtmd_input_chunks_init());
+    auto bitmaps_c_ptr = bitmaps.c_ptr();
+    const int32_t rc = mtmd_tokenize(mctx_, chunks.ptr.get(), &text, bitmaps_c_ptr.data(), bitmaps_c_ptr.size());
+    if (rc == 1) {
+        return fail("number of media inputs does not match the number of media markers in the prompt");
+    }
+    if (rc != 0) {
+        return fail("failed to preprocess media input");
+    }
+
+    const llama_pos n_pos_total = mtmd_helper_get_n_pos(chunks.ptr.get());
+    if (n_pos_total >= (llama_pos) n_ctx_slot_) {
+        return fail("prompt (" + std::to_string(n_pos_total) + " positions, media included) does not fit in the "
+                    "context window (" + std::to_string(n_ctx_slot_) + " tokens)");
+    }
+
+    // n_past must be tracked strictly from the out-param: with M-RoPE a
+    // chunk's position count is not its token count
+    llama_pos    n_past   = slot.n_past;   // always 0 here: media never reuses KV
+    const size_t n_chunks = chunks.size();
+    for (size_t i = 0; i < n_chunks; i++) {
+        llama_pos new_n_past = n_past;
+        const int32_t ret = mtmd_helper_eval_chunk_single(mctx_, ctx_, chunks[i], n_past, slot.seq_id, n_batch_,
+                                                          /* logits_last */ i + 1 == n_chunks, &new_n_past);
+        if (ret != 0) {
+            return fail("failed to evaluate media prompt");
+        }
+        n_past = new_n_past;
+    }
+
+    slot.n_past          = (int32_t) n_past;
+    req.result.n_prompt  = (int32_t) n_past;   // total positions, media included
+
+    // the final chunk was evaluated with logits_last, so this slot's
+    // next-token logits are the last row of that decode
+    sample_slot(slot, -1);
+    return true;
+}
+
+// Samples one token for `slot` from row `tok_idx` of the decode that just ran
+// (-1 = the last row) and applies the v1 per-token bookkeeping.
+void jx_engine::sample_slot(jx_slot & slot, int32_t tok_idx) {
+    jx_gen_request & req = *slot.req;
+    jx_gen_result  & res = req.result;
+
+    if (slot.state == jx_slot::JX_SLOT_PREFILL) {
+        slot.state      = jx_slot::JX_SLOT_GENERATE;
+        slot.t_prompt   = ggml_time_us();
+        res.t_prompt_ms = (slot.t_prompt - slot.t_start) / 1000.0;
+    }
+
+    // v1 ordering: budget checks first, then sample from the logits this
+    // decode just produced
+    if (req.params.n_predict >= 0 && res.n_predicted >= req.params.n_predict) {
+        finish(slot, JX_FINISH_LENGTH);
+        return;
+    }
+    if (slot.n_past >= (int32_t) n_ctx_slot_) {
+        if (!ctx_shift_ || !context_shift(slot)) {
+            finish(slot, JX_FINISH_LENGTH);
+            return;
+        }
+    }
+
+    const llama_token tok = common_sampler_sample(req.smpl, ctx_, tok_idx);
+    common_sampler_accept(req.smpl, tok, true);
+    res.n_predicted++;
+    slot.sampled = tok;
+
+    on_sampled(slot);
 }
 
 // EOG / stop-sequence / stop-holdback handling for one freshly sampled token.
@@ -713,6 +850,7 @@ void jx_engine::finish(jx_slot & slot, jx_finish_reason reason, const std::strin
 
     slot.req.reset();
     slot.state       = jx_slot::JX_SLOT_IDLE;
+    slot.has_media   = false;
     slot.prompt.clear();
     slot.i_batch     = -1;
     slot.n_sent      = 0;

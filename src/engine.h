@@ -14,6 +14,11 @@
 // callback cancels that request; the engine loop then releases its slot.
 //
 // Embedding mode keeps the v1 shape: one sequence, serialized on a mutex.
+//
+// Multimodal requests (--mmproj) are the one exception to the batching loop:
+// their prompt is prefilled through mtmd at admission time, which runs the
+// vision/audio encoder and its own llama_decode calls inline (see
+// prefill_media()).
 #pragma once
 
 #include "args.h"
@@ -21,6 +26,7 @@
 #include "chat.h"
 #include "common.h"
 #include "llama.h"
+#include "mtmd.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -32,12 +38,23 @@
 #include <thread>
 #include <vector>
 
+// One decoded media file (PNG/JPEG/WAV/... bytes, exactly as they would sit
+// on disk). jx-engine never fetches media itself: the server decodes data:
+// URIs and raw base64 into these buffers.
+using jx_media_buffer = std::vector<unsigned char>;
+
 struct jx_gen_params {
     std::vector<llama_token> prompt_tokens;
     int32_t     n_predict = -1;          // -1 = until EOG or context limit
     std::vector<std::string> stop;       // stop sequences (matched on text)
     common_params_sampling sampling;     // seed/temp/top_p/... and grammar
     bool        cache_prompt = true;     // reuse common KV prefix when possible
+
+    // multimodal: when `media` is non-empty the engine ignores prompt_tokens
+    // and instead tokenizes `prompt_text` (which must contain one mtmd media
+    // marker per buffer, in order) together with the buffers.
+    std::string                  prompt_text;
+    std::vector<jx_media_buffer> media;
 };
 
 enum jx_finish_reason {
@@ -98,6 +115,7 @@ struct jx_slot {
     std::vector<llama_token> cache_tokens;
 
     std::vector<llama_token> prompt;         // prompt of the current request
+    bool        has_media   = false;         // prefilled through mtmd, not `prompt`
     int32_t     n_past      = 0;             // KV positions filled for this seq
     int32_t     i_batch     = -1;            // row of the current batch holding our logits
     llama_token sampled     = 0;             // token waiting to be decoded
@@ -133,6 +151,14 @@ public:
     uint64_t model_n_params()       const;
     std::string model_desc()        const;
     bool embedding_mode()           const { return embedding_mode_; }
+
+    // --- multimodal (--mmproj) ---
+    bool has_mmproj()      const { return mctx_ != nullptr; }
+    bool supports_vision() const { return mctx_ && mtmd_support_vision(mctx_); }
+    bool supports_audio()  const { return mctx_ && mtmd_support_audio(mctx_); }
+    // marker text the rendered prompt must carry once per media buffer
+    std::string media_marker() const { return mctx_ ? mtmd_get_marker(mctx_) : std::string(); }
+
     std::string chat_template_source() const;
     const common_chat_templates * chat_templates() const { return chat_templates_.get(); }
     const llama_vocab * vocab()     const { return vocab_; }
@@ -160,6 +186,8 @@ private:
     bool admit_queued();                      // queued requests -> idle slots
     void build_batch(llama_batch & batch);    // one tick's shared batch
     bool decode_batch(llama_batch & batch);   // decode + per-slot sampling
+    bool prefill_media(jx_slot & slot);       // mtmd prefill; false if the slot was failed
+    void sample_slot(jx_slot & slot, int32_t tok_idx); // sample one token from fresh logits
     void on_sampled(jx_slot & slot);          // v1 per-token bookkeeping
     bool context_shift(jx_slot & slot);       // returns false if it cannot shift
     void emit(jx_slot & slot, std::string piece);
@@ -167,6 +195,7 @@ private:
 
     llama_model *   model_ = nullptr;
     llama_context * ctx_   = nullptr;
+    mtmd_context *  mctx_  = nullptr;   // multimodal projector, null without --mmproj
     const llama_vocab * vocab_ = nullptr;
     common_chat_templates_ptr chat_templates_;
 

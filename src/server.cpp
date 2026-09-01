@@ -101,6 +101,135 @@ static common_json diff_to_delta(const common_chat_msg_diff & diff) {
 }
 
 // ---------------------------------------------------------------------------
+// multimodal content parts
+// ---------------------------------------------------------------------------
+
+// Minimal base64 decoder (same shape as llama-server's). Stops at the first
+// character that is neither base64 nor padding.
+static jx_media_buffer base64_decode(const std::string & encoded) {
+    static const std::string chars =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    jx_media_buffer out;
+    uint8_t quad[4];
+    int n = 0;
+
+    for (char c : encoded) {
+        const size_t idx = chars.find(c);
+        if (idx == std::string::npos) {
+            break;   // '=' padding, whitespace or garbage: stop here
+        }
+        quad[n++] = (uint8_t) idx;
+        if (n == 4) {
+            out.push_back((unsigned char) ((quad[0] << 2) | (quad[1] >> 4)));
+            out.push_back((unsigned char) (((quad[1] & 0x0f) << 4) | (quad[2] >> 2)));
+            out.push_back((unsigned char) (((quad[2] & 0x03) << 6) | quad[3]));
+            n = 0;
+        }
+    }
+    for (int i = n; i < 4; i++) {
+        quad[i] = 0;
+    }
+    if (n > 1) {
+        out.push_back((unsigned char) ((quad[0] << 2) | (quad[1] >> 4)));
+    }
+    if (n > 2) {
+        out.push_back((unsigned char) (((quad[1] & 0x0f) << 4) | (quad[2] >> 2)));
+    }
+    return out;
+}
+
+// jx-engine performs no network or filesystem I/O on behalf of a request, so a
+// media payload can never be a location the server would have to go fetch.
+// Checked before any capability check: this holds whatever projector is loaded.
+static void reject_media_url(const std::string & url, const char * what) {
+    for (const char * scheme : {"http://", "https://", "file://"}) {
+        if (url.rfind(scheme, 0) == 0) {
+            throw std::runtime_error(std::string(scheme) + " " + what +
+                                     " URLs are not supported: jx-engine does not fetch remote or local "
+                                     "resources. Inline the data as a 'data:<mime>;base64,...' URI or a "
+                                     "bare base64 string.");
+        }
+    }
+}
+
+// Resolves one media payload to raw file bytes: a data: URI or bare base64.
+static jx_media_buffer decode_media_payload(const std::string & url, const char * what) {
+    std::string payload = url;
+    if (url.rfind("data:", 0) == 0) {
+        const size_t comma = url.find(',');
+        if (comma == std::string::npos) {
+            throw std::runtime_error("malformed data: URI (no comma separating the payload)");
+        }
+        const std::string header = url.substr(0, comma);
+        if (header.size() < 6 || header.compare(header.size() - 6, 6, "base64") != 0) {
+            throw std::runtime_error("data: URI must be base64 encoded");
+        }
+        payload = url.substr(comma + 1);
+    }
+
+    jx_media_buffer data = base64_decode(payload);
+    if (data.empty()) {
+        throw std::runtime_error(std::string("could not decode ") + what + " data (expected base64)");
+    }
+    return data;
+}
+
+// Rewrites the OpenAI content-part arrays in `messages` in place: every
+// image_url / input_audio part is decoded into `out_media` and replaced by a
+// media_marker part carrying the mtmd marker text, so the chat template
+// renders the marker exactly where the media was and mtmd_tokenize matches
+// markers to buffers in order. Throws (-> 400) on anything unacceptable.
+static void extract_media(common_json & messages, const jx_engine & engine,
+                          std::vector<jx_media_buffer> & out_media) {
+    const std::string marker = engine.media_marker();
+
+    for (auto & msg : messages) {
+        if (!msg.is_object() || !msg.contains("content") || !msg.at("content").is_array()) {
+            continue;
+        }
+        for (auto & part : msg.at("content")) {
+            if (!part.is_object()) {
+                continue;
+            }
+            const std::string type = part.value<std::string>("type", "");
+            if (type != "image_url" && type != "input_audio") {
+                continue;
+            }
+
+            const bool  is_image = type == "image_url";
+            const char * what    = is_image ? "image" : "audio";
+
+            std::string payload;
+            if (is_image) {
+                const common_json & iu = part.at("image_url");
+                payload = iu.is_string() ? iu.get<std::string>() : iu.value<std::string>("url", "");
+            } else {
+                const common_json & ia = part.at("input_audio");
+                payload = ia.is_string() ? ia.get<std::string>() : ia.value<std::string>("data", "");
+            }
+            if (payload.empty()) {
+                throw std::runtime_error(std::string("'") + type + "' part carries no data");
+            }
+            reject_media_url(payload, what);
+
+            if (!engine.has_mmproj()) {
+                throw std::runtime_error("multimodal input requires a projector; start jx-engine with --mmproj");
+            }
+            if (is_image && !engine.supports_vision()) {
+                throw std::runtime_error("the loaded projector (--mmproj) does not support image input");
+            }
+            if (!is_image && !engine.supports_audio()) {
+                throw std::runtime_error("the loaded projector (--mmproj) does not support audio input");
+            }
+
+            out_media.push_back(decode_media_payload(payload, what));
+            part = common_json{{"type", "media_marker"}, {"text", marker}};
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // request parsing
 // ---------------------------------------------------------------------------
 
@@ -331,8 +460,8 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
         defaults["n_ctx"] = (int64_t) engine.n_ctx();
 
         common_json modalities = common_json::object();
-        modalities["vision"] = false;
-        modalities["audio"]  = false;
+        modalities["vision"] = engine.supports_vision();
+        modalities["audio"]  = engine.supports_audio();
 
         common_json props = common_json::object();
         props["model_alias"]                 = engine.alias();
@@ -420,13 +549,23 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
     // ---- chat completions ------------------------------------------------
 
     svr.Post("/v1/chat/completions", [&](const httplib::Request & req, httplib::Response & res) {
-        const common_json body = common_json::parse(req.body);
+        common_json body = common_json::parse(req.body);
         if (!body.contains("messages") || !body.at("messages").is_array()) {
             send_error(res, 400, "missing or invalid 'messages'", "invalid_request_error");
             return;
         }
         if (engine.embedding_mode()) {
             send_error(res, 501, "this instance serves embeddings only (started with --embedding)", "not_supported_error");
+            return;
+        }
+
+        // decode any image_url / input_audio parts and swap them for mtmd
+        // markers before the template renders the prompt
+        std::vector<jx_media_buffer> media;
+        try {
+            extract_media(body.at("messages"), engine, media);
+        } catch (const std::exception & e) {
+            send_error(res, 400, e.what(), "invalid_request_error");
             return;
         }
 
@@ -443,7 +582,14 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
         }
 
         jx_gen_params gp;
-        gp.prompt_tokens = engine.tokenize(cp.prompt, /* add_special */ true, /* parse_special */ true);
+        if (media.empty()) {
+            gp.prompt_tokens = engine.tokenize(cp.prompt, /* add_special */ true, /* parse_special */ true);
+        } else {
+            // mtmd tokenizes the rendered text itself, splitting it on the
+            // markers it now contains
+            gp.prompt_text = cp.prompt;
+            gp.media       = std::move(media);
+        }
         gp.n_predict     = parse_max_tokens(body);
         gp.stop          = parse_stop(body);
         for (const auto & s : cp.additional_stops) {
