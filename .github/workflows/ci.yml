@@ -54,8 +54,15 @@ jobs:
         if: steps.vendor-cache.outputs.cache-hit != 'true'
         run: bash packaging/make-vendor-package.sh
 
+      # Extracted with tar rather than `npm install` so self-hosted runners
+      # need no npm; the layout is identical (CMake looks for
+      # node_modules/@jxburros/llama-cpp-source/CMakeLists.txt).
       - name: Install vendor package
-        run: npm install ./packaging/dist/jxburros-llama-cpp-source-*.tgz --no-save
+        run: |
+          rm -rf node_modules/@jxburros/llama-cpp-source
+          mkdir -p node_modules/@jxburros/llama-cpp-source
+          tar -xzf packaging/dist/jxburros-llama-cpp-source-*.tgz --strip-components=1 \
+              -C node_modules/@jxburros/llama-cpp-source
 
       - name: ccache (GitHub-hosted only)
         if: matrix.use-ccache-action == true
