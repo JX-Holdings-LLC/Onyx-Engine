@@ -40,7 +40,8 @@ static bool has_safetensors_file(const fs::path & dir) {
     return false;
 }
 
-// every *.safetensors file plus config.json, for cache-freshness comparisons
+// every converter input that affects the output, for cache-freshness
+// comparisons: the weights plus every config/tokenizer file it reads
 static std::vector<fs::path> safetensors_source_files(const fs::path & dir) {
     std::vector<fs::path> out;
     std::error_code ec;
@@ -49,9 +50,12 @@ static std::vector<fs::path> safetensors_source_files(const fs::path & dir) {
             out.push_back(entry.path());
         }
     }
-    fs::path config = dir / "config.json";
-    if (fs::exists(config, ec)) {
-        out.push_back(config);
+    for (const char * name : {"config.json", "tokenizer.json", "tokenizer_config.json",
+                              "model.safetensors.index.json", "generation_config.json"}) {
+        fs::path p = dir / name;
+        if (fs::exists(p, ec)) {
+            out.push_back(p);
+        }
     }
     return out;
 }
@@ -206,13 +210,22 @@ std::string jx_resolve_model(const jx_args & args, std::string & err) {
         return "";
     }
 
-    // cache location: <convert_dir or model dir>/jx-cache/<dirname>-f16.gguf
+    // cache location: <convert_dir or model dir>/jx-cache/<dirname>-<pathhash>-f16.gguf
+    // The path hash keeps two different models that share a directory name
+    // from colliding under a shared --convert-dir.
     fs::path cache_dir = args.convert_dir.empty() ? (model_dir / "jx-cache") : fs::path(args.convert_dir);
-    std::string dirname = fs::absolute(model_dir, ec).filename().string();
+    const std::string abs_dir = fs::absolute(model_dir, ec).string();
+    std::string dirname = fs::path(abs_dir).filename().string();
     if (dirname.empty()) {
         dirname = "model";
     }
-    fs::path cache_path = cache_dir / (dirname + "-f16.gguf");
+    uint64_t h = 1469598103934665603ULL; // FNV-1a
+    for (char c : abs_dir) {
+        h = (h ^ (unsigned char) c) * 1099511628211ULL;
+    }
+    char hash_hex[17];
+    snprintf(hash_hex, sizeof(hash_hex), "%016llx", (unsigned long long) h);
+    fs::path cache_path = cache_dir / (dirname + "-" + std::string(hash_hex, 8) + "-f16.gguf");
 
     // reuse a fresh cached conversion if one exists
     if (fs::exists(cache_path, ec)) {
@@ -239,7 +252,8 @@ std::string jx_resolve_model(const jx_args & args, std::string & err) {
     }
 
     fs::create_directories(cache_dir, ec);
-    fs::path tmp_path = cache_dir / (dirname + "-f16.gguf.tmp");
+    fs::path tmp_path = cache_path;
+    tmp_path += ".tmp";
     fs::remove(tmp_path, ec);
 
     fprintf(stderr, "jx-engine: converting safetensors model '%s' to GGUF ...\n", model_dir.string().c_str());

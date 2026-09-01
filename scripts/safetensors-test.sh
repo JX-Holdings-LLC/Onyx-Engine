@@ -85,7 +85,6 @@ if [ ! -x "$BIN" ]; then
     echo "=================================================================="
 else
     export JX_ENGINE_CONVERT_SCRIPT="$(pwd)/scripts/convert-safetensors.py"
-    CACHE_GGUF="$MODEL_DIR/jx-cache/$(basename "$MODEL_DIR")-f16.gguf"
     rm -rf "$MODEL_DIR/jx-cache"
 
     echo "== first launch (expect a real conversion)"
@@ -100,11 +99,15 @@ else
         sleep 0.2
     done
 
-    if ! curl -sf "$BASE/health" > /dev/null 2>&1 && grep -qi "gguf_init_from_reader\|failed to load model" "$LOG1"; then
-        # main.cpp doesn't call jx_resolve_model yet (that wiring is tracked
-        # separately) - the binary tried to mmap the HF directory as a GGUF
-        # file directly. Not a failure of the converter itself: skip the
-        # serving assertions but keep the direct-conversion results above.
+    if ! curl -sf "$BASE/health" > /dev/null 2>&1 \
+            && ! grep -qi "converting safetensors" "$LOG1" \
+            && grep -qi "gguf_init_from_reader\|failed to load model" "$LOG1"; then
+        # The binary never attempted a conversion and choked mmap'ing the HF
+        # directory as a GGUF: it predates the jx_resolve_model() wiring in
+        # main.cpp. Not a failure of the converter itself: skip the serving
+        # assertions but keep the direct-conversion results above. A binary
+        # that DID run a conversion and still failed to serve falls through
+        # to the hard failure below - that is a real regression.
         kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true
         echo "=================================================================="
         echo " SKIPPED serving checks: '$BIN' does not yet call jx_resolve_model()"
@@ -117,7 +120,9 @@ else
     fi
 
     check "server came up after conversion" curl -sf "$BASE/health"
-    check "conversion cache file appeared"  test -f "$CACHE_GGUF"
+    # cache name carries a hash of the absolute source path: <dirname>-<hash8>-f16.gguf
+    CACHE_GGUF="$(ls "$MODEL_DIR"/jx-cache/"$(basename "$MODEL_DIR")"-*-f16.gguf 2>/dev/null | head -1)"
+    check "conversion cache file appeared"  test -n "$CACHE_GGUF" -a -f "$CACHE_GGUF"
     check "log shows a real conversion ran" grep -q "converting safetensors" "$LOG1"
     check "completion request answers" curl -sf "$BASE/v1/completions" \
         -H 'Content-Type: application/json' \

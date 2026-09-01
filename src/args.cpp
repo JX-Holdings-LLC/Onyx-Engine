@@ -70,6 +70,7 @@ void jx_args_print_help() {
         "       --cache-reuse N         min prefix tokens to reuse from KV cache, 0 = off (default: 1)\n"
         "       --context-shift         drop oldest tokens instead of stopping when the\n"
         "                               context fills mid-generation (default: off)\n"
+        "       --no-context-shift      disable context shift (the default)\n"
         "       --keep N                tokens at the front preserved by a context shift,\n"
         "                               -1 = whole prompt (default: 0)\n"
         "       --reasoning-budget N    thinking-token budget: -1 = unrestricted,\n"

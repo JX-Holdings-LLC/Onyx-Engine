@@ -74,8 +74,9 @@ Notes:
   `default_generation_settings` — both are the same value
   (`jx_engine::n_ctx()`, the actual context size the running context was
   created with, from `llama_n_ctx`).
-- `modalities.vision`/`modalities.audio` are hardcoded `false` in v1
-  (multimodal is not implemented — see the README roadmap).
+- `modalities.vision`/`modalities.audio` reflect the loaded `--mmproj`
+  projector's real capabilities (`mtmd_support_vision`/`mtmd_support_audio`)
+  — both `false` when no projector is loaded.
 - `chat_template` is the chat template source llama.cpp resolved
   (`common_chat_templates_source`), which can be an empty string if the
   model carries no template and none was overridden.
@@ -162,11 +163,39 @@ Response:
 Requires `messages` (array); missing/wrong type returns `400`. Returns `501`
 if the process was started with `--embedding`.
 
+**Multimodal content parts.** A message's `content` may be an array whose
+parts include `image_url` (and `input_audio`, if the loaded `--mmproj`
+projector supports audio) alongside `text`:
+
+```json
+{"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KG..."}}
+{"type": "image_url", "image_url": "iVBORw0KG..."}
+{"type": "input_audio", "input_audio": {"data": "UklGRg==...", "format": "wav"}}
+```
+
+`image_url.url` (or the bare string form) and `input_audio.data` accept
+only a `data:<mime>;base64,...` URI or a raw base64 string — `http://`,
+`https://`, and `file://` are all rejected with `400`, since jx-engine
+performs no network or filesystem I/O on a request's behalf; inline the
+bytes instead. Before the chat template renders, each such part is decoded
+and replaced by an internal media marker so mtmd tokenizes the rendered text
+and matches markers to decoded buffers in order; the media itself is
+prefilled at slot admission (see
+[`architecture.md`](architecture.md#multimodal-mmproj)). Requests fail with
+`400` when:
+
+- a media part carries no data, or a data: URI is malformed or not base64;
+- the server was not started with `--mmproj` at all;
+- an `image_url` part is sent to a projector without vision support, or an
+  `input_audio` part to one without audio support (`GET /props`'s
+  `modalities` reports which are available);
+- the part's URL uses a rejected scheme (`http://`/`https://`/`file://`).
+
 **Fields read from the request body:**
 
 | Field | Notes |
 |---|---|
-| `messages` | required; parsed via `common_chat_msgs_parse_oaicompat` |
+| `messages` | required; parsed via `common_chat_msgs_parse_oaicompat`; `content` may include `image_url`/`input_audio` parts (above) |
 | `stream` | bool, default `false` |
 | `tools` | array; parsed if non-empty |
 | `tool_choice` | string only (`common_chat_tool_choice_parse_oaicompat`) |

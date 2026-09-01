@@ -3,8 +3,9 @@
 JX Engine is a single-model, OpenAI-compatible model-serving binary built on
 [llama.cpp](https://github.com/ggml-org/llama.cpp) (vendored as a pinned
 source tree, currently `v0.3.0-90-g9723942ad`, distributed as the npm package
-`@jxburros/llama-cpp-source`). One `jx-engine` process loads one GGUF
-model and serves it over HTTP on `127.0.0.1:<port>`.
+`@jxburros/llama-cpp-source`). One `jx-engine` process loads one model
+(GGUF, or a safetensors model converted to GGUF on first load) and serves
+it over HTTP on `127.0.0.1:<port>`.
 
 ## Relationship to JX Runtime
 
@@ -17,7 +18,7 @@ for exactly how the two projects are meant to connect; that mapping is a
 description of the intended contract, not a claim that JX Runtime has an
 adapter for JX Engine today (it does not — see that document's last section).
 
-## Features (v1)
+## Features (v2)
 
 - OpenAI-compatible `/v1/chat/completions`, `/v1/completions`, and
   `/v1/embeddings`, plus `/v1/models`
@@ -29,23 +30,63 @@ adapter for JX Engine today (it does not — see that document's last section).
   parsing and streamed tool-call deltas in chat completions
 - Structured output via GBNF grammar, `json_schema`, or `response_format`
 - Embeddings via `--embedding` mode (pooled, L2-normalized)
-- KV-cache common-prefix reuse (`--cache-reuse`) to avoid re-processing an
-  unchanged prompt prefix
+- **Parallel request slots + continuous batching** (`--parallel`/`-np`): a
+  single engine thread packs one shared `llama_batch` per tick across all
+  slots, so up to `-np N` requests generate concurrently instead of queuing
+  one at a time
+- **Context shift** (`--context-shift`, `--keep`): a generating slot that
+  fills its context drops the oldest non-preserved tokens and keeps going
+  instead of stopping, mirroring `llama-server`
+- **Logprobs** on both `/v1/chat/completions` (`logprobs`/`top_logprobs`,
+  nested `logprobs.content[]` shape) and `/v1/completions` (legacy
+  `logprobs: N`, flat parallel-array shape) — raw model probabilities from
+  the full-vocab softmax, unaffected by grammar/sampler constraints
+- **Reasoning-budget control** (`--reasoning-budget`,
+  `--reasoning-budget-message`, or the per-request `reasoning_budget_tokens`):
+  cap or suppress a thinking model's `<think>...</think>` block
+- **Multimodal input** via `--mmproj` (image, and audio when the projector
+  supports it): `image_url`/`input_audio` content parts as `data:` URIs or
+  raw base64 only — jx-engine never fetches a remote or local resource on a
+  request's behalf
+- **Safetensors models**: a `-m` pointing at a Hugging Face directory (or a
+  `.safetensors` file inside one) is converted to GGUF on first load by
+  jx-engine's own numpy-only converter (`scripts/convert-safetensors.py`,
+  no torch/transformers), cached under `jx-cache/` next to the model (or
+  `--convert-dir`) and reused on later launches
+- KV-cache common-prefix reuse (`--cache-reuse`), per slot, to avoid
+  re-processing an unchanged prompt prefix
 - CPU by default; optional CUDA, Vulkan, Metal, ROCm/HIP, or BLAS
   acceleration selected at build time via CMake options
 - Optional bearer-token auth (`--api-key`) on every endpoint except `/health`
 
-**v1 scope and limits**, stated up front rather than discovered later:
+**v2 scope and limits**, stated up front rather than discovered later:
 
-- One model per process. Running a second model means starting a second
-  `jx-engine` process on a different port.
-- Up to `--parallel`/`-np` requests generate concurrently (real slots +
-  continuous batching, default `1`); requests beyond that queue in FIFO
-  order. The context is divided across the slots, so `-np N` gives each
-  request roughly `n_ctx / N` tokens.
-- GGUF only. No safetensors.
+- One model per process, still. Running a second model means starting a
+  second `jx-engine` process on a different port.
+- `-np N` divides the context N ways (`kv_unified` stays at llama.cpp's
+  default `false`), so more slots means less context per request; an
+  overflowing slot without `--context-shift` simply stops at `n_predict`
+  as before.
+- A multimodal request's media is prefilled through mtmd at slot admission,
+  which runs the vision/audio encoder and its own decode calls inline —
+  this momentarily serializes the batching loop for the duration of that
+  one prefill (see [`docs/architecture.md`](docs/architecture.md)), but
+  other slots' KV and queued requests are otherwise unaffected.
+- `--context-shift` and `--cache-reuse` are force-disabled (with a startup
+  warning) whenever `--mmproj` is loaded — a media chunk's KV positions
+  cannot be partially discarded or prefix-matched token-by-token.
+- Remote/local media URLs (`http://`, `https://`, `file://`) are rejected
+  with `400` by design; only `data:<mime>;base64,...` URIs or bare base64
+  strings are accepted, since jx-engine performs no I/O on a request's
+  behalf.
+- The safetensors converter only handles the standard Hugging Face
+  `LlamaForCausalLM` layout (optionally sharded via
+  `model.safetensors.index.json`) with a byte-level BPE `tokenizer.json`.
+  Anything else — another architecture, a SentencePiece
+  `tokenizer.model`, exotic dtypes — is refused with a clear error rather
+  than silently mishandled.
 
-See [Roadmap](#roadmap) for what is explicitly out of scope for v1.
+See [Roadmap](#roadmap) for what remains genuinely out of scope.
 
 ## Quick Start
 
@@ -133,7 +174,9 @@ and the SSE frame format, is in [`docs/api.md`](docs/api.md).
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-m, --model PATH` | (required) | GGUF model file |
+| `-m, --model PATH` | (required) | GGUF file, or a safetensors model (HF directory or `.safetensors` file) converted to GGUF on first load |
+| `--mmproj PATH` | — | multimodal projector GGUF (enables image, and audio if the projector supports it) |
+| `--convert-dir DIR` | alongside the source model | cache directory for converted safetensors models |
 | `-a, --alias NAME` | file stem | model id reported by the API |
 | `--chat-template NAME` | — | override with a built-in template |
 | `--chat-template-file F` | — | override with a template read from a file |
@@ -157,21 +200,31 @@ and the SSE frame format, is in [`docs/api.md`](docs/api.md).
 | `--cache-reuse N` | `1` | min prefix tokens to reuse from KV cache (`0` disables) |
 | `--context-shift` / `--no-context-shift` | off | drop oldest tokens instead of stopping when a slot's context fills |
 | `--keep N` | `0` | tokens at the front preserved by a context shift (`-1` = whole prompt) |
+| `--reasoning-budget N` | `-1` | thinking-token budget: `-1` unrestricted, `0` suppress thinking, `N > 0` force the end of thinking after `N` tokens |
+| `--reasoning-budget-message MSG` | — | text injected before the forced end-of-thinking tag when the budget runs out |
 | `-v, --verbose` | off | verbose logging |
 | `-h, --help` / `--version` | — | print help / version and exit |
 
-Flags `jx-engine` deliberately does **not** implement or advertise —
-`--mmproj`, `--reasoning-budget` — are absent from both
-the parser and `--help` on purpose (see `src/args.h`'s header comment); this
-matters to JX Runtime's adapter, which probes `--help` to decide what to
-pass. See [`docs/jx-runtime-integration.md`](docs/jx-runtime-integration.md).
+`jx-engine` follows one rule for its CLI surface: a flag it implements is
+always advertised in `--help`, and a flag not in `--help` is never accepted
+by the parser either (see `src/args.h`'s header comment). This matters to
+JX Runtime's adapter, which probes `--help` before ever passing a flag on a
+real launch (`supportsFlag`) rather than assuming a capability exists. As of
+v2 that probe for `--mmproj`, `--context-shift`, `--reasoning-budget`, and
+`--parallel` comes back `true` — all four are real, not placeholders. See
+[`docs/jx-runtime-integration.md`](docs/jx-runtime-integration.md).
 
-## Roadmap (explicitly not in v1)
+## Roadmap (still out of scope)
 
-- Multimodal input / `--mmproj` (vision projectors)
-- Reasoning-budget control (`--reasoning-budget`)
-- Logprobs
-- Safetensors models (GGUF only)
+- Multi-model per process (run a second `jx-engine` process instead)
+- Speculative decoding
+- Audio/image input beyond what the loaded `--mmproj` projector supports;
+  video is off by design (`MTMD_VIDEO=OFF` — it would shell out to `ffmpeg`
+  at runtime, a dependency jx-engine does not take)
+- Fetching remote or local media by URL — only inline `data:`/base64 payloads
+  are accepted, since jx-engine performs no I/O on a request's behalf
+- Safetensors architectures other than HF `LlamaForCausalLM`, and tokenizers
+  other than a byte-level BPE `tokenizer.json` (e.g. SentencePiece)
 
 ## License
 

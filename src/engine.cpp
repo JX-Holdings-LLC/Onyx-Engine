@@ -15,7 +15,12 @@
 
 jx_engine::~jx_engine() {
     if (loop_thread_.joinable()) {
-        stop_ = true;
+        {
+            // must hold q_mutex_ so the store cannot slip between the loop's
+            // predicate check and its wait (lost wakeup -> join hangs)
+            std::lock_guard<std::mutex> lock(q_mutex_);
+            stop_ = true;
+        }
         q_cv_.notify_all();
         loop_thread_.join();
     }
