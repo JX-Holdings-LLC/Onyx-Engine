@@ -16,7 +16,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # ---- pin -------------------------------------------------------------------
-LLAMA_COMMIT="9723942adc51ec2f2b7c9dcc86842934c479b336"
+LLAMA_COMMIT="9723942adc518b43c4b95dc4dce6906903eb5e09"
 LLAMA_VERSION="0.3.0"                 # llama.cpp's own CMake project version
 PKG_NAME="@jxburros/llama-cpp-source"
 PKG_VERSION="${LLAMA_VERSION}-b10711.g${LLAMA_COMMIT:0:9}"
