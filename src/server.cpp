@@ -1,6 +1,5 @@
 #include "server.h"
 
-#include "build-info.h"
 #include "chat.h"
 #include "common.h"
 #include "json-schema-to-grammar.h"
@@ -585,7 +584,7 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
         common_json props = common_json::object();
         props["model_alias"]                 = engine.alias();
         props["chat_template"]               = engine.chat_template_source();
-        props["build_info"]                  = std::string("jx-engine/" JX_ENGINE_VERSION " (") + llama_build_info() + ")";
+        props["build_info"]                  = std::string("jx-engine/" JX_ENGINE_VERSION " (llama.cpp " JX_ENGINE_LLAMA_PIN ")");
         props["n_ctx"]                       = (int64_t) engine.n_ctx();
         props["n_ctx_train"]                 = (int64_t) engine.n_ctx_train();
         props["n_embd"]                      = (int64_t) engine.n_embd();

@@ -56,7 +56,7 @@ Model and build metadata. No request body.
 {
   "model_alias": "my-model",
   "chat_template": "<jinja source or empty string>",
-  "build_info": "jx-engine/0.1.0 (llama.cpp <commit>)",
+  "build_info": "jx-engine/0.2.0 (llama.cpp b10711-9723942ad)",
   "n_ctx": 4096,
   "n_ctx_train": 32768,
   "n_embd": 4096,

@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`cpp-httplib` is now jx-engine's own vendored dependency**
+  ([`third_party/cpp-httplib`](third_party/cpp-httplib), v0.54.1), compiled
+  as the `jx-httplib` target, instead of being reached for inside the
+  vendored llama.cpp tree. `server.cpp` previously included
+  `<llama src>/vendor/cpp-httplib/httplib.h` while the implementation came
+  out of `libllama-common.so`, which links upstream's copy statically and
+  re-exports ~1200 `httplib::*` symbols — so jx-engine's HTTP layer rode on
+  a private implementation detail of `llama-common`, and a llama.cpp bump
+  could break it for reasons unrelated to inference. `jx-engine`'s include
+  paths into the llama.cpp tree are now just `common/` and `tools/mtmd/`.
+  - cpp-httplib's tuning macros (`CPPHTTPLIB_TCP_NODELAY`,
+    `CPPHTTPLIB_LISTEN_BACKLOG`, `CPPHTTPLIB_REQUEST_URI_MAX_LENGTH`,
+    `CPPHTTPLIB_FORM_URL_ENCODED_PAYLOAD_MAX_LENGTH`) are `PUBLIC` on the
+    local target, so the header and the implementation agree. Upstream sets
+    them `PRIVATE`, which left `server.cpp` compiling `httplib::Server` with
+    a different `tcp_nodelay_` initializer than `httplib.cpp` did — an ODR
+    mismatch. It was latent, not live: the effective value came from the
+    out-of-line constructor in `httplib.cpp`, so Nagle was disabled either
+    way.
+  - `jx-httplib` is linked ahead of `llama-common` deliberately; in the other
+    order 15 httplib symbols still resolved to llama.cpp's shared library.
+
+### Fixed
+
+- **`--version` and `/props`'s `build_info` reported jx-engine's own git
+  commit as the llama.cpp build info.** They used llama.cpp's
+  `llama_build_info()`, whose value comes from `cmake/build-info.cmake`
+  running `git rev-parse` in the llama.cpp source directory. In the canonical
+  build that directory is `node_modules/@jxburros/llama-cpp-source`, which
+  has no `.git`, so git walked up into jx-engine's repository: a build at
+  jx-engine commit `c0394c2` reported `b20-c0394c2`. `CMakeLists.txt` now
+  resolves the pin itself (`JX_ENGINE_LLAMA_PIN`) from the npm package's
+  `package.json` version, falling back to git only when the repository's top
+  level is the llama.cpp tree itself, and `unknown` otherwise. `build_info`
+  now reads `jx-engine/0.2.0 (llama.cpp b10711-9723942ad)`, matching the
+  shape `docs/api.md` already documented.
+
 ## [0.2.0] - 2026-09-01
 
 v2 implements all six former roadmap items: real parallel request slots with

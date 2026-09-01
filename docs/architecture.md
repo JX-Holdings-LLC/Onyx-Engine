@@ -362,8 +362,47 @@ tools tree — giving `jx-engine` multimodal projector support without
 building any of upstream's own CLI tools. `MTMD_VIDEO` is forced `OFF`:
 mtmd's video path shells out to an `ffmpeg` binary at runtime, and
 `jx-engine` takes no runtime dependency on external processes.
-`jx-engine`'s include paths pull directly from `<llama src>/common`,
-`<llama src>/tools/mtmd`, `<llama src>/vendor`, and
-`<llama src>/vendor/cpp-httplib` — `cpp-httplib` (the HTTP server used in
-`server.cpp`) is llama.cpp's own vendored copy, not a separate dependency of
-this repository.
+`jx-engine`'s include paths pull from exactly two places in that tree:
+`<llama src>/common` and `<llama src>/tools/mtmd`.
+
+`cpp-httplib` (the HTTP server used in `server.cpp`) is **not** one of them
+any more. It is jx-engine's own vendored copy under
+[`third_party/cpp-httplib`](../third_party/cpp-httplib), compiled here as the
+`jx-httplib` static target. It used to be an include path into
+`<llama src>/vendor/cpp-httplib`, with the implementation coming out of
+`libllama-common.so` — which links upstream's own cpp-httplib statically and
+re-exports ~1200 `httplib::*` symbols. That made jx-engine's HTTP layer
+depend on a private implementation detail of `llama-common`, and it meant the
+tuning macros upstream sets `PRIVATE` on its target (notably
+`CPPHTTPLIB_TCP_NODELAY`, a default member initializer of `httplib::Server`)
+applied to `httplib.cpp` but not to `server.cpp` — an ODR mismatch, latent
+rather than live, since the value that took effect came from the out-of-line
+constructor in `httplib.cpp`. Both go away with a local copy whose macros are
+`PUBLIC`. `jx-httplib` is deliberately listed **first** on the link line,
+ahead of `llama-common`, so no httplib symbol resolves to llama.cpp's shared
+library; see that directory's `README.md`.
+
+### The llama.cpp pin string
+
+`--version` and `/props`'s `build_info` report which llama.cpp the binary was
+built against. This does **not** come from upstream's `llama_build_info()`.
+Upstream's `cmake/build-info.cmake` runs `git rev-parse` with the llama.cpp
+source directory as the working directory; in the canonical build that
+directory is `node_modules/@jxburros/llama-cpp-source`, which has no `.git` of
+its own, so git walks up and finds **jx-engine's** repository instead —
+reporting jx-engine's own commit and commit count as llama.cpp build info
+(before this was fixed, a build at jx-engine commit `c0394c2` reported
+`b20-c0394c2`).
+
+`CMakeLists.txt` resolves the pin itself into `JX_ENGINE_LLAMA_PIN`: from the
+npm package's `package.json` version (`0.3.0-b10711.g9723942ad` →
+`b10711-9723942ad`), which `packaging/make-vendor-package.sh` writes from the
+pinned commit; or, for a git checkout supplied via `-DJX_ENGINE_LLAMA_DIR` or
+`vendor/llama.cpp`, from git — but only after confirming that the repository's
+top level *is* that tree, so a parent repository can never be mistaken for it.
+Failing both, the pin is `unknown`.
+
+The git fallback reports whatever git reports, so a shallow checkout gives a
+low build number (`b1-9723942ad` for a `--depth 1` clone) with the correct
+commit hash. CI builds through the npm package, so the number there is the
+real one.
