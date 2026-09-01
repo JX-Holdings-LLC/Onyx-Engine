@@ -43,6 +43,39 @@
 // URIs and raw base64 into these buffers.
 using jx_media_buffer = std::vector<unsigned char>;
 
+// One candidate token's raw (unmodified-by-sampler) model probability, as a
+// natural log ("logprob"). Used both for the token actually sampled and for
+// the top-N alternatives at that position.
+struct jx_prob_entry {
+    llama_token token   = 0;
+    std::string piece;      // common_token_to_piece(token), special=true
+    float       logprob = 0.0f;
+};
+
+// Per-generated-token logprob record: the sampled token's own raw logprob
+// plus up to `n_probs` top candidates by raw logit, both computed from the
+// full-vocab softmax of the logits row that produced this token (§3 of the
+// v2 API reference: OpenAI semantics report the *raw* model distribution,
+// not the post-sampler-chain one, so a grammar-constrained low-probability
+// pick still reports its true logprob).
+struct jx_token_probs {
+    jx_prob_entry              sampled;
+    std::vector<jx_prob_entry> top;
+};
+
+// Own-code reasoning-budget state machine parameters for one request (see
+// jx_slot::rb_state_t for the runtime state machine). Left default
+// (`enabled = false`) when no budget is in effect (CLI/request budget == -1).
+struct jx_reasoning_budget {
+    bool                      enabled = false;
+    int32_t                   budget  = -1;   // tokens allowed inside the thinking block; 0 = none
+    std::vector<llama_token>  start_tag;      // tokenized thinking-open tag
+    std::vector<llama_token>  end_tag;        // tokenized thinking-close tag (primary/first one)
+    std::vector<llama_token>  forced;         // tokens force-emitted once the budget is exceeded
+                                              // (budget==0: just end_tag; budget>0: message + end_tag)
+    bool                      start_in_prompt = false; // generation prompt itself ends inside thinking
+};
+
 struct jx_gen_params {
     std::vector<llama_token> prompt_tokens;
     int32_t     n_predict = -1;          // -1 = until EOG or context limit
@@ -55,6 +88,16 @@ struct jx_gen_params {
     // marker per buffer, in order) together with the buffers.
     std::string                  prompt_text;
     std::vector<jx_media_buffer> media;
+
+    // logprobs (v2): when `want_logprobs` is set, each generated token gets a
+    // jx_token_probs entry (see jx_gen_result::probs); `n_probs` (0..25) is
+    // how many top-alternative entries to include per token, independent of
+    // whether logprobs are requested at all.
+    bool    want_logprobs = false;
+    int32_t n_probs       = 0;
+
+    // reasoning budget (v2)
+    jx_reasoning_budget reasoning;
 };
 
 enum jx_finish_reason {
@@ -74,11 +117,26 @@ struct jx_gen_result {
     bool             truncated   = false; // context was shifted at least once
     double           t_prompt_ms    = 0;
     double           t_predict_ms   = 0;
+
+    // logprobs (v2): one entry per generated token whose text survived into
+    // `text` (a token trimmed off by a stop sequence has no entry here; a
+    // token withheld by stop-holdback still gets one, in order). Empty
+    // unless the request set `want_logprobs`.
+    std::vector<jx_token_probs> probs;
 };
 
-// Called for each visible piece of generated text. `piece` may be empty when
-// text is being withheld for stop-sequence matching. Return false to cancel.
-using jx_token_cb = std::function<bool(const std::string & piece)>;
+// One piece of generated text handed from the engine loop to the caller,
+// paired with the logprob entries for whichever tokens' text is fully
+// included in `text` (see jx_engine::emit; empty unless `want_logprobs`).
+struct jx_gen_piece {
+    std::string                 text;
+    std::vector<jx_token_probs> probs;
+};
+
+// Called for each visible piece of generated text (and its logprobs, if
+// requested). `text` may be empty when text is being withheld for
+// stop-sequence matching. Return false to cancel.
+using jx_token_cb = std::function<bool(const std::string & text, const std::vector<jx_token_probs> & probs)>;
 
 // One in-flight generation request. Ownership is shared between the HTTP
 // thread blocked in generate() and the engine loop running it.
@@ -87,9 +145,9 @@ struct jx_gen_request {
     common_sampler * smpl = nullptr;      // owned; freed when the request finishes
     bool             wants_pieces = false; // caller passed a token callback
 
-    std::mutex              mu;
-    std::condition_variable cv;
-    std::deque<std::string> pieces;       // engine -> caller (text for the callback)
+    std::mutex               mu;
+    std::condition_variable  cv;
+    std::deque<jx_gen_piece> pieces;      // engine -> caller (text + logprobs for the callback)
     bool                    cancelled = false;   // caller -> engine
     bool                    finished  = false;   // engine -> caller
     jx_gen_result           result;
@@ -104,6 +162,21 @@ struct jx_slot {
         JX_SLOT_IDLE,      // no request
         JX_SLOT_PREFILL,   // still feeding prompt tokens
         JX_SLOT_GENERATE,  // has a sampled token waiting to be decoded
+    };
+
+    // Own-code reasoning-budget state machine (no llama_sampler involved).
+    // IDLE scans generated tokens for the start tag (rolling multi-token
+    // match); COUNTING counts generated tokens and scans for a natural end
+    // tag; once the count reaches the budget, FORCING emits
+    // jx_reasoning_budget::forced one token at a time instead of sampling;
+    // DONE is passthrough forever after (whether reached naturally or via
+    // forcing). OFF means the request has no budget in effect.
+    enum rb_state_t {
+        RB_OFF,
+        RB_IDLE,
+        RB_COUNTING,
+        RB_FORCING,
+        RB_DONE,
     };
 
     llama_seq_id seq_id = 0;
@@ -123,6 +196,21 @@ struct jx_slot {
     uint64_t    t_last_used = 0;             // LRU tick stamp
     int64_t     t_start     = 0;             // us, slot acquired
     int64_t     t_prompt    = 0;             // us, prompt finished
+
+    // logprobs (v2): how many of result.probs have already been handed to
+    // the caller via emit(), and how many bytes of result.text those cover
+    // (== sum of their piece sizes) -- a prob entry is only delivered once
+    // the full extent of its token's text has been sent, same rule stop
+    // holdback uses for text itself.
+    size_t n_probs_sent        = 0;
+    size_t probs_covered_bytes = 0;
+
+    // reasoning budget (v2) -- see rb_state_t above
+    rb_state_t rb_state       = RB_OFF;
+    int32_t    rb_count       = 0;   // tokens generated while COUNTING
+    size_t     rb_forced_idx  = 0;   // next index into jx_reasoning_budget::forced
+    size_t     rb_start_match = 0;   // rolling match progress against start_tag
+    size_t     rb_end_match   = 0;   // rolling match progress against end_tag
 };
 
 class jx_engine {
@@ -188,9 +276,9 @@ private:
     bool decode_batch(llama_batch & batch);   // decode + per-slot sampling
     bool prefill_media(jx_slot & slot);       // mtmd prefill; false if the slot was failed
     void sample_slot(jx_slot & slot, int32_t tok_idx); // sample one token from fresh logits
-    void on_sampled(jx_slot & slot);          // v1 per-token bookkeeping
+    void on_sampled(jx_slot & slot, const jx_token_probs * probs); // per-token bookkeeping
     bool context_shift(jx_slot & slot);       // returns false if it cannot shift
-    void emit(jx_slot & slot, std::string piece);
+    void emit(jx_slot & slot, std::string piece, std::vector<jx_token_probs> probs = {});
     void finish(jx_slot & slot, jx_finish_reason reason, const std::string & error = "");
 
     llama_model *   model_ = nullptr;

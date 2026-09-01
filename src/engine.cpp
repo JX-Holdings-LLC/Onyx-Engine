@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <thread>
 
@@ -207,6 +208,81 @@ static size_t stop_holdback(const std::string & text, const std::vector<std::str
     return hold;
 }
 
+// Raw (unmodified-by-sampler-chain) model probability of `token` at logits
+// row `tok_idx` of the just-decoded batch/view (-1 = the last row), plus the
+// top `n_probs` alternatives -- a numerically-stable single-pass softmax over
+// the FULL vocab (not just the reported top-N), matching OpenAI's
+// logprobs semantics: report the raw distribution even when a grammar or
+// other constraint picked a token that had very low raw probability.
+static jx_token_probs compute_token_probs(llama_context * ctx, const llama_vocab * vocab,
+                                          int32_t tok_idx, llama_token token, int32_t n_probs) {
+    jx_token_probs out;
+
+    const int32_t n_vocab = llama_vocab_n_tokens(vocab);
+    const float * logits  = llama_get_logits_ith(ctx, tok_idx);
+
+    float max_l = -std::numeric_limits<float>::infinity();
+    for (int32_t i = 0; i < n_vocab; i++) {
+        max_l = std::max(max_l, logits[i]);
+    }
+    double sum = 0.0;
+    for (int32_t i = 0; i < n_vocab; i++) {
+        sum += (double) expf(logits[i] - max_l);
+    }
+    const double log_sum = std::log(sum);
+
+    auto logprob_of = [&](llama_token t) -> float {
+        return (float) (((double) logits[t] - (double) max_l) - log_sum);
+    };
+
+    out.sampled.token   = token;
+    out.sampled.piece   = common_token_to_piece(ctx, token);
+    out.sampled.logprob = logprob_of(token);
+
+    const int32_t n_top = std::max<int32_t>(0, std::min(n_probs, n_vocab));
+    if (n_top > 0) {
+        std::vector<int32_t> idx(n_vocab);
+        for (int32_t i = 0; i < n_vocab; i++) {
+            idx[i] = i;
+        }
+        std::partial_sort(idx.begin(), idx.begin() + n_top, idx.end(),
+            [&](int32_t a, int32_t b) { return logits[a] > logits[b]; });
+
+        out.top.reserve((size_t) n_top);
+        for (int32_t i = 0; i < n_top; i++) {
+            jx_prob_entry e;
+            e.token   = (llama_token) idx[(size_t) i];
+            e.piece   = common_token_to_piece(ctx, e.token);
+            e.logprob = logprob_of(e.token);
+            out.top.push_back(std::move(e));
+        }
+    }
+
+    return out;
+}
+
+// Returns (and marks delivered) the prefix of `res.probs`, starting after
+// whatever was already delivered, whose tokens' text lies entirely within
+// the first `slot.n_sent` bytes of `res.text` -- i.e. exactly the prob
+// entries for tokens whose piece has now been fully flushed to the caller.
+// A token held back (in full or in part) by stop-holdback is not included
+// until a later call once the rest of its text has been sent.
+static std::vector<jx_token_probs> collect_delivered_probs(jx_slot & slot, jx_gen_result & res) {
+    std::vector<jx_token_probs> out;
+    size_t covered = slot.probs_covered_bytes;
+    while (slot.n_probs_sent < res.probs.size()) {
+        const size_t next_covered = covered + res.probs[slot.n_probs_sent].sampled.piece.size();
+        if (next_covered > slot.n_sent) {
+            break;
+        }
+        out.push_back(res.probs[slot.n_probs_sent]);
+        covered = next_covered;
+        slot.n_probs_sent++;
+    }
+    slot.probs_covered_bytes = covered;
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // public entry points
 // ---------------------------------------------------------------------------
@@ -242,6 +318,8 @@ jx_gen_result jx_engine::generate(const jx_gen_params & params, const jx_token_c
         }
     }
 
+    req->params.n_probs = std::clamp<int32_t>(req->params.n_probs, 0, 25);
+
     // the sampler is built on the calling thread so that a bad grammar fails
     // the request synchronously, before it ever reaches the engine loop
     try {
@@ -267,13 +345,13 @@ jx_gen_result jx_engine::generate(const jx_gen_params & params, const jx_token_c
     while (true) {
         req->cv.wait(lock, [&] { return !req->pieces.empty() || req->finished; });
         while (!req->pieces.empty()) {
-            std::string piece = std::move(req->pieces.front());
+            jx_gen_piece piece = std::move(req->pieces.front());
             req->pieces.pop_front();
             if (!cb) {
                 continue;
             }
             lock.unlock();
-            const bool keep = cb(piece);
+            const bool keep = cb(piece.text, piece.probs);
             lock.lock();
             if (!keep && !req->cancelled) {
                 req->cancelled = true;
@@ -487,6 +565,19 @@ bool jx_engine::admit_queued() {
         slot.n_sent    = 0;
         slot.t_start   = ggml_time_us();
         slot.t_prompt  = 0;
+
+        slot.n_probs_sent        = 0;
+        slot.probs_covered_bytes = 0;
+
+        if (req->params.reasoning.enabled) {
+            slot.rb_state = req->params.reasoning.start_in_prompt ? jx_slot::RB_COUNTING : jx_slot::RB_IDLE;
+        } else {
+            slot.rb_state = jx_slot::RB_OFF;
+        }
+        slot.rb_count       = 0;
+        slot.rb_forced_idx  = 0;
+        slot.rb_start_match = 0;
+        slot.rb_end_match   = 0;
 
         req->result.n_prompt = (int32_t) slot.prompt.size();
 
@@ -739,17 +830,77 @@ void jx_engine::sample_slot(jx_slot & slot, int32_t tok_idx) {
         }
     }
 
-    const llama_token tok = common_sampler_sample(req.smpl, ctx_, tok_idx);
-    common_sampler_accept(req.smpl, tok, true);
+    // reasoning-budget (v2): own state machine, no llama_sampler involved.
+    // Checked *before* sampling so budget==0 forces on the very first
+    // generated token, and budget==N forces exactly after N counted tokens
+    // (the token that would be the (N+1)th inside the block is forced
+    // instead of sampled).
+    const jx_reasoning_budget & rb = req.params.reasoning;
+    if (slot.rb_state == jx_slot::RB_COUNTING && rb.budget >= 0 && slot.rb_count >= rb.budget) {
+        slot.rb_state      = jx_slot::RB_FORCING;
+        slot.rb_forced_idx = 0;
+    }
+
+    llama_token tok;
+    const bool forcing = slot.rb_state == jx_slot::RB_FORCING && slot.rb_forced_idx < rb.forced.size();
+    if (forcing) {
+        // still "decode" the forced token through the sampler's accept path
+        // so its penalty/repeat/grammar state stays consistent, but it is
+        // not sampled -- all other logits are irrelevant, we already know
+        // what comes next.
+        tok = rb.forced[slot.rb_forced_idx++];
+        common_sampler_accept(req.smpl, tok, true);
+        if (slot.rb_forced_idx >= rb.forced.size()) {
+            slot.rb_state = jx_slot::RB_DONE;
+        }
+    } else {
+        tok = common_sampler_sample(req.smpl, ctx_, tok_idx);
+        common_sampler_accept(req.smpl, tok, true);
+
+        if (slot.rb_state == jx_slot::RB_IDLE && !rb.start_tag.empty()) {
+            // rolling match: a mismatch restarts the match window at 1 if
+            // this token happens to also be the tag's first token
+            if (tok == rb.start_tag[slot.rb_start_match]) {
+                if (++slot.rb_start_match >= rb.start_tag.size()) {
+                    slot.rb_state       = jx_slot::RB_COUNTING;
+                    slot.rb_count       = 0;
+                    slot.rb_start_match = 0;
+                    slot.rb_end_match   = 0;
+                }
+            } else {
+                slot.rb_start_match = (tok == rb.start_tag[0]) ? 1 : 0;
+            }
+        } else if (slot.rb_state == jx_slot::RB_COUNTING) {
+            slot.rb_count++;
+            if (!rb.end_tag.empty()) {
+                if (tok == rb.end_tag[slot.rb_end_match]) {
+                    if (++slot.rb_end_match >= rb.end_tag.size()) {
+                        slot.rb_state = jx_slot::RB_DONE;   // natural close
+                    }
+                } else {
+                    slot.rb_end_match = (tok == rb.end_tag[0]) ? 1 : 0;
+                }
+            }
+        }
+    }
+
     res.n_predicted++;
     slot.sampled = tok;
 
-    on_sampled(slot);
+    jx_token_probs probs;
+    const bool have_probs = req.params.want_logprobs;
+    if (have_probs) {
+        probs = compute_token_probs(ctx_, vocab_, tok_idx, tok, req.params.n_probs);
+    }
+
+    on_sampled(slot, have_probs ? &probs : nullptr);
 }
 
 // EOG / stop-sequence / stop-holdback handling for one freshly sampled token.
-// Mirrors v1's per-token block exactly, per slot.
-void jx_engine::on_sampled(jx_slot & slot) {
+// Mirrors v1's per-token block, extended to keep `result.probs` (and what is
+// delivered to the streaming callback) consistent with the trimmed text a
+// client actually sees.
+void jx_engine::on_sampled(jx_slot & slot, const jx_token_probs * probs) {
     jx_gen_request & req = *slot.req;
     jx_gen_result  & res = req.result;
 
@@ -759,12 +910,29 @@ void jx_engine::on_sampled(jx_slot & slot) {
     }
 
     res.text += common_token_to_piece(ctx_, slot.sampled);
+    if (probs) {
+        res.probs.push_back(*probs);
+    }
 
     for (const auto & stop : req.params.stop) {
         const size_t pos = res.text.find(stop, slot.n_sent > stop.size() ? slot.n_sent - stop.size() : 0);
         if (pos != std::string::npos) {
             res.text.resize(pos);
             res.stopping_word = stop;
+            if (!res.probs.empty()) {
+                // drop any prob entry whose token text lands even partially
+                // beyond the trimmed point, so probs stay 1:1 with the text
+                // the client will see
+                size_t cum  = 0;
+                size_t keep = 0;
+                for (; keep < res.probs.size(); keep++) {
+                    cum += res.probs[keep].sampled.piece.size();
+                    if (cum > pos) {
+                        break;
+                    }
+                }
+                res.probs.resize(keep);
+            }
             finish(slot, JX_FINISH_STOP);
             return;
         }
@@ -775,7 +943,7 @@ void jx_engine::on_sampled(jx_slot & slot) {
         if (res.text.size() - hold > slot.n_sent) {
             std::string piece = res.text.substr(slot.n_sent, res.text.size() - hold - slot.n_sent);
             slot.n_sent += piece.size();
-            emit(slot, std::move(piece));
+            emit(slot, std::move(piece), collect_delivered_probs(slot, res));
         }
     }
 }
@@ -812,11 +980,11 @@ bool jx_engine::context_shift(jx_slot & slot) {
     return true;
 }
 
-void jx_engine::emit(jx_slot & slot, std::string piece) {
+void jx_engine::emit(jx_slot & slot, std::string piece, std::vector<jx_token_probs> probs) {
     jx_gen_request & req = *slot.req;
     {
         std::lock_guard<std::mutex> lock(req.mu);
-        req.pieces.push_back(std::move(piece));
+        req.pieces.push_back(jx_gen_piece{std::move(piece), std::move(probs)});
     }
     req.cv.notify_all();
 }
@@ -837,10 +1005,12 @@ void jx_engine::finish(jx_slot & slot, jx_finish_reason reason, const std::strin
     }
     res.t_predict_ms = (now - slot.t_prompt) / 1000.0;
 
-    // hand over any text withheld for stop-sequence matching
+    // hand over any text withheld for stop-sequence matching, along with
+    // whatever prob entries that final flush now fully covers
     if (req->wants_pieces && res.error.empty() && reason != JX_FINISH_CANCEL && res.text.size() > slot.n_sent) {
-        emit(slot, res.text.substr(slot.n_sent));
+        const size_t old_sent = slot.n_sent;
         slot.n_sent = res.text.size();
+        emit(slot, res.text.substr(old_sent), collect_delivered_probs(slot, res));
     }
 
     if (req->smpl) {
@@ -854,6 +1024,13 @@ void jx_engine::finish(jx_slot & slot, jx_finish_reason reason, const std::strin
     slot.prompt.clear();
     slot.i_batch     = -1;
     slot.n_sent      = 0;
+    slot.n_probs_sent        = 0;
+    slot.probs_covered_bytes = 0;
+    slot.rb_state    = jx_slot::RB_OFF;
+    slot.rb_count    = 0;
+    slot.rb_forced_idx  = 0;
+    slot.rb_start_match = 0;
+    slot.rb_end_match   = 0;
     slot.t_prompt    = 0;
     slot.t_last_used = ++tick_;
 

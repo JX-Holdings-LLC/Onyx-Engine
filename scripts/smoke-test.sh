@@ -15,10 +15,12 @@ PORT="${JX_SMOKE_PORT:-18190}"
 EMB_PORT=$((PORT + 1))
 NP_PORT=$((PORT + 2))
 MM_PORT=$((PORT + 3))
+RB_PORT=$((PORT + 4))
 BASE="http://127.0.0.1:$PORT"
 EMB_BASE="http://127.0.0.1:$EMB_PORT"
 NP_BASE="http://127.0.0.1:$NP_PORT"
 MM_BASE="http://127.0.0.1:$MM_PORT"
+RB_BASE="http://127.0.0.1:$RB_PORT"
 
 PASS=0
 FAIL=0
@@ -67,9 +69,21 @@ echo "== starting multimodal instance on :$MM_PORT"
 "$BIN" -m "$MODEL" --port "$MM_PORT" -c 512 --mmproj "$MMPROJ" --alias tiny-mm > /dev/null 2>&1 &
 PIDS+=($!)
 
+# a deepseek-style template whose generation prompt itself ends inside the
+# thinking block ("...assistant:<think>"), used by the --reasoning-budget
+# tests below; written with printf (not a heredoc) so it carries no trailing
+# newline, which would otherwise land inside the rendered prompt.
+RB_TEMPLATE="$(mktemp)"
+printf '{%% for m in messages %%}{{ m["role"] }}: {{ m["content"] }}\n{%% endfor %%}{%% if add_generation_prompt %%}assistant:<think>{%% endif %%}' > "$RB_TEMPLATE"
+echo "== starting reasoning-budget instance on :$RB_PORT"
+"$BIN" -m "$MODEL" --port "$RB_PORT" -c 512 --alias tiny-rb \
+    --chat-template-file "$RB_TEMPLATE" --reasoning-budget-message " [cut]" > /dev/null 2>&1 &
+PIDS+=($!)
+
 for i in $(seq 1 100); do
     curl -sf "$BASE/health" > /dev/null 2>&1 && curl -sf "$EMB_BASE/health" > /dev/null 2>&1 \
-        && curl -sf "$NP_BASE/health" > /dev/null 2>&1 && curl -sf "$MM_BASE/health" > /dev/null 2>&1 && break
+        && curl -sf "$NP_BASE/health" > /dev/null 2>&1 && curl -sf "$MM_BASE/health" > /dev/null 2>&1 \
+        && curl -sf "$RB_BASE/health" > /dev/null 2>&1 && break
     sleep 0.2
 done
 
@@ -265,6 +279,108 @@ import json,sys
 req = json.loads(sys.argv[1]); req['stream'] = True; print(json.dumps(req))
 " "$IMG_REQ")')
     grep -q '^data: \[DONE\]' <<< \"\$out\" && grep -q '\"finish_reason\":\"length\"' <<< \"\$out\""
+
+echo "== logprobs"
+check "chat logprobs: content[] matches completion_tokens, well-formed entries" bash -c "
+    curl -sf -X POST '$BASE/v1/chat/completions' \
+      -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}],\"max_tokens\":6,\"logprobs\":true,\"top_logprobs\":3}' \
+    | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+content = d[\"choices\"][0][\"logprobs\"][\"content\"]
+assert len(content) == d[\"usage\"][\"completion_tokens\"], content
+for e in content:
+    assert isinstance(e[\"token\"], str)
+    assert e[\"logprob\"] <= 0
+    assert e[\"bytes\"] == list(e[\"token\"].encode(\"utf-8\"))
+    assert len(e[\"top_logprobs\"]) == 3
+    lps = [t[\"logprob\"] for t in e[\"top_logprobs\"]]
+    assert lps == sorted(lps, reverse=True), lps
+    for t in e[\"top_logprobs\"]:
+        assert t[\"bytes\"] == list(t[\"token\"].encode(\"utf-8\"))
+'"
+check "top_logprobs without logprobs is rejected (400)" bash -c "
+    code=\$(curl -s -o /dev/null -w '%{http_code}' -X POST '$BASE/v1/chat/completions' \
+      -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}],\"max_tokens\":4,\"top_logprobs\":3}')
+    [ \"\$code\" = 400 ]"
+check "chat logprobs streaming: frames carry as many entries as completion_tokens" bash -c "
+    curl -sfN -X POST '$BASE/v1/chat/completions' \
+      -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}],\"max_tokens\":6,\"stream\":true,\"logprobs\":true,\"top_logprobs\":2}' \
+    | python3 -c '
+import json, sys
+n = 0
+usage = None
+for line in sys.stdin:
+    line = line.strip()
+    if not line.startswith(\"data: \") or line == \"data: [DONE]\":
+        continue
+    d = json.loads(line[6:])
+    if d.get(\"usage\"):
+        usage = d[\"usage\"]
+    if not d.get(\"choices\"):
+        continue
+    lp = d[\"choices\"][0].get(\"logprobs\")
+    if lp:
+        n += len(lp[\"content\"])
+assert usage is not None
+assert n == usage[\"completion_tokens\"], (n, usage)
+'"
+check "completions legacy logprobs shape" bash -c "
+    curl -sf -X POST '$BASE/v1/completions' -d '{\"prompt\":\"Once upon a time\",\"max_tokens\":6,\"logprobs\":2}' \
+    | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+lp = d[\"choices\"][0][\"logprobs\"]
+n = len(lp[\"tokens\"])
+assert n == d[\"usage\"][\"completion_tokens\"], lp
+assert len(lp[\"token_logprobs\"]) == n
+assert len(lp[\"top_logprobs\"]) == n
+assert len(lp[\"text_offset\"]) == n
+assert lp[\"text_offset\"][0] == 0
+assert \"\".join(lp[\"tokens\"]) == d[\"choices\"][0][\"text\"]
+for tlp in lp[\"top_logprobs\"]:
+    assert len(tlp) == 2
+'"
+
+echo "== reasoning budget (--reasoning-budget)"
+check "--help lists --reasoning-budget" bash -c "'$BIN' --help | grep -q -- --reasoning-budget"
+check "generation prompt renders inside the thinking block" \
+    json_has '"assistant:<think>" == d["prompt"][-len("assistant:<think>"):]' \
+    -X POST "$RB_BASE/apply-template" -d '{"messages":[{"role":"user","content":"Hi"}]}'
+check "reasoning_budget_tokens=4 forces the closing tag with the injected message" bash -c "
+    curl -sf -X POST '$RB_BASE/v1/chat/completions' \
+      -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}],\"max_tokens\":40,\"temperature\":0,\"reasoning_budget_tokens\":4}' \
+    | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+text = json.dumps(d)
+assert \" [cut]\" in text, text
+assert \"</think>\" in text, text
+'"
+check "reasoning_budget_tokens=0 forces immediately with no injected message" bash -c "
+    curl -sf -X POST '$RB_BASE/v1/chat/completions' \
+      -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}],\"max_tokens\":40,\"temperature\":0,\"reasoning_budget_tokens\":0}' \
+    | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+content = d[\"choices\"][0][\"message\"][\"content\"]
+assert \"[cut]\" not in content, content
+assert \"</think>\" in content, content
+# forced immediately: the closing tag must appear at (or extremely near) the
+# very start of the generated text, well before a budget=4 response would see it
+assert content.index(\"</think>\") <= 4, content
+'"
+check "default budget (-1) on the same template does not force" bash -c "
+    curl -sf -X POST '$RB_BASE/v1/chat/completions' \
+      -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}],\"max_tokens\":40,\"temperature\":0}' \
+    | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+text = json.dumps(d)
+assert \"[cut]\" not in text, text
+assert \"</think>\" not in text, text
+'"
+rm -f "$RB_TEMPLATE"
 
 echo
 echo "passed: $PASS, failed: $FAIL"
