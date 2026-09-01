@@ -232,3 +232,7 @@ MIT. See [`LICENSE`](LICENSE). The vendored llama.cpp source
 (`@jxburros/llama-cpp-source`) is its own project, also MIT-licensed,
 copyright the ggml/llama.cpp authors — see its `LICENSE` file under
 `node_modules/@jxburros/llama-cpp-source/` after installing it.
+
+[`third_party/cpp-httplib`](third_party/cpp-httplib) is a verbatim copy of
+[cpp-httplib](https://github.com/yhirose/cpp-httplib) v0.54.1 (MIT, copyright
+Yuji Hirose); its `LICENSE` and provenance notes are in that directory.

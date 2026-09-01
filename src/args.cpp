@@ -1,6 +1,5 @@
 #include "args.h"
 
-#include "build-info.h"
 #include "llama.h"
 
 #include <cstdio>
@@ -22,7 +21,7 @@ static bool parse_int(const char * s, int32_t & out) {
 
 void jx_args_print_version() {
     printf("jx-engine %s\n", JX_ENGINE_VERSION);
-    printf("%s\n", llama_build_info());
+    printf("llama.cpp %s\n", JX_ENGINE_LLAMA_PIN);
 }
 
 void jx_args_print_help() {
