@@ -140,6 +140,33 @@ rule in `CMakeLists.txt` is `RUNTIME DESTINATION bin`). There is no
 `install` rule for headers, libraries, or config files — `jx-engine` is
 shipped as a single self-contained binary.
 
+## Test scripts
+
+Both test scripts run fully offline: every model they need is generated
+locally by a small numpy-only script, so nothing is downloaded from a model
+hub and CI needs no external model access.
+
+| Script | Exercises | Test model generator |
+|---|---|---|
+| `scripts/smoke-test.sh` | CLI `--help`/`--version`, all HTTP endpoints, streaming, parallel slots, context shift, `--mmproj` multimodal chat, logprobs, `--reasoning-budget` | `scripts/make-tiny-model.py` (tiny GGUF, generation + embedding instances), `scripts/make-tiny-mmproj.py` (tiny llava-style projector GGUF) |
+| `scripts/safetensors-test.sh` | `scripts/convert-safetensors.py` directly, then `jx_resolve_model()`'s conversion cache end-to-end through a running `jx-engine` | `scripts/make-tiny-hf-model.py` (tiny HF directory: `config.json` + sharded-or-not `*.safetensors` + a byte-level BPE `tokenizer.json`) |
+
+`scripts/safetensors-test.sh` is standalone (not called from
+`smoke-test.sh` or `npm test`) since it needs `numpy` and exercises a
+separate code path; it SKIPs (exit 0) rather than failing if `numpy` cannot
+be installed, since CI always has network access and runs it for real.
+
+## CI
+
+`.github/workflows/ci.yml` runs on every push to `main`, every pull request,
+and on demand (`workflow_dispatch`), on both `ubuntu-latest` and
+`macos-latest`: it reads the pinned commit straight out of
+`packaging/make-vendor-package.sh`, stages (and caches, keyed on that pin)
+the vendor package, `npm install`s it, builds with `ccache`, then runs
+`scripts/smoke-test.sh` and `scripts/safetensors-test.sh`. There is no
+separate model-download step — the test scripts generate everything they
+need themselves.
+
 ## Version string
 
 `PROJECT_VERSION` (from `project(jx-engine VERSION 0.1.0 ...)`) is baked
@@ -161,7 +188,7 @@ packaging/make-vendor-package.sh [path-to-llama.cpp-checkout]
 
 - **Pin.** The commit, package version, and llama.cpp's own CMake project
   version are hardcoded at the top of the script (currently commit
-  `9723942adc51ec2f2b7c9dcc86842934c479b336`, package version
+  `9723942adc518b43c4b95dc4dce6906903eb5e09`, tag `b10711`, package version
   `0.3.0-b10711.g9723942ad`).
 - **Source.** With an argument, it stages from that local llama.cpp
   checkout. Without one, it downloads the pinned commit's tarball from
@@ -172,7 +199,15 @@ packaging/make-vendor-package.sh [path-to-llama.cpp-checkout]
   `examples/`, `benches/`, `media/`, `pocs/`, `ci/`, `app/`, `conversion/`,
   `requirements/`/`requirements.txt`, and `.git*`/`.devops` removed, plus all
   of `models/` except `ggml-vocab-llama-spm.gguf` (the vocab file
-  `scripts/make-tiny-model.py` reads to build its smoke-test model).
+  `scripts/make-tiny-model.py` reads to build its smoke-test model), plus
+  everything under `tools/` except `tools/mtmd` — `jx-engine` builds exactly
+  one thing out of `tools/` (the `mtmd` library, via `LLAMA_BUILD_MTMD=ON`,
+  which `add_subdirectory()`s `tools/mtmd` directly), so `tools/server`,
+  `tools/cli`, `tools/quantize`, and the rest of upstream's CLI tools are
+  dropped. `tools/mtmd`'s own `CMakeLists.txt` links `vendor::hash`,
+  `vendor::miniaudio`, `vendor::stb`, and `vendor::sheredom`, all of which
+  live under `vendor/` and are kept. This pruning shrinks the published
+  tarball from roughly 9.85 MB to 7.28 MB.
 - **`.gitignore` stripping.** `npm pack` honors any `.gitignore` files it
   finds unless a `.npmignore` is present, and llama.cpp's own `.gitignore`
   would silently drop files the package needs (e.g. `*.gguf`). The script

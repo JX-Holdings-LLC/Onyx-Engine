@@ -2,10 +2,12 @@
 //
 // Flag names deliberately mirror llama-server's flags for the subset we
 // implement, because JX Runtime's llamacpp adapter probes `--help` text to
-// decide which flags a server binary understands. Flags we do not implement
-// (e.g. --mmproj, --reasoning-budget) are intentionally absent from both the
-// parser and the help text so callers never pass them expecting behavior we
-// do not have.
+// decide which flags a server binary understands. A flag appears in the
+// parser and in the --help text together, or not at all — an unimplemented
+// flag must be absent from both so callers never pass it expecting behavior
+// we do not have. v2 added --parallel (real slots), --context-shift, --keep,
+// --reasoning-budget, --reasoning-budget-message, and --mmproj under this
+// rule.
 #pragma once
 
 #include <cstdint>
@@ -30,7 +32,7 @@ struct jx_args {
     int32_t n_gpu_layers    = -1;    // -1 = offload all layers if possible
     int32_t n_threads       = -1;    // -1 = auto
     int32_t n_threads_batch = -1;    // -1 = same as n_threads
-    int32_t n_parallel      = 1;     // accepted for compat; requests are queued
+    int32_t n_parallel      = 1;     // concurrent request slots (continuous batching)
     int32_t flash_attn      = -1;    // -1 auto, 0 off, 1 on
     bool    mlock           = false;
     bool    no_mmap         = false;
@@ -42,6 +44,22 @@ struct jx_args {
     int32_t     cache_reuse  = 1;     // min prefix length to reuse KV cache; 0 disables
     bool        jinja        = true;  // accepted for compat; jinja is always used
     bool        verbose      = false;
+
+    // context shift (v2): drop oldest tokens mid-generation instead of
+    // stopping when the context fills
+    bool    ctx_shift = false;       // --context-shift enables
+    int32_t n_keep    = 0;           // tokens at the front always preserved by a shift; -1 = whole prompt
+
+    // reasoning (v2)
+    int32_t     reasoning_budget = -1;    // -1 = unrestricted, 0 = suppress thinking, N>0 = token budget
+    std::string reasoning_budget_message; // text injected before the forced end-of-thinking tag
+
+    // multimodal (v2)
+    std::string mmproj_path;         // vision/audio projector GGUF (--mmproj)
+
+    // safetensors conversion (v2): where converted GGUF files are cached when
+    // -m points at a safetensors model; empty = alongside the source model
+    std::string convert_dir;
 
     // actions
     bool show_help    = false;

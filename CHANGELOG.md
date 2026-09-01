@@ -6,6 +6,126 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-01
+
+v2 implements all six former roadmap items: real parallel request slots with
+continuous batching, context shift, logprobs, reasoning-budget control,
+multimodal input via `--mmproj`, and safetensors model support.
+
+### Added
+
+- **Parallel request slots + continuous batching.** `jx_engine` now runs a
+  dedicated batching-loop thread over `--parallel`/`-np` slots sharing one
+  `llama_context` (slot `i` = llama.cpp sequence id `i`, per-slot context
+  budget from `llama_n_ctx_seq`): each tick packs one next-token row per
+  generating slot plus prompt chunks for prefilling slots into a single
+  shared `llama_batch`, decodes it (in `n_batch`-sized views, halving and
+  retrying on `llama_decode() == 1`), and samples each slot from its own
+  `common_sampler` at its own logits row. Requests beyond the slot count
+  queue FIFO; a stalled/slow client only backs up its own request. The v1
+  KV-prefix-reuse contract (longest-common-prefix match, `--cache-reuse`
+  minimum, `timings.cache_n`) is preserved per slot.
+- **Context shift** (`--context-shift`/`--no-context-shift`, `--keep N`): a
+  generating slot that would otherwise stop at its per-slot context limit
+  instead drops `(n_left)/2` tokens after the preserved `--keep` prefix
+  (`llama_memory_seq_rm` + `llama_memory_seq_add`) and keeps generating.
+  Off by default (preserves v1's stop-at-limit behavior); force-disabled
+  with a warning if the context's memory layout cannot shift (e.g.
+  sliding-window attention) or if `--mmproj` is loaded.
+- **Logprobs** on both endpoints, computed in-engine from the raw model
+  distribution (`llama_get_logits_ith` at the slot's sampled row, full-vocab
+  softmax, top-N via `std::partial_sort`) — unaffected by
+  grammar/sampler-chain constraints, matching OpenAI semantics.
+  `/v1/chat/completions` accepts `logprobs`/`top_logprobs` and returns the
+  modern nested `logprobs.content[]` shape (streaming frames carry logprobs
+  independently of the parsed-message delta diffing); `/v1/completions`
+  accepts the legacy `logprobs: N` form and returns the flat
+  `tokens`/`token_logprobs`/`top_logprobs`/`text_offset` shape. Streamed
+  entries are released in lockstep with the existing stop-holdback
+  byte-accounting rule; a token trimmed off by a stop sequence gets no
+  entry.
+- **Reasoning-budget control** (`--reasoning-budget`,
+  `--reasoning-budget-message`, per-request `reasoning_budget_tokens`): a
+  per-slot state machine (`jx_slot::rb_state_t`) in the engine loop, not a
+  llama.cpp sampler feature — rolling-matches the chat template's own
+  thinking tags (falling back to `<think>`/`</think>`), counts generated
+  tokens once inside the block, and force-emits
+  `--reasoning-budget-message` (if set) plus the closing tag once the
+  budget is spent (budget `0`: closing tag only, immediately). Handles
+  deepseek-style templates whose rendered generation prompt already opens
+  the thinking block.
+- **Multimodal input via `--mmproj`.** `jx_engine` loads an `mtmd_context`
+  (`mtmd_init_from_file`) when `--mmproj` is passed; `GET /props`'s
+  `modalities` now reports real vision/audio support. Chat requests accept
+  `image_url` (and `input_audio`, projector permitting) content parts as
+  `data:` URIs or raw base64 only — `http://`/`https://`/`file://` are
+  rejected with `400` by design, since `jx-engine` performs no network or
+  filesystem I/O on a request's behalf. Media parts are rewritten to mtmd
+  marker text before the chat template renders, then prefilled through
+  mtmd at slot admission (running the vision/audio encoder and its own
+  `llama_decode` calls inline, tracking position from mtmd's out-param for
+  M-RoPE correctness) — this momentarily serializes the batching loop for
+  that one slot's prefill. Loading a projector force-disables
+  `--cache-reuse` and `--context-shift` process-wide, with a startup
+  warning: a media chunk's KV positions can be neither prefix-matched nor
+  partially discarded. `CMakeLists.txt` adds `LLAMA_BUILD_MTMD=ON`
+  (building `tools/mtmd` as a standalone library without the rest of the
+  `tools/` tree) and forces `MTMD_VIDEO=OFF` (mtmd's video path shells out
+  to `ffmpeg` at runtime; `jx-engine` takes no such dependency).
+  `scripts/make-tiny-mmproj.py` generates a tiny llava-style projector for
+  offline testing.
+- **Safetensors model support.** `-m` now also accepts a Hugging Face model
+  directory (or a `.safetensors` file inside one); `src/convert.{h,cpp}`
+  adds `jx_resolve_model()`, called from `main.cpp` before `jx_engine::load`:
+  GGUF passthrough, safetensors detection, conversion via
+  `scripts/convert-safetensors.py`, and mtime-based cache reuse under
+  `<model dir>/jx-cache/` (or `--convert-dir`). `--convert-dir DIR`
+  configures the cache location. `scripts/convert-safetensors.py` converts
+  the standard HF `LlamaForCausalLM` layout (optionally sharded via
+  `model.safetensors.index.json`) with a byte-level BPE `tokenizer.json`,
+  using only `python3` + `numpy` — no `torch`/`transformers`, nothing
+  imported from the vendored llama.cpp tree; anything else (a different
+  architecture, a SentencePiece `tokenizer.model`, an unhandled dtype) is
+  refused with a specific error. `scripts/make-tiny-hf-model.py` generates
+  a tiny HF model for tests; `scripts/safetensors-test.sh` is the
+  standalone end-to-end test (generate → convert → serve, `numpy`-optional
+  with a graceful skip).
+- **CI** (`.github/workflows/ci.yml`): builds against the pinned vendor
+  source and runs the full offline test suite (`scripts/smoke-test.sh`,
+  `scripts/safetensors-test.sh`) on `ubuntu-latest` and `macos-latest`, on
+  every push to `main`, every pull request, and on demand. The vendor
+  package is staged once and cached by pin; all test models are generated
+  locally, so CI downloads no models.
+- Full v2 CLI flag surface defined up front in `src/args.cpp`/`--help`,
+  matching the parser: `--mmproj`, `--convert-dir`, `--context-shift`/
+  `--no-context-shift`, `--keep`, `--reasoning-budget`,
+  `--reasoning-budget-message`; `--parallel`/`-np` now allocates real
+  concurrent slots instead of being accepted-but-ignored.
+
+### Fixed
+
+- Corrected a corrupted `LLAMA_COMMIT` pin in
+  `packaging/make-vendor-package.sh`: only the first 12 hex characters of
+  the recorded commit matched a real llama.cpp commit. Repinned to the full
+  commit for tag `b10711`
+  (`9723942adc518b43c4b95dc4dce6906903eb5e09`), so the vendor package can
+  actually be staged from upstream.
+
+### Changed
+
+- `packaging/make-vendor-package.sh` now also prunes everything under
+  `tools/` except `tools/mtmd` (the one thing `jx-engine` builds out of that
+  tree, via `LLAMA_BUILD_MTMD=ON`) — upstream's own CLI tools
+  (`tools/server`, `tools/cli`, `tools/quantize`, etc.) are never configured
+  and were dead weight in the tarball; this shrinks it from roughly 9.85 MB
+  to 7.28 MB. `tools/mtmd`'s `vendor::hash`/`vendor::miniaudio`/
+  `vendor::stb`/`vendor::sheredom` link dependencies (all under `vendor/`)
+  are kept.
+- `CMakeLists.txt`'s `project()` version bumped `0.1.0` → `0.2.0`;
+  `package.json`'s version bumped to match.
+
+## [0.1.0] - 2026-09-01
+
 ### Changed
 
 - Replaced the `vendor/llama.cpp` git submodule with the npm package
@@ -28,8 +148,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 
 - `packaging/make-vendor-package.sh`: the maintainer-only script that stages
-  the pinned llama.cpp commit (`9723942adc51ec2f2b7c9dcc86842934c479b336`,
-  package version `0.3.0-b10711.g9723942ad`), prunes
+  the pinned llama.cpp commit (`9723942adc51ec2f2b7c9dcc86842934c479b336` as
+  recorded at the time — the tail was corrupted; corrected in 0.2.0, see
+  below — package version `0.3.0-b10711.g9723942ad`), prunes
   docs/tests/examples/benches/media/pocs/ci/app/conversion/requirements and
   all of `models/` except `ggml-vocab-llama-spm.gguf`, strips `.gitignore`
   files (`npm pack` would otherwise honor them and drop needed files),

@@ -67,6 +67,77 @@ static common_json timings_json(const jx_gen_result & r) {
     return t;
 }
 
+// ---------------------------------------------------------------------------
+// logprobs (v2)
+// ---------------------------------------------------------------------------
+
+static common_json bytes_json(const std::string & s) {
+    common_json arr = common_json::array();
+    for (unsigned char c : s) {
+        arr.push_back((int64_t) c);
+    }
+    return arr;
+}
+
+// OpenAI chat-completions logprobs.content[] entry shape, used by both
+// /v1/chat/completions (non-streaming and streaming).
+static common_json chat_logprob_entry(const jx_token_probs & p) {
+    common_json e = common_json::object();
+    e["token"]   = p.sampled.piece;
+    e["logprob"] = p.sampled.logprob;
+    e["bytes"]   = bytes_json(p.sampled.piece);
+    common_json top = common_json::array();
+    for (const auto & t : p.top) {
+        common_json te = common_json::object();
+        te["token"]   = t.piece;
+        te["logprob"] = t.logprob;
+        te["bytes"]   = bytes_json(t.piece);
+        top.push_back(te);
+    }
+    e["top_logprobs"] = top;
+    return e;
+}
+
+static common_json chat_logprobs_content(const std::vector<jx_token_probs> & probs) {
+    common_json content = common_json::array();
+    for (const auto & p : probs) {
+        content.push_back(chat_logprob_entry(p));
+    }
+    common_json out = common_json::object();
+    out["content"] = content;
+    return out;
+}
+
+// Legacy OpenAI /v1/completions logprobs shape: flat parallel arrays, plus
+// `text_offset` relative to the start of the whole returned completion text
+// -- `offset` is threaded through by the caller so a streaming response's
+// per-frame call keeps accumulating across frames.
+static common_json legacy_logprobs(const std::vector<jx_token_probs> & probs, size_t & offset) {
+    common_json tokens         = common_json::array();
+    common_json token_logprobs = common_json::array();
+    common_json top_logprobs   = common_json::array();
+    common_json text_offset    = common_json::array();
+
+    for (const auto & p : probs) {
+        tokens.push_back(p.sampled.piece);
+        token_logprobs.push_back(p.sampled.logprob);
+        common_json top = common_json::object();
+        for (const auto & t : p.top) {
+            top[t.piece] = t.logprob;
+        }
+        top_logprobs.push_back(top);
+        text_offset.push_back((int64_t) offset);
+        offset += p.sampled.piece.size();
+    }
+
+    common_json out = common_json::object();
+    out["tokens"]         = tokens;
+    out["token_logprobs"] = token_logprobs;
+    out["top_logprobs"]   = top_logprobs;
+    out["text_offset"]    = text_offset;
+    return out;
+}
+
 // OpenAI delta object for one parsed-message diff (mirrors llama-server)
 static common_json diff_to_delta(const common_chat_msg_diff & diff) {
     common_json delta = common_json::object();
@@ -98,6 +169,135 @@ static common_json diff_to_delta(const common_chat_msg_diff & diff) {
         delta["tool_calls"] = arr;
     }
     return delta;
+}
+
+// ---------------------------------------------------------------------------
+// multimodal content parts
+// ---------------------------------------------------------------------------
+
+// Minimal base64 decoder (same shape as llama-server's). Stops at the first
+// character that is neither base64 nor padding.
+static jx_media_buffer base64_decode(const std::string & encoded) {
+    static const std::string chars =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    jx_media_buffer out;
+    uint8_t quad[4];
+    int n = 0;
+
+    for (char c : encoded) {
+        const size_t idx = chars.find(c);
+        if (idx == std::string::npos) {
+            break;   // '=' padding, whitespace or garbage: stop here
+        }
+        quad[n++] = (uint8_t) idx;
+        if (n == 4) {
+            out.push_back((unsigned char) ((quad[0] << 2) | (quad[1] >> 4)));
+            out.push_back((unsigned char) (((quad[1] & 0x0f) << 4) | (quad[2] >> 2)));
+            out.push_back((unsigned char) (((quad[2] & 0x03) << 6) | quad[3]));
+            n = 0;
+        }
+    }
+    for (int i = n; i < 4; i++) {
+        quad[i] = 0;
+    }
+    if (n > 1) {
+        out.push_back((unsigned char) ((quad[0] << 2) | (quad[1] >> 4)));
+    }
+    if (n > 2) {
+        out.push_back((unsigned char) (((quad[1] & 0x0f) << 4) | (quad[2] >> 2)));
+    }
+    return out;
+}
+
+// jx-engine performs no network or filesystem I/O on behalf of a request, so a
+// media payload can never be a location the server would have to go fetch.
+// Checked before any capability check: this holds whatever projector is loaded.
+static void reject_media_url(const std::string & url, const char * what) {
+    for (const char * scheme : {"http://", "https://", "file://"}) {
+        if (url.rfind(scheme, 0) == 0) {
+            throw std::runtime_error(std::string(scheme) + " " + what +
+                                     " URLs are not supported: jx-engine does not fetch remote or local "
+                                     "resources. Inline the data as a 'data:<mime>;base64,...' URI or a "
+                                     "bare base64 string.");
+        }
+    }
+}
+
+// Resolves one media payload to raw file bytes: a data: URI or bare base64.
+static jx_media_buffer decode_media_payload(const std::string & url, const char * what) {
+    std::string payload = url;
+    if (url.rfind("data:", 0) == 0) {
+        const size_t comma = url.find(',');
+        if (comma == std::string::npos) {
+            throw std::runtime_error("malformed data: URI (no comma separating the payload)");
+        }
+        const std::string header = url.substr(0, comma);
+        if (header.size() < 6 || header.compare(header.size() - 6, 6, "base64") != 0) {
+            throw std::runtime_error("data: URI must be base64 encoded");
+        }
+        payload = url.substr(comma + 1);
+    }
+
+    jx_media_buffer data = base64_decode(payload);
+    if (data.empty()) {
+        throw std::runtime_error(std::string("could not decode ") + what + " data (expected base64)");
+    }
+    return data;
+}
+
+// Rewrites the OpenAI content-part arrays in `messages` in place: every
+// image_url / input_audio part is decoded into `out_media` and replaced by a
+// media_marker part carrying the mtmd marker text, so the chat template
+// renders the marker exactly where the media was and mtmd_tokenize matches
+// markers to buffers in order. Throws (-> 400) on anything unacceptable.
+static void extract_media(common_json & messages, const jx_engine & engine,
+                          std::vector<jx_media_buffer> & out_media) {
+    const std::string marker = engine.media_marker();
+
+    for (auto & msg : messages) {
+        if (!msg.is_object() || !msg.contains("content") || !msg.at("content").is_array()) {
+            continue;
+        }
+        for (auto & part : msg.at("content")) {
+            if (!part.is_object()) {
+                continue;
+            }
+            const std::string type = part.value<std::string>("type", "");
+            if (type != "image_url" && type != "input_audio") {
+                continue;
+            }
+
+            const bool  is_image = type == "image_url";
+            const char * what    = is_image ? "image" : "audio";
+
+            std::string payload;
+            if (is_image) {
+                const common_json & iu = part.at("image_url");
+                payload = iu.is_string() ? iu.get<std::string>() : iu.value<std::string>("url", "");
+            } else {
+                const common_json & ia = part.at("input_audio");
+                payload = ia.is_string() ? ia.get<std::string>() : ia.value<std::string>("data", "");
+            }
+            if (payload.empty()) {
+                throw std::runtime_error(std::string("'") + type + "' part carries no data");
+            }
+            reject_media_url(payload, what);
+
+            if (!engine.has_mmproj()) {
+                throw std::runtime_error("multimodal input requires a projector; start jx-engine with --mmproj");
+            }
+            if (is_image && !engine.supports_vision()) {
+                throw std::runtime_error("the loaded projector (--mmproj) does not support image input");
+            }
+            if (!is_image && !engine.supports_audio()) {
+                throw std::runtime_error("the loaded projector (--mmproj) does not support audio input");
+            }
+
+            out_media.push_back(decode_media_payload(payload, what));
+            part = common_json{{"type", "media_marker"}, {"text", marker}};
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +389,52 @@ static void apply_grammar(common_params_sampling &   sparams,
     }
 }
 
+// Builds the engine-side reasoning-budget config for one chat request (v2).
+// `cp` is the already-applied common_chat_params for this request, needed
+// for the template's own thinking tags (falling back to "<think>"/"</think>"
+// when the template doesn't expose any, per the v2 API reference §4) and for
+// the rendered prompt text (to detect a deepseek-style template whose
+// generation prompt already ends inside the thinking block).
+static jx_reasoning_budget build_reasoning_budget(const common_json & body, const jx_args & args,
+                                                  const common_chat_params & cp, const jx_engine & engine) {
+    jx_reasoning_budget rb;
+
+    int32_t budget = args.reasoning_budget;
+    if (body.contains("reasoning_budget_tokens") && !body.at("reasoning_budget_tokens").is_null()) {
+        budget = body.at("reasoning_budget_tokens").get<int32_t>();
+    }
+    if (budget < 0) {
+        return rb;   // -1 (or below): unrestricted, feature stays inert
+    }
+
+    const std::string start_tag = (cp.supports_thinking && !cp.thinking_start_tag.empty())
+        ? cp.thinking_start_tag : std::string("<think>");
+    const std::string end_tag = (cp.supports_thinking && !cp.thinking_end_tags.empty())
+        ? cp.thinking_end_tags[0] : std::string("</think>");
+
+    rb.enabled   = true;
+    rb.budget    = budget;
+    rb.start_tag = engine.tokenize(start_tag, /* add_special */ false, /* parse_special */ true);
+    rb.end_tag   = engine.tokenize(end_tag,   /* add_special */ false, /* parse_special */ true);
+
+    // budget 0 means "suppress thinking entirely": force straight to the
+    // closing tag with no injected message. budget > 0 injects the
+    // configured message before the closing tag once the budget is spent.
+    if (budget > 0 && !args.reasoning_budget_message.empty()) {
+        rb.forced = engine.tokenize(args.reasoning_budget_message, false, true);
+    }
+    rb.forced.insert(rb.forced.end(), rb.end_tag.begin(), rb.end_tag.end());
+
+    // deepseek-style templates render a generation prompt that already ends
+    // with the start tag (e.g. "...Assistant:<think>"); detect that
+    // textually rather than by token match, since prompt-context tokenization
+    // of the tag can differ from tokenizing it standalone.
+    rb.start_in_prompt = cp.prompt.size() >= start_tag.size() &&
+        cp.prompt.compare(cp.prompt.size() - start_tag.size(), start_tag.size(), start_tag) == 0;
+
+    return rb;
+}
+
 // builds template inputs shared by /v1/chat/completions and /apply-template
 static common_chat_templates_inputs parse_chat_inputs(const common_json & body) {
     common_chat_templates_inputs inputs;
@@ -250,7 +496,8 @@ struct chat_stream_state {
     common_chat_msg           prev_msg;
 };
 
-static common_json make_chat_chunk(const chat_stream_state & st, common_json delta, const char * finish_reason) {
+static common_json make_chat_chunk(const chat_stream_state & st, common_json delta, const char * finish_reason,
+                                   common_json logprobs = nullptr) {
     common_json choice = common_json::object();
     choice["index"] = 0;
     choice["delta"] = delta;
@@ -259,6 +506,7 @@ static common_json make_chat_chunk(const chat_stream_state & st, common_json del
     } else {
         choice["finish_reason"] = nullptr;
     }
+    choice["logprobs"] = logprobs.is_null() ? common_json(nullptr) : logprobs;
     common_json choices = common_json::array();
     choices.push_back(choice);
 
@@ -331,8 +579,8 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
         defaults["n_ctx"] = (int64_t) engine.n_ctx();
 
         common_json modalities = common_json::object();
-        modalities["vision"] = false;
-        modalities["audio"]  = false;
+        modalities["vision"] = engine.supports_vision();
+        modalities["audio"]  = engine.supports_audio();
 
         common_json props = common_json::object();
         props["model_alias"]                 = engine.alias();
@@ -420,7 +668,7 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
     // ---- chat completions ------------------------------------------------
 
     svr.Post("/v1/chat/completions", [&](const httplib::Request & req, httplib::Response & res) {
-        const common_json body = common_json::parse(req.body);
+        common_json body = common_json::parse(req.body);
         if (!body.contains("messages") || !body.at("messages").is_array()) {
             send_error(res, 400, "missing or invalid 'messages'", "invalid_request_error");
             return;
@@ -430,7 +678,35 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
             return;
         }
 
+        // decode any image_url / input_audio parts and swap them for mtmd
+        // markers before the template renders the prompt
+        std::vector<jx_media_buffer> media;
+        try {
+            extract_media(body.at("messages"), engine, media);
+        } catch (const std::exception & e) {
+            send_error(res, 400, e.what(), "invalid_request_error");
+            return;
+        }
+
         const bool stream = body.value<bool>("stream", false);
+
+        // logprobs (v2): logprobs:true + top_logprobs:N (OpenAI chat shape).
+        // top_logprobs without logprobs=true is a hard error, matching
+        // llama.cpp's own oaicompat parsing.
+        const bool logprobs_requested = body.value<bool>("logprobs", false);
+        const bool has_top_logprobs   = body.contains("top_logprobs") && !body.at("top_logprobs").is_null();
+        if (has_top_logprobs && !logprobs_requested) {
+            send_error(res, 400, "top_logprobs requires logprobs to be set to true", "invalid_request_error");
+            return;
+        }
+        int32_t top_logprobs = 0;
+        if (has_top_logprobs) {
+            top_logprobs = body.at("top_logprobs").get<int32_t>();
+            if (top_logprobs < 0 || top_logprobs > 20) {
+                send_error(res, 400, "top_logprobs must be between 0 and 20", "invalid_request_error");
+                return;
+            }
+        }
 
         common_chat_templates_inputs inputs;
         common_chat_params           cp;
@@ -443,7 +719,17 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
         }
 
         jx_gen_params gp;
-        gp.prompt_tokens = engine.tokenize(cp.prompt, /* add_special */ true, /* parse_special */ true);
+        gp.want_logprobs = logprobs_requested;
+        gp.n_probs       = top_logprobs;
+        gp.reasoning     = build_reasoning_budget(body, args, cp, engine);
+        if (media.empty()) {
+            gp.prompt_tokens = engine.tokenize(cp.prompt, /* add_special */ true, /* parse_special */ true);
+        } else {
+            // mtmd tokenizes the rendered text itself, splitting it on the
+            // markers it now contains
+            gp.prompt_text = cp.prompt;
+            gp.media       = std::move(media);
+        }
         gp.n_predict     = parse_max_tokens(body);
         gp.stop          = parse_stop(body);
         for (const auto & s : cp.additional_stops) {
@@ -490,6 +776,7 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
             choice["index"]         = 0;
             choice["message"]       = message;
             choice["finish_reason"] = finish_reason_str(r, !msg.tool_calls.empty());
+            choice["logprobs"]      = gp.want_logprobs ? chat_logprobs_content(r.probs) : common_json(nullptr);
             common_json choices = common_json::array();
             choices.push_back(choice);
 
@@ -527,7 +814,19 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
                 }
             }
 
-            auto emit_piece = [&](const std::string & piece) -> bool {
+            auto emit_piece = [&](const std::string & piece, const std::vector<jx_token_probs> & probs) -> bool {
+                // logprobs travel independently of the parsed-message delta
+                // diffing below: token/piece alignment with tool-call deltas
+                // is meaningless once the parser has reshaped the text, so
+                // (matching that OpenAI itself does not tie the two
+                // together) each piece's logprobs go out as their own frame,
+                // with an empty delta, the moment that piece's tokens exist.
+                if (gp.want_logprobs && !probs.empty()) {
+                    if (!sse_write(sink, make_chat_chunk(*st, common_json::object(), nullptr, chat_logprobs_content(probs)))) {
+                        return false;
+                    }
+                }
+
                 st->accumulated += piece;
                 std::vector<common_chat_msg_diff> diffs;
                 try {
@@ -643,6 +942,19 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
         gp.stop      = parse_stop(body);
         gp.sampling  = parse_sampling(body, args.seed);
 
+        // logprobs (v2, legacy OpenAI /v1/completions form): an integer N,
+        // 0..20, meaning "report the top N alternatives per token" (the
+        // sampled token's own logprob is always included once requested).
+        if (body.contains("logprobs") && !body.at("logprobs").is_null()) {
+            const int32_t n = body.at("logprobs").get<int32_t>();
+            if (n < 0 || n > 20) {
+                send_error(res, 400, "logprobs must be between 0 and 20", "invalid_request_error");
+                return;
+            }
+            gp.want_logprobs = true;
+            gp.n_probs       = n;
+        }
+
         if (body.contains("grammar") && body.at("grammar").is_string()) {
             gp.sampling.grammar = common_grammar(COMMON_GRAMMAR_TYPE_USER, body.at("grammar").get<std::string>());
         } else if (body.contains("json_schema")) {
@@ -655,7 +967,8 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
         const std::time_t created    = std::time(nullptr);
         const std::string model      = engine.alias();
 
-        auto make_cmpl_payload = [request_id, created, model](const std::string & text, const char * finish) {
+        auto make_cmpl_payload = [request_id, created, model](const std::string & text, const char * finish,
+                                                              common_json logprobs = nullptr) {
             common_json choice = common_json::object();
             choice["index"] = 0;
             choice["text"]  = text;
@@ -664,6 +977,7 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
             } else {
                 choice["finish_reason"] = nullptr;
             }
+            choice["logprobs"] = logprobs.is_null() ? common_json(nullptr) : logprobs;
             common_json choices = common_json::array();
             choices.push_back(choice);
 
@@ -682,7 +996,11 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
                 send_error(res, 500, r.error, "server_error");
                 return;
             }
-            common_json out = make_cmpl_payload(r.text, finish_reason_str(r, false).c_str());
+            common_json out = make_cmpl_payload(r.text, finish_reason_str(r, false).c_str(),
+                                                gp.want_logprobs ? [&] {
+                                                    size_t offset = 0;
+                                                    return legacy_logprobs(r.probs, offset);
+                                                }() : common_json(nullptr));
             out["usage"]   = usage_json(r);
             out["timings"] = timings_json(r);
             res.set_content(out.dump_safe(), "application/json; charset=utf-8");
@@ -694,11 +1012,14 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
                 return false;
             }
 
-            auto emit_piece = [&](const std::string & piece) -> bool {
-                if (piece.empty()) {
+            auto lp_offset = std::make_shared<size_t>(0);
+            auto emit_piece = [&, lp_offset](const std::string & piece, const std::vector<jx_token_probs> & probs) -> bool {
+                if (piece.empty() && probs.empty()) {
                     return sink.is_writable();
                 }
-                return sse_write(sink, make_cmpl_payload(piece, nullptr));
+                common_json payload = make_cmpl_payload(piece, nullptr,
+                    gp.want_logprobs && !probs.empty() ? legacy_logprobs(probs, *lp_offset) : common_json(nullptr));
+                return sse_write(sink, payload);
             };
 
             jx_gen_result r = engine.generate(gp, emit_piece);

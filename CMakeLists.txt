@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(jx-engine
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION "JX Engine - local model serving binary for JX Runtime"
     LANGUAGES C CXX
 )
@@ -57,6 +57,14 @@ set(LLAMA_BUILD_APP      OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_COMMON   ON  CACHE BOOL "" FORCE)
 set(LLAMA_CURL           OFF CACHE BOOL "" FORCE)
 
+# Multimodal projector support (--mmproj). LLAMA_BUILD_MTMD is upstream's
+# escape hatch for building tools/mtmd as a standalone library without the
+# rest of the tools/ tree (which stays off above). MTMD_VIDEO is forced off:
+# it shells out to an ffmpeg binary at runtime, and jx-engine takes no
+# runtime dependency on external processes.
+set(LLAMA_BUILD_MTMD     ON  CACHE BOOL "" FORCE)
+set(MTMD_VIDEO           OFF CACHE BOOL "" FORCE)
+
 set(JX_ENGINE_LLAMA_DIR "" CACHE PATH "Path to the llama.cpp source tree (overrides auto-detection)")
 
 if (JX_ENGINE_LLAMA_DIR)
@@ -83,6 +91,7 @@ add_subdirectory(${JX_LLAMA_SRC} ${CMAKE_BINARY_DIR}/llama.cpp)
 add_executable(jx-engine
     src/main.cpp
     src/args.cpp
+    src/convert.cpp
     src/engine.cpp
     src/server.cpp
 )
@@ -93,11 +102,12 @@ target_compile_definitions(jx-engine PRIVATE
 
 target_include_directories(jx-engine PRIVATE
     ${JX_LLAMA_SRC}/common
+    ${JX_LLAMA_SRC}/tools/mtmd
     ${JX_LLAMA_SRC}/vendor
     ${JX_LLAMA_SRC}/vendor/cpp-httplib
 )
 
 find_package(Threads REQUIRED)
-target_link_libraries(jx-engine PRIVATE llama-common llama Threads::Threads)
+target_link_libraries(jx-engine PRIVATE llama-common llama mtmd Threads::Threads)
 
 install(TARGETS jx-engine RUNTIME DESTINATION bin)

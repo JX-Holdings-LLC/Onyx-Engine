@@ -74,8 +74,9 @@ Notes:
   `default_generation_settings` — both are the same value
   (`jx_engine::n_ctx()`, the actual context size the running context was
   created with, from `llama_n_ctx`).
-- `modalities.vision`/`modalities.audio` are hardcoded `false` in v1
-  (multimodal is not implemented — see the README roadmap).
+- `modalities.vision`/`modalities.audio` reflect the loaded `--mmproj`
+  projector's real capabilities (`mtmd_support_vision`/`mtmd_support_audio`)
+  — both `false` when no projector is loaded.
 - `chat_template` is the chat template source llama.cpp resolved
   (`common_chat_templates_source`), which can be an empty string if the
   model carries no template and none was overridden.
@@ -162,11 +163,39 @@ Response:
 Requires `messages` (array); missing/wrong type returns `400`. Returns `501`
 if the process was started with `--embedding`.
 
+**Multimodal content parts.** A message's `content` may be an array whose
+parts include `image_url` (and `input_audio`, if the loaded `--mmproj`
+projector supports audio) alongside `text`:
+
+```json
+{"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KG..."}}
+{"type": "image_url", "image_url": "iVBORw0KG..."}
+{"type": "input_audio", "input_audio": {"data": "UklGRg==...", "format": "wav"}}
+```
+
+`image_url.url` (or the bare string form) and `input_audio.data` accept
+only a `data:<mime>;base64,...` URI or a raw base64 string — `http://`,
+`https://`, and `file://` are all rejected with `400`, since jx-engine
+performs no network or filesystem I/O on a request's behalf; inline the
+bytes instead. Before the chat template renders, each such part is decoded
+and replaced by an internal media marker so mtmd tokenizes the rendered text
+and matches markers to decoded buffers in order; the media itself is
+prefilled at slot admission (see
+[`architecture.md`](architecture.md#multimodal-mmproj)). Requests fail with
+`400` when:
+
+- a media part carries no data, or a data: URI is malformed or not base64;
+- the server was not started with `--mmproj` at all;
+- an `image_url` part is sent to a projector without vision support, or an
+  `input_audio` part to one without audio support (`GET /props`'s
+  `modalities` reports which are available);
+- the part's URL uses a rejected scheme (`http://`/`https://`/`file://`).
+
 **Fields read from the request body:**
 
 | Field | Notes |
 |---|---|
-| `messages` | required; parsed via `common_chat_msgs_parse_oaicompat` |
+| `messages` | required; parsed via `common_chat_msgs_parse_oaicompat`; `content` may include `image_url`/`input_audio` parts (above) |
 | `stream` | bool, default `false` |
 | `tools` | array; parsed if non-empty |
 | `tool_choice` | string only (`common_chat_tool_choice_parse_oaicompat`) |
@@ -178,6 +207,57 @@ if the process was started with `--embedding`.
 | `max_completion_tokens`, then `max_tokens`, then `n_predict` | first present, non-null one wins; default `-1` (until EOG or context limit) |
 | `stop` | string or array of strings; appended to any stop sequences the chat template itself requested |
 | `temperature`, `top_p`, `top_k`, `min_p`, `seed`, `repeat_penalty`, `repeat_last_n`, `presence_penalty`, `frequency_penalty` | sampling params — see `parse_sampling` |
+| `logprobs` | bool, default `false`; when `true`, report per-token logprobs (see below) |
+| `top_logprobs` | int `0..20`; how many alternative tokens to report per position; requires `logprobs: true`, else `400` |
+| `reasoning_budget_tokens` | int; per-request override of `--reasoning-budget` (see below); ignored on `/v1/completions` (no chat template there) |
+
+**Logprobs.** When `logprobs: true`, `choices[0].logprobs` is:
+
+```json
+{
+  "content": [
+    {
+      "token": " Hi",
+      "logprob": -0.234,
+      "bytes": [32, 72, 105],
+      "top_logprobs": [
+        {"token": " Hi", "logprob": -0.234, "bytes": [32, 72, 105]},
+        {"token": " Hello", "logprob": -1.9, "bytes": [32, 72, 101, 108, 108, 111]}
+      ]
+    }
+  ]
+}
+```
+
+One entry per generated token whose text survived into the response (a token
+trimmed off by a stop sequence gets no entry). `logprob` is the **raw** model
+logprob (softmax over the full vocabulary from that token's logits row,
+computed before any sampler-chain transform), matching OpenAI semantics: a
+grammar- or constraint-picked token can legitimately show a very low raw
+logprob. `top_logprobs` has exactly `top_logprobs` entries (0 if the request
+field was absent/`0`), sorted by `logprob` descending; it does not
+necessarily include the sampled token itself. `null` when `logprobs` was not
+requested. Streaming: each SSE chunk that delivers newly-completed token text
+carries `choices[0].logprobs.content[]` for just those tokens; a chunk with
+no new completed tokens carries `logprobs: null`. Because logprobs are keyed
+to raw generated tokens while `delta.content`/`delta.tool_calls` are diffs of
+the *parsed* message, the two are not aligned frame-for-frame — a logprobs
+frame may carry an empty `delta: {}`.
+
+**Reasoning budget** (`--reasoning-budget`/`--reasoning-budget-message`, or
+the per-request `reasoning_budget_tokens` override). `-1` (default):
+unrestricted, feature inert. `0`: suppress thinking entirely — the model's
+thinking-open tag (from the chat template's own `thinking_start_tag`, or
+`<think>`/`</think>` if the template exposes none) is closed on the very
+first generated token, no message injected. `N > 0`: up to `N` generated
+tokens are allowed inside the thinking block; the token that would be the
+`(N+1)`th is replaced by the forced sequence — `--reasoning-budget-message`
+text (if set) followed by the closing tag — emitted token-by-token as normal
+generated text (the response's reasoning/content split, if any, is still
+whatever `common_chat_parse` derives from that text; jx-engine does not
+special-case it). A template whose *rendered generation prompt* already ends
+inside the thinking block (deepseek-style) starts already in the
+budget-counting state.
 
 `grammar`/`json_schema`/`response_format`/`tools` are mutually reinforcing,
 not independent: the chat template decides the actual grammar type applied
@@ -239,7 +319,29 @@ Requires `prompt` (string, or array of integer token ids); missing it is
 Fields read: `prompt`, `stream`, `max_completion_tokens`/`max_tokens`/`n_predict`,
 `stop`, the same sampling fields as chat completions, and directly (not via
 the chat-template path) `grammar` (GBNF string) or `json_schema` (converted
-with `json_schema_to_grammar`).
+with `json_schema_to_grammar`). Also `logprobs` (int `0..20`, the legacy
+OpenAI form — presence enables it, the value is how many alternatives to
+report per token; `400` outside that range).
+
+When `logprobs` is set, `choices[0].logprobs` uses the **legacy** flat
+parallel-array OpenAI shape (deliberately, not the chat nested shape —
+llama.cpp itself never implemented this shape correctly for
+`/v1/completions`, see the v2 API reference):
+
+```json
+{
+  "tokens": [" Once", " upon"],
+  "token_logprobs": [-0.5, -1.2],
+  "top_logprobs": [{" Once": -0.5, " The": -2.1}, {" upon": -1.2, " a": -1.8}],
+  "text_offset": [0, 5]
+}
+```
+
+`text_offset[i]` is the byte offset of `tokens[i]` from the start of the
+*returned* completion text (`choices[0].text`), not the prompt. Streaming:
+each frame carries its own tokens' worth of these same four arrays, with
+`text_offset` continuing to accumulate across frames from the start of the
+whole completion.
 
 Non-streaming response (`object: "text_completion"`):
 

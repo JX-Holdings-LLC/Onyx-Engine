@@ -88,17 +88,43 @@ JX Runtime's adapter never assumes a capability; it probes for it:
   use a newer feature" into "the model failed to load."
 
 This is exactly why `jx-engine`'s `--help` output is curated rather than
-exhaustive (see `src/args.h`'s header comment): **flags `jx-engine` does not
-implement — `--mmproj`, `--context-shift`, `--reasoning-budget` — are
-deliberately absent from both the argument parser and the `--help` text.**
-An adapter's `supportsFlag('--mmproj')`/`supportsFlag('--context-shift')`/
-`supportsFlag('--reasoning-budget')` probe against `jx-engine --help` will
-correctly come back `false`, and the adapter's existing "don't pass a flag
-the build didn't advertise" logic then simply never sends them — with no
-special-casing needed for `jx-engine` versus `llama-server`. This is a
-property to preserve, not incidental: a future `jx-engine` version that adds
-one of these flags should add it to `--help` and the parser together, so the
-same probe mechanism picks it up automatically.
+generated: **the parser and `--help` move together, always** (see
+`src/args.h`'s header comment) — a flag never appears in one without the
+other. As of v2, `--mmproj`, `--context-shift`, `--reasoning-budget`, and
+`--parallel` are all real, both accepted by the parser and listed in
+`--help`. An adapter's `supportsFlag('--mmproj')`,
+`supportsFlag('--context-shift')`, and `supportsFlag('--reasoning-budget')`
+probes against `jx-engine --help` now correctly come back `true`, and the
+adapter's existing "only pass a flag the build advertised" logic then simply
+starts sending them — no special-casing needed for `jx-engine` versus
+`llama-server`, and no adapter code change required to pick this up. What
+passing each one now buys:
+
+- **`--mmproj PATH`** enables multimodal chat: `image_url`/`input_audio`
+  content parts become acceptable in `/v1/chat/completions` requests (as
+  `data:`/base64 payloads only — see [`api.md`](api.md)), and `GET /props`'s
+  `modalities` starts reporting real vision/audio support instead of
+  `false`/`false`. It also force-disables `--cache-reuse` and
+  `--context-shift` process-wide (a media chunk's KV can't be
+  prefix-matched or partially discarded) — an adapter that raises both
+  flags together on a multimodal launch will see the latter two silently
+  overridden, with a warning on `jx-engine`'s stderr, not a launch failure.
+- **`--context-shift`** lets a slot that fills its context keep generating
+  by dropping its oldest non-preserved tokens instead of stopping at
+  `n_predict`/context limit — useful for adapters that would rather trade
+  early context for a completed response than hit `finish_reason: "length"`
+  early. `--keep N` controls how much of the front of the prompt survives a
+  shift.
+- **`--reasoning-budget N`** (plus `--reasoning-budget-message` and the
+  per-request `reasoning_budget_tokens` override) caps or suppresses a
+  thinking model's `<think>...</think>` block — an adapter fronting a
+  reasoning model can bound latency/token spend on the thinking phase
+  without needing model-specific prompt engineering.
+
+This remains a property to preserve going forward, not incidental: any
+future `jx-engine` flag should be added to `--help` and the parser together,
+so the same probe mechanism picks it up automatically without an adapter
+update.
 
 Two things the current adapter probes for that this mapping calls out
 explicitly because they matter to correctness, not just capability:
@@ -114,13 +140,13 @@ explicitly because they matter to correctness, not just capability:
   the long comment in `buildArgs()`), on the premise that an engine handed
   no `--parallel` at all might default to more than one slot — the adapter
   states the slot count it decided on every launch rather than relying on
-  the engine's own default. `jx-engine` always defaults to one queued slot
-  regardless of what `--parallel`/`-np` is set to (v1 has no real slot
-  concept — see the README and [`architecture.md`](architecture.md)), so
-  passing `--parallel N` to `jx-engine` is accepted and stored but has no
-  effect on concurrency; a future adapter integration should not assume
-  passing a larger `--parallel` buys any actual parallelism from
-  `jx-engine` v1.
+  the engine's own default. As of v2 `jx-engine` honours it: `--parallel N`
+  allocates `N` real request slots served by one continuous-batching engine
+  loop (see [`architecture.md`](architecture.md)), and the default remains
+  `1`. Note that `N` also divides the context — with `kv_unified` left at
+  llama.cpp's default, each slot gets roughly `n_ctx / N` tokens — so an
+  adapter that raises `--parallel` should raise `-c` to match, or accept
+  smaller per-request context windows.
 
 ## SSE usage-frame accounting (`sseUsage.js`)
 
@@ -166,15 +192,16 @@ adapter is structured, for a reader deciding whether/how to build it:
   (`serverPath`/`autoManage`, timeouts, jinja/cache-reuse-style toggles),
   though a `jxengine` adapter would need less of it than the `llamacpp`
   adapter carries today — `jx-engine` has no separate `--jinja` toggle to
-  reason about (jinja is always on) and no `--mmproj`/`--context-shift`/
-  `--reasoning-budget` capability gating to do at all, since those flags are
-  simply absent.
+  reason about (jinja is always on). It would still want `--mmproj`/
+  `--reasoning-budget` capability gating (via `supportsFlag`, same as any
+  other flag) since those remain optional features a given launch may or
+  may not want, even though both are real in v2.
 - The `buildArgs()`-equivalent for `jxengine` would be substantially
   simpler than the current `llamacpp` one: no flash-attn-style probing
-  needed if `jx-engine`'s value-only `-fa` form is assumed, no
-  context-shift/cache-reuse recurrence-model gating (`jx-engine` has no
-  `--context-shift`), and `--parallel` would be worth passing only for
-  argument-compatibility, not for any concurrency it buys.
+  needed if `jx-engine`'s value-only `-fa` form is assumed, and
+  `--parallel`/`--context-shift`/`--mmproj`/`--reasoning-budget` can all be
+  passed on the same terms as to `llama-server`, since v2 implements all of
+  them.
 
 This section is intentionally scoped to "what would this look like," not an
 implementation plan — building it is out of scope for this document and for

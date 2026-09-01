@@ -16,7 +16,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # ---- pin -------------------------------------------------------------------
-LLAMA_COMMIT="9723942adc51ec2f2b7c9dcc86842934c479b336"
+LLAMA_COMMIT="9723942adc518b43c4b95dc4dce6906903eb5e09"
 LLAMA_VERSION="0.3.0"                 # llama.cpp's own CMake project version
 PKG_NAME="@jxburros/llama-cpp-source"
 PKG_VERSION="${LLAMA_VERSION}-b10711.g${LLAMA_COMMIT:0:9}"
@@ -54,6 +54,15 @@ rm -rf "$STAGE/.git" "$STAGE/.github" "$STAGE/.devops" \
 
 mkdir -p "$STAGE/models"
 cp "$SRC/models/ggml-vocab-llama-spm.gguf" "$STAGE/models/"
+
+# tools/: jx-engine builds exactly one thing out of this tree - the `mtmd`
+# library (multimodal projector support, -DLLAMA_BUILD_MTMD=ON, which
+# add_subdirectory()s tools/mtmd directly without going through
+# tools/CMakeLists.txt). Everything else under tools/ (server, ui, cli,
+# benchmarks, quantize, ...) is never configured, so drop it. tools/mtmd's
+# own CMakeLists links vendor::hash, vendor::miniaudio, vendor::stb and
+# vendor::sheredom, all of which live under vendor/ and are kept.
+find "$STAGE/tools" -mindepth 1 -maxdepth 1 ! -name mtmd -exec rm -rf {} +
 
 # npm pack honors .gitignore files unless .npmignore exists; llama.cpp's
 # .gitignore would silently drop files (e.g. *.gguf), so remove them and ship
