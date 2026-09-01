@@ -37,6 +37,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Self-hosted runners are not provisioned by GitHub: verify every tool
+      # this job needs in one pass and fail with the complete list, so the
+      # runner admin provisions once instead of discovering one gap per run.
+      # (Debian/Ubuntu: the tools below come from cmake, build-essential,
+      # curl, python3, python3-venv, python3-pip.)
+      - name: Check required build tools (self-hosted)
+        if: matrix.name == 'linux'
+        run: |
+          missing=""
+          for t in cmake g++ make curl tar python3; do
+            command -v "$t" > /dev/null || missing="$missing $t"
+          done
+          if command -v python3 > /dev/null; then
+            python3 -m venv /tmp/.venv-probe > /dev/null 2>&1 && rm -rf /tmp/.venv-probe || missing="$missing python3-venv"
+          fi
+          if [ -n "$missing" ]; then
+            echo "::error::self-hosted runner is missing required tools:$missing (see the workflow comment for the package list)"
+            exit 1
+          fi
+
       - name: Read llama.cpp pin
         id: pin
         run: |
