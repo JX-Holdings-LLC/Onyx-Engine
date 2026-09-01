@@ -289,7 +289,13 @@ check "chat logprobs: content[] matches completion_tokens, well-formed entries" 
 import json, sys
 d = json.load(sys.stdin)
 content = d[\"choices\"][0][\"logprobs\"][\"content\"]
-assert len(content) == d[\"usage\"][\"completion_tokens\"], content
+# an EOG token counts in completion_tokens but has no text and no entry,
+# so a natural stop is one entry short of the token count (OpenAI behavior)
+n = d[\"usage\"][\"completion_tokens\"]
+if d[\"choices\"][0][\"finish_reason\"] == \"length\":
+    assert len(content) == n, content
+else:
+    assert len(content) in (n, n - 1), content
 for e in content:
     assert isinstance(e[\"token\"], str)
     assert e[\"logprob\"] <= 0
@@ -324,7 +330,8 @@ for line in sys.stdin:
     if lp:
         n += len(lp[\"content\"])
 assert usage is not None
-assert n == usage[\"completion_tokens\"], (n, usage)
+# an EOG token counts in completion_tokens but carries no logprobs entry
+assert n in (usage[\"completion_tokens\"], usage[\"completion_tokens\"] - 1), (n, usage)
 '"
 check "completions legacy logprobs shape" bash -c "
     curl -sf -X POST '$BASE/v1/completions' -d '{\"prompt\":\"Once upon a time\",\"max_tokens\":6,\"logprobs\":2}' \
@@ -333,11 +340,12 @@ import json, sys
 d = json.load(sys.stdin)
 lp = d[\"choices\"][0][\"logprobs\"]
 n = len(lp[\"tokens\"])
-assert n == d[\"usage\"][\"completion_tokens\"], lp
+# an EOG token counts in completion_tokens but has no text and no entry
+assert n in (d[\"usage\"][\"completion_tokens\"], d[\"usage\"][\"completion_tokens\"] - 1), lp
 assert len(lp[\"token_logprobs\"]) == n
 assert len(lp[\"top_logprobs\"]) == n
 assert len(lp[\"text_offset\"]) == n
-assert lp[\"text_offset\"][0] == 0
+assert n == 0 or lp[\"text_offset\"][0] == 0
 assert \"\".join(lp[\"tokens\"]) == d[\"choices\"][0][\"text\"]
 for tlp in lp[\"top_logprobs\"]:
     assert len(tlp) == 2
