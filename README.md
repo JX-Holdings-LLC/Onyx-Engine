@@ -39,10 +39,10 @@ adapter for JX Engine today (it does not — see that document's last section).
 
 - One model per process. Running a second model means starting a second
   `jx-engine` process on a different port.
-- Requests are serialized: one generation runs at a time per process.
-  `--parallel`/`-np` is accepted for command-line compatibility with
-  `llama-server`, but extra "slots" are not implemented — requests beyond
-  the first simply queue behind the mutex in `jx_engine::generate`.
+- Up to `--parallel`/`-np` requests generate concurrently (real slots +
+  continuous batching, default `1`); requests beyond that queue in FIFO
+  order. The context is divided across the slots, so `-np N` gives each
+  request roughly `n_ctx / N` tokens.
 - GGUF only. No safetensors.
 
 See [Roadmap](#roadmap) for what is explicitly out of scope for v1.
@@ -147,7 +147,7 @@ and the SSE frame format, is in [`docs/api.md`](docs/api.md).
 | `-ngl, --n-gpu-layers N` | `-1` | layers to offload to GPU (`-1` = all) |
 | `-t, --threads N` | `-1` | generation threads (`-1` = auto) |
 | `-tb, --threads-batch N` | — | prompt-processing threads (default: same as `--threads`) |
-| `-np, --parallel N` | `1` | accepted for compatibility; requests beyond one queue |
+| `-np, --parallel N` | `1` | concurrent request slots; splits the context N ways |
 | `-fa, --flash-attn VAL` | `auto` | `on`, `off`, or `auto` |
 | `--mlock` | off | lock model memory in RAM |
 | `--no-mmap` | off | do not memory-map the model file |
@@ -155,11 +155,13 @@ and the SSE frame format, is in [`docs/api.md`](docs/api.md).
 | `--embedding` / `--embeddings` | off | enable `/v1/embeddings` (pooled) |
 | `--pooling TYPE` | model default | `none`, `mean`, `cls`, `last`, `rank` |
 | `--cache-reuse N` | `1` | min prefix tokens to reuse from KV cache (`0` disables) |
+| `--context-shift` / `--no-context-shift` | off | drop oldest tokens instead of stopping when a slot's context fills |
+| `--keep N` | `0` | tokens at the front preserved by a context shift (`-1` = whole prompt) |
 | `-v, --verbose` | off | verbose logging |
 | `-h, --help` / `--version` | — | print help / version and exit |
 
 Flags `jx-engine` deliberately does **not** implement or advertise —
-`--mmproj`, `--context-shift`, `--reasoning-budget` — are absent from both
+`--mmproj`, `--reasoning-budget` — are absent from both
 the parser and `--help` on purpose (see `src/args.h`'s header comment); this
 matters to JX Runtime's adapter, which probes `--help` to decide what to
 pass. See [`docs/jx-runtime-integration.md`](docs/jx-runtime-integration.md).
@@ -167,10 +169,6 @@ pass. See [`docs/jx-runtime-integration.md`](docs/jx-runtime-integration.md).
 ## Roadmap (explicitly not in v1)
 
 - Multimodal input / `--mmproj` (vision projectors)
-- True parallel request slots / continuous batching (requests are serialized
-  in v1 regardless of `--parallel`)
-- Context shift (a context that fills mid-generation stops rather than
-  dropping oldest tokens)
 - Reasoning-budget control (`--reasoning-budget`)
 - Logprobs
 - Safetensors models (GGUF only)

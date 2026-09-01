@@ -35,56 +35,90 @@ templating, JSON, grammar construction, and sampling parameter types.
 
 ## Concurrency model
 
-- **One mutex, one generation at a time.** `jx_engine` holds a single
-  `std::mutex` (`jx_engine::mutex_`); both `generate()` and `embed()` take a
-  `std::lock_guard` on it for their full duration. Whatever HTTP thread calls
-  in, it blocks until the current generation finishes.
-- **HTTP layer is multi-threaded.** `jx-engine` uses `cpp-httplib`'s
-  (`httplib::Server`) built-in thread pool, so multiple requests can be
-  in-flight in the HTTP layer (accepting connections, parsing bodies,
-  building responses) — but they still serialize on the engine mutex the
-  moment they call into `generate()`/`embed()`. `--parallel`/`-np` is parsed
-  and stored (`jx_args::n_parallel`) but nothing in `engine.cpp` or
-  `server.cpp` branches on it to run more than one generation concurrently;
-  it exists for command-line compatibility with `llama-server` only.
-- **Streaming is one SSE write callback, not a separate thread pool.**
+- **One engine thread, `--parallel` request slots, continuous batching.**
+  `jx_engine::load` creates the context with `n_seq_max = n_parallel` and
+  allocates that many `jx_slot`s; slot `i` owns llama.cpp sequence id `i`.
+  A dedicated thread (`jx_engine::loop`) ticks: it admits queued requests
+  into idle slots, packs **one** `llama_batch` holding a prompt chunk for
+  each slot still prefilling plus exactly one next-token row for each
+  generating slot (each row tagged with that slot's sequence id, and the
+  slot's logits row index recorded in `jx_slot::i_batch`), issues a single
+  `llama_decode` for it (split into `n_batch`-sized views, halving the view
+  size and retrying on `llama_decode() == 1`, fatal at size 1), and then
+  samples each slot from its own `common_sampler` at its own row. `kv_unified`
+  stays at llama.cpp's default `false`, so `n_ctx` is divided evenly across
+  the slots: the per-slot budget is `llama_n_ctx_seq()`
+  (`jx_engine::n_ctx_slot()`), and that — not `n_ctx` — is what a prompt has
+  to fit into.
+- **HTTP layer is multi-threaded; requests queue FIFO.** `jx-engine` uses
+  `cpp-httplib`'s (`httplib::Server`) built-in thread pool. `generate()` is
+  still a blocking call, but it now submits a `jx_gen_request` to the engine
+  queue and waits on it instead of holding a global lock, so up to
+  `--parallel` requests generate concurrently. When every slot is busy the
+  head of the queue waits and nothing behind it jumps ahead. `embed()` still
+  takes `jx_engine::mutex_` and runs serialized: embedding mode forces
+  `n_parallel = 1` and starts no engine thread.
+- **Streaming is one SSE write callback, fed by a per-request queue.**
   Chat/text completion streaming uses `httplib::Response::set_chunked_content_provider`.
-  The provider lambda is called once (`offset == 0`); it does all of its work
-  — including the entire blocking call into `engine.generate()` — inside that
-  one invocation, writing SSE frames to the `httplib::DataSink` from within
-  the token callback (`jx_token_cb`) as tokens are produced. There is no
-  separate producer/consumer thread inside `jx-engine` for a single stream;
-  the token callback *is* what writes each frame, synchronously, on the
-  thread handling that request.
+  The provider lambda is called once (`offset == 0`) and does all its work —
+  including the whole blocking `engine.generate()` call — inside that one
+  invocation. The engine thread only ever *pushes* visible text into the
+  request's `pieces` deque; the HTTP thread blocked in `generate()` pops from
+  it and invokes the token callback (`jx_token_cb`), which is what writes
+  each SSE frame. So a slow or stalled client can only back up its own
+  request, never the engine loop or the other slots.
 - **Cancellation.** The token callback returns `bool`; returning `false`
-  (e.g. because `sink.write()` failed, meaning the client disconnected) sets
-  `jx_gen_result::finish = JX_FINISH_CANCEL` and unwinds generation for that
-  request. It does not affect other requests, which are already serialized
-  behind the mutex regardless.
+  (e.g. because `sink.write()` failed, meaning the client disconnected) marks
+  the request cancelled. The engine loop notices at the top of its next tick,
+  finishes that request with `jx_gen_result::finish = JX_FINISH_CANCEL` and
+  releases its slot. Other slots are unaffected.
+
+## Context shift
+
+With `--context-shift`, a generating slot that would otherwise stop at its
+per-slot context limit instead drops the oldest half of its non-preserved
+context and keeps going (`jx_engine::context_shift`, mirroring
+`llama-server`):
+
+1. `n_keep` comes from `--keep` (`-1` = the whole prompt), `+1` if the vocab
+   adds BOS, capped to `n_ctx_slot - 4`.
+2. `n_discard = (n_past - n_keep) / 2`, clamped to `[0, n_left - 1]`.
+3. `llama_memory_seq_rm(mem, seq, n_keep, n_keep + n_discard)` then
+   `llama_memory_seq_add(mem, seq, n_keep + n_discard, n_past, -n_discard)`
+   drop that window and shift everything after it down, and the slot's
+   `cache_tokens` mirror is compacted the same way.
+4. `jx_gen_result::truncated` is set; generation continues.
+
+Without `--context-shift` (the default) the request finishes with
+`JX_FINISH_LENGTH` at the context limit, exactly as in v1. If the loaded
+context cannot shift (`llama_memory_can_shift()` is false, e.g. sliding-window
+attention), `load()` forces the flag off with a warning on stderr.
 
 ## KV-cache prefix reuse
 
-`jx_engine::decode_prompt` (in `engine.cpp`) keeps a copy of the token
-sequence currently materialized in the KV cache (`cache_tokens_`). On each
-new prompt:
+Each slot keeps a copy of the token sequence currently materialized in *its*
+sequence's KV cache (`jx_slot::cache_tokens`). When the engine loop admits a
+queued request (`jx_engine::admit_queued`):
 
-1. It compares the new prompt's tokens against `cache_tokens_`,
-   token-by-token, to find the longest common prefix — capped so at least
-   one token is always left to evaluate fresh (so there is always something
-   to compute logits from).
+1. It scans the idle slots and picks the one whose `cache_tokens` share the
+   longest common prefix with the new prompt — capped so at least one token
+   is always left to evaluate fresh (so there is always something to compute
+   logits from). Ties, and the case where reuse is off, fall back to the
+   least-recently-used idle slot.
 2. If that common-prefix length is at least `--cache-reuse` (default `1`,
-   `0` disables reuse entirely), the cache is trimmed to the prefix
+   `0` disables reuse entirely), that slot's cache is trimmed to the prefix
    (`llama_memory_seq_rm`) and only the remaining, differing suffix of the
    prompt is decoded.
-3. Otherwise, the KV cache is cleared entirely (`llama_memory_clear`) and the
-   whole prompt is decoded from scratch.
+3. Otherwise the slot's sequence is dropped entirely
+   (`llama_memory_seq_rm(mem, seq, -1, -1)`) and the whole prompt is decoded
+   from scratch.
 
-This is a plain longest-common-prefix match against the single most recently
-decoded prompt — not a cache of multiple past prompts, and not a
-similarity/fuzzy match. It exists to make repeated calls that share a long,
-unchanged prefix (e.g. a growing chat transcript, or the same system prompt
-across many requests) cheaper, at the cost of the linear scan and the memory
-of holding one previous token sequence.
+This is a plain longest-common-prefix match against the most recently decoded
+prompt *of each slot* — not a cache of multiple past prompts per slot, no
+similarity/fuzzy matching, and no RAM tier. It exists to make repeated calls
+that share a long, unchanged prefix (e.g. a growing chat transcript, or the
+same system prompt across many requests) cheaper, at the cost of the linear
+scan and the memory of holding one previous token sequence per slot.
 
 `jx_gen_result` reports `n_cached` (tokens reused) and `n_prompt` (total
 prompt tokens) so callers can see how much was actually reused; the

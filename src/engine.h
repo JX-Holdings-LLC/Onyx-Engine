@@ -1,9 +1,19 @@
 // jx_engine: owns the llama.cpp model + context and executes inference.
 //
-// Concurrency model (v1): one model, one context, one generation at a time.
-// The HTTP layer may call from many threads; all inference entry points
-// serialize on an internal mutex. Streaming callers receive tokens through a
-// callback and can cancel by returning false from it.
+// Concurrency model (v2): one model, one context, `--parallel` request slots.
+// A dedicated engine thread runs a continuous-batching loop: every tick it
+// packs a prompt chunk for each slot still prefilling plus exactly one
+// next-token for each generating slot into a single llama_batch, decodes it
+// once, and samples each slot from its own logits row with its own sampler.
+//
+// HTTP threads submit requests into a FIFO queue and block in generate()
+// until the request finishes. Generated text is handed back through a
+// per-request queue: the engine thread only ever pushes into it, the calling
+// thread pops and invokes the token callback, so a slow SSE client can stall
+// its own request but never the engine loop. Returning false from the
+// callback cancels that request; the engine loop then releases its slot.
+//
+// Embedding mode keeps the v1 shape: one sequence, serialized on a mutex.
 #pragma once
 
 #include "args.h"
@@ -12,10 +22,14 @@
 #include "common.h"
 #include "llama.h"
 
+#include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 struct jx_gen_params {
@@ -40,6 +54,7 @@ struct jx_gen_result {
     int32_t          n_prompt    = 0;     // prompt tokens evaluated (incl. cached)
     int32_t          n_cached    = 0;     // prompt tokens reused from KV cache
     int32_t          n_predicted = 0;     // tokens generated
+    bool             truncated   = false; // context was shifted at least once
     double           t_prompt_ms    = 0;
     double           t_predict_ms   = 0;
 };
@@ -47,6 +62,50 @@ struct jx_gen_result {
 // Called for each visible piece of generated text. `piece` may be empty when
 // text is being withheld for stop-sequence matching. Return false to cancel.
 using jx_token_cb = std::function<bool(const std::string & piece)>;
+
+// One in-flight generation request. Ownership is shared between the HTTP
+// thread blocked in generate() and the engine loop running it.
+struct jx_gen_request {
+    jx_gen_params    params;
+    common_sampler * smpl = nullptr;      // owned; freed when the request finishes
+    bool             wants_pieces = false; // caller passed a token callback
+
+    std::mutex              mu;
+    std::condition_variable cv;
+    std::deque<std::string> pieces;       // engine -> caller (text for the callback)
+    bool                    cancelled = false;   // caller -> engine
+    bool                    finished  = false;   // engine -> caller
+    jx_gen_result           result;
+};
+
+using jx_gen_request_ptr = std::shared_ptr<jx_gen_request>;
+
+// One parallel request slot. `seq_id` is both the slot index and the
+// llama.cpp sequence id its KV lives under, exactly like llama-server.
+struct jx_slot {
+    enum state_t {
+        JX_SLOT_IDLE,      // no request
+        JX_SLOT_PREFILL,   // still feeding prompt tokens
+        JX_SLOT_GENERATE,  // has a sampled token waiting to be decoded
+    };
+
+    llama_seq_id seq_id = 0;
+    state_t      state  = JX_SLOT_IDLE;
+
+    jx_gen_request_ptr req;
+
+    // tokens currently materialized in this sequence's KV cache
+    std::vector<llama_token> cache_tokens;
+
+    std::vector<llama_token> prompt;         // prompt of the current request
+    int32_t     n_past      = 0;             // KV positions filled for this seq
+    int32_t     i_batch     = -1;            // row of the current batch holding our logits
+    llama_token sampled     = 0;             // token waiting to be decoded
+    size_t      n_sent      = 0;             // bytes of result.text already queued to the caller
+    uint64_t    t_last_used = 0;             // LRU tick stamp
+    int64_t     t_start     = 0;             // us, slot acquired
+    int64_t     t_prompt    = 0;             // us, prompt finished
+};
 
 class jx_engine {
 public:
@@ -65,6 +124,9 @@ public:
     // --- metadata (safe after load) ---
     const std::string & alias()     const { return alias_; }
     uint32_t n_ctx()                const { return n_ctx_; }
+    uint32_t n_ctx_slot()           const { return n_ctx_slot_; }
+    int32_t  n_parallel()           const { return n_parallel_; }
+    bool     ctx_shift()            const { return ctx_shift_; }
     int32_t  n_ctx_train()          const;
     int32_t  n_embd()               const;
     uint64_t model_size_bytes()     const;
@@ -76,13 +138,16 @@ public:
     const llama_vocab * vocab()     const { return vocab_; }
     const llama_model * model()     const { return model_; }
 
-    // --- inference (each call serializes on the engine mutex) ---
+    // --- inference ---
 
-    // Text generation. cb may be null for non-streaming use.
+    // Text generation. Blocks until the request finishes; `cb` (may be null)
+    // is invoked on the calling thread for each visible piece of text and
+    // cancels the request by returning false. Up to --parallel requests run
+    // concurrently; further callers queue in FIFO order.
     jx_gen_result generate(const jx_gen_params & params, const jx_token_cb & cb);
 
     // Pooled embedding for one input. Returns empty vector on failure and
-    // sets err. Only valid in embedding mode.
+    // sets err. Only valid in embedding mode (serialized on a mutex).
     std::vector<float> embed(const std::vector<llama_token> & tokens, std::string & err);
 
     // Tokenization helpers (thread-safe; vocab is immutable after load).
@@ -90,8 +155,15 @@ public:
     std::string detokenize(const std::vector<llama_token> & tokens, bool special = false) const;
 
 private:
-    // clears KV and re-evaluates from scratch when prefix reuse is off/fails
-    bool decode_prompt(const std::vector<llama_token> & tokens, int32_t & n_cached, std::string & err);
+    // --- engine loop (all of these run on loop_thread_ only) ---
+    void loop();
+    bool admit_queued();                      // queued requests -> idle slots
+    void build_batch(llama_batch & batch);    // one tick's shared batch
+    bool decode_batch(llama_batch & batch);   // decode + per-slot sampling
+    void on_sampled(jx_slot & slot);          // v1 per-token bookkeeping
+    bool context_shift(jx_slot & slot);       // returns false if it cannot shift
+    void emit(jx_slot & slot, std::string piece);
+    void finish(jx_slot & slot, jx_finish_reason reason, const std::string & error = "");
 
     llama_model *   model_ = nullptr;
     llama_context * ctx_   = nullptr;
@@ -101,12 +173,25 @@ private:
     std::string alias_;
     std::string load_error_;
     uint32_t    n_ctx_          = 0;
+    uint32_t    n_ctx_slot_     = 0;   // per-slot context budget
     int32_t     n_batch_        = 0;
+    int32_t     n_parallel_     = 1;
     bool        embedding_mode_ = false;
     int32_t     cache_reuse_    = 0;
+    bool        ctx_shift_      = false;
+    int32_t     n_keep_         = 0;
+    bool        add_bos_        = false;
 
-    // tokens currently materialized in the KV cache (seq 0)
-    std::vector<llama_token> cache_tokens_;
+    std::vector<jx_slot> slots_;
 
+    // queue + wakeup for the engine loop
+    std::mutex                    q_mutex_;
+    std::condition_variable       q_cv_;
+    std::deque<jx_gen_request_ptr> queue_;
+    std::atomic<bool>             stop_{false};
+    uint64_t                      tick_ = 0;
+    std::thread                   loop_thread_;
+
+    // embedding mode only
     std::mutex mutex_;
 };

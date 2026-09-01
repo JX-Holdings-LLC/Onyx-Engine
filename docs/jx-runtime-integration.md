@@ -89,9 +89,9 @@ JX Runtime's adapter never assumes a capability; it probes for it:
 
 This is exactly why `jx-engine`'s `--help` output is curated rather than
 exhaustive (see `src/args.h`'s header comment): **flags `jx-engine` does not
-implement — `--mmproj`, `--context-shift`, `--reasoning-budget` — are
+implement — `--mmproj`, `--reasoning-budget` — are
 deliberately absent from both the argument parser and the `--help` text.**
-An adapter's `supportsFlag('--mmproj')`/`supportsFlag('--context-shift')`/
+An adapter's `supportsFlag('--mmproj')`/
 `supportsFlag('--reasoning-budget')` probe against `jx-engine --help` will
 correctly come back `false`, and the adapter's existing "don't pass a flag
 the build didn't advertise" logic then simply never sends them — with no
@@ -114,13 +114,13 @@ explicitly because they matter to correctness, not just capability:
   the long comment in `buildArgs()`), on the premise that an engine handed
   no `--parallel` at all might default to more than one slot — the adapter
   states the slot count it decided on every launch rather than relying on
-  the engine's own default. `jx-engine` always defaults to one queued slot
-  regardless of what `--parallel`/`-np` is set to (v1 has no real slot
-  concept — see the README and [`architecture.md`](architecture.md)), so
-  passing `--parallel N` to `jx-engine` is accepted and stored but has no
-  effect on concurrency; a future adapter integration should not assume
-  passing a larger `--parallel` buys any actual parallelism from
-  `jx-engine` v1.
+  the engine's own default. As of v2 `jx-engine` honours it: `--parallel N`
+  allocates `N` real request slots served by one continuous-batching engine
+  loop (see [`architecture.md`](architecture.md)), and the default remains
+  `1`. Note that `N` also divides the context — with `kv_unified` left at
+  llama.cpp's default, each slot gets roughly `n_ctx / N` tokens — so an
+  adapter that raises `--parallel` should raise `-c` to match, or accept
+  smaller per-request context windows.
 
 ## SSE usage-frame accounting (`sseUsage.js`)
 
@@ -166,15 +166,13 @@ adapter is structured, for a reader deciding whether/how to build it:
   (`serverPath`/`autoManage`, timeouts, jinja/cache-reuse-style toggles),
   though a `jxengine` adapter would need less of it than the `llamacpp`
   adapter carries today — `jx-engine` has no separate `--jinja` toggle to
-  reason about (jinja is always on) and no `--mmproj`/`--context-shift`/
-  `--reasoning-budget` capability gating to do at all, since those flags are
-  simply absent.
+  reason about (jinja is always on) and no `--mmproj`/`--reasoning-budget`
+  capability gating to do at all, since those flags are simply absent.
 - The `buildArgs()`-equivalent for `jxengine` would be substantially
   simpler than the current `llamacpp` one: no flash-attn-style probing
-  needed if `jx-engine`'s value-only `-fa` form is assumed, no
-  context-shift/cache-reuse recurrence-model gating (`jx-engine` has no
-  `--context-shift`), and `--parallel` would be worth passing only for
-  argument-compatibility, not for any concurrency it buys.
+  needed if `jx-engine`'s value-only `-fa` form is assumed, and
+  `--parallel`/`--context-shift` can be passed on the same terms as to
+  `llama-server`, since v2 implements both.
 
 This section is intentionally scoped to "what would this look like," not an
 implementation plan — building it is out of scope for this document and for

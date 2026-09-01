@@ -83,6 +83,7 @@ add_subdirectory(${JX_LLAMA_SRC} ${CMAKE_BINARY_DIR}/llama.cpp)
 add_executable(jx-engine
     src/main.cpp
     src/args.cpp
+    src/convert.cpp
     src/engine.cpp
     src/server.cpp
 )
