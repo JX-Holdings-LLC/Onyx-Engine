@@ -9,3 +9,4 @@ compile_commands.json
 node_modules/
 packaging/dist/
 vendor/
+models-test/
