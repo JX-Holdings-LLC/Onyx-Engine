@@ -27,7 +27,8 @@ FAIL=0
 PIDS=()
 
 cleanup() {
-    for pid in "${PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done
+    # ${PIDS[@]+...}: empty-array expansion trips `set -u` on macOS bash 3.2
+    for pid in ${PIDS[@]+"${PIDS[@]}"}; do kill "$pid" 2>/dev/null || true; done
 }
 trap cleanup EXIT
 
