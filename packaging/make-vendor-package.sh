@@ -79,7 +79,7 @@ cat > "$STAGE/package.json" <<EOF
   "homepage": "https://github.com/ggml-org/llama.cpp",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/JX-Holdings-LLC/JX-Engine.git",
+    "url": "git+https://github.com/JX-Holdings-LLC/Onyx-Engine.git",
     "directory": "packaging"
   },
   "llamaCppCommit": "$LLAMA_COMMIT",
