@@ -92,7 +92,7 @@ See [Roadmap](#roadmap) for what remains genuinely out of scope.
 
 ```bash
 git clone <this-repo>
-cd JX-Engine
+cd Onyx-Engine
 npm ci   # or: npm install
 
 cmake -B build -DCMAKE_BUILD_TYPE=Release
