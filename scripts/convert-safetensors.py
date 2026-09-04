@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Minimal safetensors -> GGUF converter for jx-engine.
+"""Minimal safetensors -> GGUF converter for onyx-engine.
 
 This is NOT a vendored/wrapped copy of llama.cpp's convert_hf_to_gguf.py.
 It is a small, self-contained converter that depends on nothing beyond the
 Python standard library plus numpy - no torch, no transformers, no
-sentencepiece, no `safetensors` or `gguf` packages - so that jx-engine's
+sentencepiece, no `safetensors` or `gguf` packages - so that onyx-engine's
 first-load conversion path never has to install a heavyweight ML stack.
 
 Scope, deliberately narrow: standard Hugging Face "LlamaForCausalLM"

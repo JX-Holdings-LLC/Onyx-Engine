@@ -45,8 +45,8 @@ def main() -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     w = gguf.GGUFWriter(str(out_path), "clip")
-    w.add_name("jx-engine-tiny-mmproj")
-    w.add_description("tiny random clip vision encoder for jx-engine smoke tests")
+    w.add_name("onyx-engine-tiny-mmproj")
+    w.add_description("tiny random clip vision encoder for onyx-engine smoke tests")
     w.add_file_type(gguf.LlamaFileType.ALL_F32)
 
     w.add_bool("clip.has_vision_encoder", True)

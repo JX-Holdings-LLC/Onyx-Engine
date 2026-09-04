@@ -12,9 +12,9 @@
 
 #include <string>
 
-struct jx_args;
+struct onyx_args;
 
 // Resolves args.model_path: returns the path of a GGUF to load, converting a
 // safetensors model first if needed. On failure returns an empty string and
 // sets `err` to a message describing why.
-std::string jx_resolve_model(const jx_args & args, std::string & err);
+std::string onyx_resolve_model(const onyx_args & args, std::string & err);

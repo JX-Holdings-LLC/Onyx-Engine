@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Builds the @jxburros/llama-cpp-source npm package: the pinned llama.cpp
-# source tree, pruned to what jx-engine's build and test tooling need.
+# source tree, pruned to what onyx-engine's build and test tooling need.
 #
 # This is the MAINTAINER packaging step (run once per llama.cpp upgrade, then
-# `npm publish` the tarball). Consumers of jx-engine never run this; their
+# `npm publish` the tarball). Consumers of onyx-engine never run this; their
 # only external build input is the published npm package.
 #
 # Usage:
 #   packaging/make-vendor-package.sh [path-to-llama.cpp-source]
 #
 # Without an argument the pinned commit is downloaded from GitHub (network
-# access required for packaging only, not for building jx-engine).
+# access required for packaging only, not for building onyx-engine).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -41,7 +41,7 @@ echo "staging from $SRC ..."
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
 
-# Everything the library build + jx-engine test tooling need. Deliberately
+# Everything the library build + onyx-engine test tooling need. Deliberately
 # excluded: docs, tests, examples, benches, media, pocs, ci, app, conversion
 # scripts and the bulk of models/ (only the vocab file our tiny-model
 # generator reads is kept).
@@ -55,7 +55,7 @@ rm -rf "$STAGE/.git" "$STAGE/.github" "$STAGE/.devops" \
 mkdir -p "$STAGE/models"
 cp "$SRC/models/ggml-vocab-llama-spm.gguf" "$STAGE/models/"
 
-# tools/: jx-engine builds exactly one thing out of this tree - the `mtmd`
+# tools/: onyx-engine builds exactly one thing out of this tree - the `mtmd`
 # library (multimodal projector support, -DLLAMA_BUILD_MTMD=ON, which
 # add_subdirectory()s tools/mtmd directly without going through
 # tools/CMakeLists.txt). Everything else under tools/ (server, ui, cli,
@@ -74,7 +74,7 @@ cat > "$STAGE/package.json" <<EOF
 {
   "name": "$PKG_NAME",
   "version": "$PKG_VERSION",
-  "description": "Pinned, pruned llama.cpp source tree consumed by jx-engine's CMake build. Not a Node.js library - contains C/C++ sources only.",
+  "description": "Pinned, pruned llama.cpp source tree consumed by onyx-engine's CMake build. Not a Node.js library - contains C/C++ sources only.",
   "license": "MIT",
   "homepage": "https://github.com/ggml-org/llama.cpp",
   "repository": {

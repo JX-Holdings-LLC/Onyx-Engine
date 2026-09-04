@@ -7,4 +7,4 @@
 
 // Blocks serving requests until the process is signalled. Returns the process
 // exit code.
-int jx_server_run(jx_engine & engine, const jx_args & args);
+int onyx_server_run(onyx_engine & engine, const onyx_args & args);

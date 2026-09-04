@@ -10,16 +10,16 @@
 #include <cstdio>
 
 int main(int argc, char ** argv) {
-    jx_args args;
-    if (!jx_args_parse(argc, argv, args)) {
+    onyx_args args;
+    if (!onyx_args_parse(argc, argv, args)) {
         return 1;
     }
     if (args.show_help) {
-        jx_args_print_help();
+        onyx_args_print_help();
         return 0;
     }
     if (args.show_version) {
-        jx_args_print_version();
+        onyx_args_print_version();
         return 0;
     }
 
@@ -36,7 +36,7 @@ int main(int argc, char ** argv) {
     {
         // safetensors models are converted to GGUF (cached) before loading
         std::string resolve_err;
-        const std::string resolved = jx_resolve_model(args, resolve_err);
+        const std::string resolved = onyx_resolve_model(args, resolve_err);
         if (resolved.empty()) {
             fprintf(stderr, "error: %s\n", resolve_err.c_str());
             return 1;
@@ -46,9 +46,9 @@ int main(int argc, char ** argv) {
 
     llama_backend_init();
 
-    fprintf(stderr, "jx-engine %s: loading model '%s'\n", JX_ENGINE_VERSION, args.model_path.c_str());
+    fprintf(stderr, "onyx-engine %s: loading model '%s'\n", ONYX_ENGINE_VERSION, args.model_path.c_str());
 
-    jx_engine engine;
+    onyx_engine engine;
     if (!engine.load(args)) {
         fprintf(stderr, "error: %s\n", engine.load_error().c_str());
         llama_backend_free();
@@ -56,17 +56,17 @@ int main(int argc, char ** argv) {
     }
 
     if (engine.n_parallel() > 1) {
-        fprintf(stderr, "jx-engine: model loaded (%s, %" PRIu64 " MiB, %d slots x %u ctx%s)\n",
+        fprintf(stderr, "onyx-engine: model loaded (%s, %" PRIu64 " MiB, %d slots x %u ctx%s)\n",
                 engine.model_desc().c_str(), engine.model_size_bytes() / (1024 * 1024),
                 engine.n_parallel(), engine.n_ctx_slot(),
                 engine.ctx_shift() ? ", context shift" : "");
     } else {
-        fprintf(stderr, "jx-engine: model loaded (%s, %" PRIu64 " MiB%s)\n",
+        fprintf(stderr, "onyx-engine: model loaded (%s, %" PRIu64 " MiB%s)\n",
                 engine.model_desc().c_str(), engine.model_size_bytes() / (1024 * 1024),
                 engine.ctx_shift() ? ", context shift" : "");
     }
 
-    const int rc = jx_server_run(engine, args);
+    const int rc = onyx_server_run(engine, args);
 
     llama_backend_free();
     return rc;

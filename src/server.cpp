@@ -39,14 +39,14 @@ static void send_error(httplib::Response & res, int status, const std::string & 
     res.set_content(body.dump(), "application/json; charset=utf-8");
 }
 
-static std::string finish_reason_str(const jx_gen_result & r, bool has_tool_calls) {
-    if (r.finish == JX_FINISH_LENGTH) {
+static std::string finish_reason_str(const onyx_gen_result & r, bool has_tool_calls) {
+    if (r.finish == ONYX_FINISH_LENGTH) {
         return "length";
     }
     return has_tool_calls ? "tool_calls" : "stop";
 }
 
-static common_json usage_json(const jx_gen_result & r) {
+static common_json usage_json(const onyx_gen_result & r) {
     common_json u = common_json::object();
     u["prompt_tokens"]     = r.n_prompt;
     u["completion_tokens"] = r.n_predicted;
@@ -54,7 +54,7 @@ static common_json usage_json(const jx_gen_result & r) {
     return u;
 }
 
-static common_json timings_json(const jx_gen_result & r) {
+static common_json timings_json(const onyx_gen_result & r) {
     common_json t = common_json::object();
     t["cache_n"]              = r.n_cached;
     t["prompt_n"]             = r.n_prompt - r.n_cached;
@@ -80,7 +80,7 @@ static common_json bytes_json(const std::string & s) {
 
 // OpenAI chat-completions logprobs.content[] entry shape, used by both
 // /v1/chat/completions (non-streaming and streaming).
-static common_json chat_logprob_entry(const jx_token_probs & p) {
+static common_json chat_logprob_entry(const onyx_token_probs & p) {
     common_json e = common_json::object();
     e["token"]   = p.sampled.piece;
     e["logprob"] = p.sampled.logprob;
@@ -97,7 +97,7 @@ static common_json chat_logprob_entry(const jx_token_probs & p) {
     return e;
 }
 
-static common_json chat_logprobs_content(const std::vector<jx_token_probs> & probs) {
+static common_json chat_logprobs_content(const std::vector<onyx_token_probs> & probs) {
     common_json content = common_json::array();
     for (const auto & p : probs) {
         content.push_back(chat_logprob_entry(p));
@@ -111,7 +111,7 @@ static common_json chat_logprobs_content(const std::vector<jx_token_probs> & pro
 // `text_offset` relative to the start of the whole returned completion text
 // -- `offset` is threaded through by the caller so a streaming response's
 // per-frame call keeps accumulating across frames.
-static common_json legacy_logprobs(const std::vector<jx_token_probs> & probs, size_t & offset) {
+static common_json legacy_logprobs(const std::vector<onyx_token_probs> & probs, size_t & offset) {
     common_json tokens         = common_json::array();
     common_json token_logprobs = common_json::array();
     common_json top_logprobs   = common_json::array();
@@ -176,11 +176,11 @@ static common_json diff_to_delta(const common_chat_msg_diff & diff) {
 
 // Minimal base64 decoder (same shape as llama-server's). Stops at the first
 // character that is neither base64 nor padding.
-static jx_media_buffer base64_decode(const std::string & encoded) {
+static onyx_media_buffer base64_decode(const std::string & encoded) {
     static const std::string chars =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-    jx_media_buffer out;
+    onyx_media_buffer out;
     uint8_t quad[4];
     int n = 0;
 
@@ -209,14 +209,14 @@ static jx_media_buffer base64_decode(const std::string & encoded) {
     return out;
 }
 
-// jx-engine performs no network or filesystem I/O on behalf of a request, so a
+// onyx-engine performs no network or filesystem I/O on behalf of a request, so a
 // media payload can never be a location the server would have to go fetch.
 // Checked before any capability check: this holds whatever projector is loaded.
 static void reject_media_url(const std::string & url, const char * what) {
     for (const char * scheme : {"http://", "https://", "file://"}) {
         if (url.rfind(scheme, 0) == 0) {
             throw std::runtime_error(std::string(scheme) + " " + what +
-                                     " URLs are not supported: jx-engine does not fetch remote or local "
+                                     " URLs are not supported: onyx-engine does not fetch remote or local "
                                      "resources. Inline the data as a 'data:<mime>;base64,...' URI or a "
                                      "bare base64 string.");
         }
@@ -224,7 +224,7 @@ static void reject_media_url(const std::string & url, const char * what) {
 }
 
 // Resolves one media payload to raw file bytes: a data: URI or bare base64.
-static jx_media_buffer decode_media_payload(const std::string & url, const char * what) {
+static onyx_media_buffer decode_media_payload(const std::string & url, const char * what) {
     std::string payload = url;
     if (url.rfind("data:", 0) == 0) {
         const size_t comma = url.find(',');
@@ -238,7 +238,7 @@ static jx_media_buffer decode_media_payload(const std::string & url, const char 
         payload = url.substr(comma + 1);
     }
 
-    jx_media_buffer data = base64_decode(payload);
+    onyx_media_buffer data = base64_decode(payload);
     if (data.empty()) {
         throw std::runtime_error(std::string("could not decode ") + what + " data (expected base64)");
     }
@@ -250,8 +250,8 @@ static jx_media_buffer decode_media_payload(const std::string & url, const char 
 // media_marker part carrying the mtmd marker text, so the chat template
 // renders the marker exactly where the media was and mtmd_tokenize matches
 // markers to buffers in order. Throws (-> 400) on anything unacceptable.
-static void extract_media(common_json & messages, const jx_engine & engine,
-                          std::vector<jx_media_buffer> & out_media) {
+static void extract_media(common_json & messages, const onyx_engine & engine,
+                          std::vector<onyx_media_buffer> & out_media) {
     const std::string marker = engine.media_marker();
 
     for (auto & msg : messages) {
@@ -284,7 +284,7 @@ static void extract_media(common_json & messages, const jx_engine & engine,
             reject_media_url(payload, what);
 
             if (!engine.has_mmproj()) {
-                throw std::runtime_error("multimodal input requires a projector; start jx-engine with --mmproj");
+                throw std::runtime_error("multimodal input requires a projector; start onyx-engine with --mmproj");
             }
             if (is_image && !engine.supports_vision()) {
                 throw std::runtime_error("the loaded projector (--mmproj) does not support image input");
@@ -394,9 +394,9 @@ static void apply_grammar(common_params_sampling &   sparams,
 // when the template doesn't expose any, per the v2 API reference §4) and for
 // the rendered prompt text (to detect a deepseek-style template whose
 // generation prompt already ends inside the thinking block).
-static jx_reasoning_budget build_reasoning_budget(const common_json & body, const jx_args & args,
-                                                  const common_chat_params & cp, const jx_engine & engine) {
-    jx_reasoning_budget rb;
+static onyx_reasoning_budget build_reasoning_budget(const common_json & body, const onyx_args & args,
+                                                  const common_chat_params & cp, const onyx_engine & engine) {
+    onyx_reasoning_budget rb;
 
     int32_t budget = args.reasoning_budget;
     if (body.contains("reasoning_budget_tokens") && !body.at("reasoning_budget_tokens").is_null()) {
@@ -527,11 +527,11 @@ static bool sse_write(httplib::DataSink & sink, const common_json & payload) {
 // server
 // ---------------------------------------------------------------------------
 
-int jx_server_run(jx_engine & engine, const jx_args & args) {
+int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
     httplib::Server svr;
 
     svr.set_default_headers({
-        {"Server", "jx-engine/" JX_ENGINE_VERSION},
+        {"Server", "onyx-engine/" ONYX_ENGINE_VERSION},
         {"Access-Control-Allow-Origin", "*"},
         {"Access-Control-Allow-Headers", "Authorization, Content-Type"},
         {"Access-Control-Allow-Methods", "GET, POST, OPTIONS"},
@@ -584,7 +584,7 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
         common_json props = common_json::object();
         props["model_alias"]                 = engine.alias();
         props["chat_template"]               = engine.chat_template_source();
-        props["build_info"]                  = std::string("jx-engine/" JX_ENGINE_VERSION " (llama.cpp " JX_ENGINE_LLAMA_PIN ")");
+        props["build_info"]                  = std::string("onyx-engine/" ONYX_ENGINE_VERSION " (llama.cpp " ONYX_ENGINE_LLAMA_PIN ")");
         props["n_ctx"]                       = (int64_t) engine.n_ctx();
         props["n_ctx_train"]                 = (int64_t) engine.n_ctx_train();
         props["n_embd"]                      = (int64_t) engine.n_embd();
@@ -608,7 +608,7 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
         model["id"]       = engine.alias();
         model["object"]   = "model";
         model["created"]  = (int64_t) std::time(nullptr);
-        model["owned_by"] = "jx-engine";
+        model["owned_by"] = "onyx-engine";
         model["meta"]     = meta;
 
         common_json data = common_json::array();
@@ -679,7 +679,7 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
 
         // decode any image_url / input_audio parts and swap them for mtmd
         // markers before the template renders the prompt
-        std::vector<jx_media_buffer> media;
+        std::vector<onyx_media_buffer> media;
         try {
             extract_media(body.at("messages"), engine, media);
         } catch (const std::exception & e) {
@@ -717,7 +717,7 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
             return;
         }
 
-        jx_gen_params gp;
+        onyx_gen_params gp;
         gp.want_logprobs = logprobs_requested;
         gp.n_probs       = top_logprobs;
         gp.reasoning     = build_reasoning_budget(body, args, cp, engine);
@@ -752,7 +752,7 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
         const std::time_t created    = std::time(nullptr);
 
         if (!stream) {
-            jx_gen_result r = engine.generate(gp, nullptr);
+            onyx_gen_result r = engine.generate(gp, nullptr);
             if (!r.error.empty()) {
                 send_error(res, 500, r.error, "server_error");
                 return;
@@ -813,7 +813,7 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
                 }
             }
 
-            auto emit_piece = [&](const std::string & piece, const std::vector<jx_token_probs> & probs) -> bool {
+            auto emit_piece = [&](const std::string & piece, const std::vector<onyx_token_probs> & probs) -> bool {
                 // logprobs travel independently of the parsed-message delta
                 // diffing below: token/piece alignment with tool-call deltas
                 // is meaningless once the parser has reshaped the text, so
@@ -851,7 +851,7 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
                 return true;
             };
 
-            jx_gen_result r = engine.generate(gp, emit_piece);
+            onyx_gen_result r = engine.generate(gp, emit_piece);
 
             if (!r.error.empty()) {
                 common_json err = common_json::object();
@@ -863,7 +863,7 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
                 sink.done();
                 return true;
             }
-            if (r.finish == JX_FINISH_CANCEL) {
+            if (r.finish == ONYX_FINISH_CANCEL) {
                 return false;
             }
 
@@ -924,7 +924,7 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
             return;
         }
 
-        jx_gen_params gp;
+        onyx_gen_params gp;
         const common_json & prompt = body.at("prompt");
         if (prompt.is_string()) {
             gp.prompt_tokens = engine.tokenize(prompt.get<std::string>(), /* add_special */ true, /* parse_special */ true);
@@ -990,7 +990,7 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
         };
 
         if (!stream) {
-            jx_gen_result r = engine.generate(gp, nullptr);
+            onyx_gen_result r = engine.generate(gp, nullptr);
             if (!r.error.empty()) {
                 send_error(res, 500, r.error, "server_error");
                 return;
@@ -1012,7 +1012,7 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
             }
 
             auto lp_offset = std::make_shared<size_t>(0);
-            auto emit_piece = [&, lp_offset](const std::string & piece, const std::vector<jx_token_probs> & probs) -> bool {
+            auto emit_piece = [&, lp_offset](const std::string & piece, const std::vector<onyx_token_probs> & probs) -> bool {
                 if (piece.empty() && probs.empty()) {
                     return sink.is_writable();
                 }
@@ -1021,7 +1021,7 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
                 return sse_write(sink, payload);
             };
 
-            jx_gen_result r = engine.generate(gp, emit_piece);
+            onyx_gen_result r = engine.generate(gp, emit_piece);
 
             if (!r.error.empty()) {
                 common_json err = common_json::object();
@@ -1033,7 +1033,7 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
                 sink.done();
                 return true;
             }
-            if (r.finish == JX_FINISH_CANCEL) {
+            if (r.finish == ONYX_FINISH_CANCEL) {
                 return false;
             }
 
@@ -1054,7 +1054,7 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
     svr.Post("/v1/embeddings", [&](const httplib::Request & req, httplib::Response & res) {
         const common_json body = common_json::parse(req.body);
         if (!engine.embedding_mode()) {
-            send_error(res, 501, "embeddings are disabled; start jx-engine with --embedding", "not_supported_error");
+            send_error(res, 501, "embeddings are disabled; start onyx-engine with --embedding", "not_supported_error");
             return;
         }
         if (!body.contains("input")) {
@@ -1138,7 +1138,7 @@ int jx_server_run(jx_engine & engine, const jx_args & args) {
         return 1;
     }
 
-    fprintf(stderr, "jx-engine listening on http://%s:%d (model: %s, ctx: %u%s)\n",
+    fprintf(stderr, "onyx-engine listening on http://%s:%d (model: %s, ctx: %u%s)\n",
             args.host.c_str(), args.port, engine.alias().c_str(), engine.n_ctx(),
             engine.embedding_mode() ? ", embedding mode" : "");
 

@@ -1,22 +1,22 @@
-# JX Engine
+# Onyx Engine
 
-JX Engine is a single-model, OpenAI-compatible model-serving binary built on
+Onyx Engine is a single-model, OpenAI-compatible model-serving binary built on
 [llama.cpp](https://github.com/ggml-org/llama.cpp) (vendored as a pinned
 source tree, currently `v0.3.0-90-g9723942ad`, distributed as the npm package
-`@jxburros/llama-cpp-source`). One `jx-engine` process loads one model
+`@jxburros/llama-cpp-source`). One `onyx-engine` process loads one model
 (GGUF, or a safetensors model converted to GGUF on first load) and serves
 it over HTTP on `127.0.0.1:<port>`.
 
 ## Relationship to JX Runtime
 
-JX Engine exists so [JX Runtime](https://github.com/jxburros/JX-Runtime) — a
-Node.js model runtime — can spawn `jx-engine` in place of a third-party
-`llama-server` binary: one `jx-engine` process per loaded model, polled at
+Onyx Engine exists so [JX Runtime](https://github.com/jxburros/JX-Runtime) — a
+Node.js model runtime — can spawn `onyx-engine` in place of a third-party
+`llama-server` binary: one `onyx-engine` process per loaded model, polled at
 `GET /health`, with its OpenAI-compatible endpoints proxied through to
 callers. See [`docs/jx-runtime-integration.md`](docs/jx-runtime-integration.md)
 for exactly how the two projects are meant to connect; that mapping is a
 description of the intended contract, not a claim that JX Runtime has an
-adapter for JX Engine today (it does not — see that document's last section).
+adapter for Onyx Engine today (it does not — see that document's last section).
 
 ## Features (v2)
 
@@ -46,12 +46,12 @@ adapter for JX Engine today (it does not — see that document's last section).
   cap or suppress a thinking model's `<think>...</think>` block
 - **Multimodal input** via `--mmproj` (image, and audio when the projector
   supports it): `image_url`/`input_audio` content parts as `data:` URIs or
-  raw base64 only — jx-engine never fetches a remote or local resource on a
+  raw base64 only — onyx-engine never fetches a remote or local resource on a
   request's behalf
 - **Safetensors models**: a `-m` pointing at a Hugging Face directory (or a
   `.safetensors` file inside one) is converted to GGUF on first load by
-  jx-engine's own numpy-only converter (`scripts/convert-safetensors.py`,
-  no torch/transformers), cached under `jx-cache/` next to the model (or
+  onyx-engine's own numpy-only converter (`scripts/convert-safetensors.py`,
+  no torch/transformers), cached under `onyx-cache/` next to the model (or
   `--convert-dir`) and reused on later launches
 - KV-cache common-prefix reuse (`--cache-reuse`), per slot, to avoid
   re-processing an unchanged prompt prefix
@@ -62,7 +62,7 @@ adapter for JX Engine today (it does not — see that document's last section).
 **v2 scope and limits**, stated up front rather than discovered later:
 
 - One model per process, still. Running a second model means starting a
-  second `jx-engine` process on a different port.
+  second `onyx-engine` process on a different port.
 - `-np N` divides the context N ways (`kv_unified` stays at llama.cpp's
   default `false`), so more slots means less context per request; an
   overflowing slot without `--context-shift` simply stops at `n_predict`
@@ -77,7 +77,7 @@ adapter for JX Engine today (it does not — see that document's last section).
   cannot be partially discarded or prefix-matched token-by-token.
 - Remote/local media URLs (`http://`, `https://`, `file://`) are rejected
   with `400` by design; only `data:<mime>;base64,...` URIs or bare base64
-  strings are accepted, since jx-engine performs no I/O on a request's
+  strings are accepted, since onyx-engine performs no I/O on a request's
   behalf.
 - The safetensors converter only handles the standard Hugging Face
   `LlamaForCausalLM` layout (optionally sharded via
@@ -96,9 +96,9 @@ cd JX-Engine
 npm ci   # or: npm install
 
 cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target jx-engine -j
+cmake --build build --target onyx-engine -j
 
-./build/jx-engine -m model.gguf --port 8080
+./build/onyx-engine -m model.gguf --port 8080
 ```
 
 (`npm run build` does the two `cmake` steps above in one command; `npm test`
@@ -125,7 +125,7 @@ For acceleration builds (CUDA, Vulkan, Metal, ROCm, BLAS) see
 
 ## Vendored source via npm
 
-JX Engine's only external build input is llama.cpp's C/C++ source tree,
+Onyx Engine's only external build input is llama.cpp's C/C++ source tree,
 distributed as the npm package `@jxburros/llama-cpp-source` — a pinned,
 pruned copy of llama.cpp (not a Node.js library). Using the npm registry as
 that channel, rather than a git submodule, means the build has exactly one
@@ -134,7 +134,7 @@ npm). `npm ci` installs it into `node_modules`, and `CMakeLists.txt` picks it
 up from there automatically. See
 ["What llama.cpp's own build is told to skip"](docs/building.md#what-llamacpps-own-build-is-told-to-skip)
 and the [architecture doc](docs/architecture.md#build-layering) for the full
-source-resolution order (npm package → `-DJX_ENGINE_LLAMA_DIR` override →
+source-resolution order (npm package → `-DONYX_ENGINE_LLAMA_DIR` override →
 manually placed `vendor/llama.cpp`).
 
 **Status: not yet published.** `@jxburros/llama-cpp-source` is not on the
@@ -169,7 +169,7 @@ and the SSE frame format, is in [`docs/api.md`](docs/api.md).
 
 ## CLI flags
 
-`jx-engine --help` is the source of truth; the flags below mirror
+`onyx-engine --help` is the source of truth; the flags below mirror
 `src/args.h`/`src/args.cpp`.
 
 | Flag | Default | Meaning |
@@ -205,7 +205,7 @@ and the SSE frame format, is in [`docs/api.md`](docs/api.md).
 | `-v, --verbose` | off | verbose logging |
 | `-h, --help` / `--version` | — | print help / version and exit |
 
-`jx-engine` follows one rule for its CLI surface: a flag it implements is
+`onyx-engine` follows one rule for its CLI surface: a flag it implements is
 always advertised in `--help`, and a flag not in `--help` is never accepted
 by the parser either (see `src/args.h`'s header comment). This matters to
 JX Runtime's adapter, which probes `--help` before ever passing a flag on a
@@ -216,13 +216,13 @@ v2 that probe for `--mmproj`, `--context-shift`, `--reasoning-budget`, and
 
 ## Roadmap (still out of scope)
 
-- Multi-model per process (run a second `jx-engine` process instead)
+- Multi-model per process (run a second `onyx-engine` process instead)
 - Speculative decoding
 - Audio/image input beyond what the loaded `--mmproj` projector supports;
   video is off by design (`MTMD_VIDEO=OFF` — it would shell out to `ffmpeg`
-  at runtime, a dependency jx-engine does not take)
+  at runtime, a dependency onyx-engine does not take)
 - Fetching remote or local media by URL — only inline `data:`/base64 payloads
-  are accepted, since jx-engine performs no I/O on a request's behalf
+  are accepted, since onyx-engine performs no I/O on a request's behalf
 - Safetensors architectures other than HF `LlamaForCausalLM`, and tokenizers
   other than a byte-level BPE `tokenizer.json` (e.g. SentencePiece)
 

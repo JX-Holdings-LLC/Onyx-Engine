@@ -2,7 +2,7 @@
 
 All request/response bodies are JSON. This document describes exactly what
 `src/server.cpp` parses and returns — not the full OpenAI API surface, only
-the subset `jx-engine` implements.
+the subset `onyx-engine` implements.
 
 ## Authentication
 
@@ -46,7 +46,7 @@ Always returns `200` with:
 
 Exempt from `--api-key` auth. This is a liveness check only — it does not
 report whether the model is fully warmed up beyond having completed
-`jx_engine::load` (the server does not start listening until load finishes).
+`onyx_engine::load` (the server does not start listening until load finishes).
 
 ## `GET /props`
 
@@ -56,7 +56,7 @@ Model and build metadata. No request body.
 {
   "model_alias": "my-model",
   "chat_template": "<jinja source or empty string>",
-  "build_info": "jx-engine/0.2.0 (llama.cpp b10711-9723942ad)",
+  "build_info": "onyx-engine/0.2.0 (llama.cpp b10711-9723942ad)",
   "n_ctx": 4096,
   "n_ctx_train": 32768,
   "n_embd": 4096,
@@ -72,7 +72,7 @@ Model and build metadata. No request body.
 Notes:
 - `n_ctx` appears both top-level and nested under
   `default_generation_settings` — both are the same value
-  (`jx_engine::n_ctx()`, the actual context size the running context was
+  (`onyx_engine::n_ctx()`, the actual context size the running context was
   created with, from `llama_n_ctx`).
 - `modalities.vision`/`modalities.audio` reflect the loaded `--mmproj`
   projector's real capabilities (`mtmd_support_vision`/`mtmd_support_audio`)
@@ -91,7 +91,7 @@ Notes:
       "id": "my-model",
       "object": "model",
       "created": 1735689600,
-      "owned_by": "jx-engine",
+      "owned_by": "onyx-engine",
       "meta": {
         "n_ctx_train": 32768,
         "n_embd": 4096,
@@ -103,7 +103,7 @@ Notes:
 }
 ```
 
-Always exactly one entry — `jx-engine` serves one model per process. `id` is
+Always exactly one entry — `onyx-engine` serves one model per process. `id` is
 the `--alias` value. `created` is the current wall-clock time at request
 time (`std::time(nullptr)`), not the model file's mtime or any fixed value.
 
@@ -175,7 +175,7 @@ projector supports audio) alongside `text`:
 
 `image_url.url` (or the bare string form) and `input_audio.data` accept
 only a `data:<mime>;base64,...` URI or a raw base64 string — `http://`,
-`https://`, and `file://` are all rejected with `400`, since jx-engine
+`https://`, and `file://` are all rejected with `400`, since onyx-engine
 performs no network or filesystem I/O on a request's behalf; inline the
 bytes instead. Before the chat template renders, each such part is decoded
 and replaced by an internal media marker so mtmd tokenizes the rendered text
@@ -254,7 +254,7 @@ tokens are allowed inside the thinking block; the token that would be the
 `(N+1)`th is replaced by the forced sequence — `--reasoning-budget-message`
 text (if set) followed by the closing tag — emitted token-by-token as normal
 generated text (the response's reasoning/content split, if any, is still
-whatever `common_chat_parse` derives from that text; jx-engine does not
+whatever `common_chat_parse` derives from that text; onyx-engine does not
 special-case it). A template whose *rendered generation prompt* already ends
 inside the thinking block (deepseek-style) starts already in the
 budget-counting state.
@@ -395,5 +395,5 @@ token counts across all items in the batch.
 Every response carries `Access-Control-Allow-Origin: *`,
 `Access-Control-Allow-Headers: Authorization, Content-Type`,
 `Access-Control-Allow-Methods: GET, POST, OPTIONS`, and
-`Server: jx-engine/<version>`. `OPTIONS` on any path returns `204`.
+`Server: onyx-engine/<version>`. `OPTIONS` on any path returns `204`.
 Read/write socket timeouts are 600 seconds.

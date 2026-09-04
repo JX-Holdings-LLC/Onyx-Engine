@@ -2,30 +2,30 @@
 
 ## Process model
 
-`jx-engine` is a single-model, single-process server. Each process:
+`onyx-engine` is a single-model, single-process server. Each process:
 
 1. parses CLI arguments (`src/args.cpp`),
 2. loads exactly one GGUF model and creates one `llama_context`
-   (`jx_engine::load` in `src/engine.cpp`),
+   (`onyx_engine::load` in `src/engine.cpp`),
 3. blocks in an HTTP server loop until the process is signalled
-   (`jx_server_run` in `src/server.cpp`).
+   (`onyx_server_run` in `src/server.cpp`).
 
 There is no in-process model swapping and no multi-model registry. Running
-more than one model means running more than one `jx-engine` process, each on
+more than one model means running more than one `onyx-engine` process, each on
 its own port. This is a deliberate v1 simplification: the intended caller is
 JX Runtime, which already manages one child process per loaded model (see
-[`jx-runtime-integration.md`](jx-runtime-integration.md)), so `jx-engine`
+[`jx-runtime-integration.md`](jx-runtime-integration.md)), so `onyx-engine`
 does not duplicate that bookkeeping.
 
 ## Source layout
 
 | File | Responsibility |
 |---|---|
-| `src/args.h` / `src/args.cpp` | `jx_args` struct, `argv` parsing, `--help`/`--version` text |
-| `src/convert.h` / `src/convert.cpp` | `jx_resolve_model()`: GGUF passthrough vs. safetensors detection/conversion/caching (see [Safetensors resolution and conversion](#safetensors-resolution-and-conversion)) |
-| `src/engine.h` / `src/engine.cpp` | `jx_engine`: owns the llama.cpp model + context (+ optional mtmd context), runs the batching loop, generation and embedding, tokenize/detokenize helpers |
+| `src/args.h` / `src/args.cpp` | `onyx_args` struct, `argv` parsing, `--help`/`--version` text |
+| `src/convert.h` / `src/convert.cpp` | `onyx_resolve_model()`: GGUF passthrough vs. safetensors detection/conversion/caching (see [Safetensors resolution and conversion](#safetensors-resolution-and-conversion)) |
+| `src/engine.h` / `src/engine.cpp` | `onyx_engine`: owns the llama.cpp model + context (+ optional mtmd context), runs the batching loop, generation and embedding, tokenize/detokenize helpers |
 | `src/server.h` / `src/server.cpp` | HTTP layer built on `cpp-httplib`: request parsing, response/SSE-frame construction, all route handlers |
-| `src/main.cpp` | Entry point: parse args, resolve the model (`jx_resolve_model`), init the llama.cpp backend, load the model, run the server, tear down |
+| `src/main.cpp` | Entry point: parse args, resolve the model (`onyx_resolve_model`), init the llama.cpp backend, load the model, run the server, tear down |
 
 `server.cpp` depends on `engine.h` (to call generation/embedding/tokenize)
 and on llama.cpp's `common` library headers (`chat.h`, `common.h`,
@@ -37,27 +37,27 @@ templating, JSON, grammar construction, and sampling parameter types.
 ## Concurrency model
 
 - **One engine thread, `--parallel` request slots, continuous batching.**
-  `jx_engine::load` creates the context with `n_seq_max = n_parallel` and
-  allocates that many `jx_slot`s; slot `i` owns llama.cpp sequence id `i`.
-  A dedicated thread (`jx_engine::loop`) ticks: it admits queued requests
+  `onyx_engine::load` creates the context with `n_seq_max = n_parallel` and
+  allocates that many `onyx_slot`s; slot `i` owns llama.cpp sequence id `i`.
+  A dedicated thread (`onyx_engine::loop`) ticks: it admits queued requests
   into idle slots, packs **one** `llama_batch` holding a prompt chunk for
   each slot still prefilling plus exactly one next-token row for each
   generating slot (each row tagged with that slot's sequence id, and the
-  slot's logits row index recorded in `jx_slot::i_batch`), issues a single
+  slot's logits row index recorded in `onyx_slot::i_batch`), issues a single
   `llama_decode` for it (split into `n_batch`-sized views, halving the view
   size and retrying on `llama_decode() == 1`, fatal at size 1), and then
   samples each slot from its own `common_sampler` at its own row. `kv_unified`
   stays at llama.cpp's default `false`, so `n_ctx` is divided evenly across
   the slots: the per-slot budget is `llama_n_ctx_seq()`
-  (`jx_engine::n_ctx_slot()`), and that — not `n_ctx` — is what a prompt has
+  (`onyx_engine::n_ctx_slot()`), and that — not `n_ctx` — is what a prompt has
   to fit into.
-- **HTTP layer is multi-threaded; requests queue FIFO.** `jx-engine` uses
+- **HTTP layer is multi-threaded; requests queue FIFO.** `onyx-engine` uses
   `cpp-httplib`'s (`httplib::Server`) built-in thread pool. `generate()` is
-  still a blocking call, but it now submits a `jx_gen_request` to the engine
+  still a blocking call, but it now submits a `onyx_gen_request` to the engine
   queue and waits on it instead of holding a global lock, so up to
   `--parallel` requests generate concurrently. When every slot is busy the
   head of the queue waits and nothing behind it jumps ahead. `embed()` still
-  takes `jx_engine::mutex_` and runs serialized: embedding mode forces
+  takes `onyx_engine::mutex_` and runs serialized: embedding mode forces
   `n_parallel = 1` and starts no engine thread.
 - **Streaming is one SSE write callback, fed by a per-request queue.**
   Chat/text completion streaming uses `httplib::Response::set_chunked_content_provider`.
@@ -65,20 +65,20 @@ templating, JSON, grammar construction, and sampling parameter types.
   including the whole blocking `engine.generate()` call — inside that one
   invocation. The engine thread only ever *pushes* visible text into the
   request's `pieces` deque; the HTTP thread blocked in `generate()` pops from
-  it and invokes the token callback (`jx_token_cb`), which is what writes
+  it and invokes the token callback (`onyx_token_cb`), which is what writes
   each SSE frame. So a slow or stalled client can only back up its own
   request, never the engine loop or the other slots.
 - **Cancellation.** The token callback returns `bool`; returning `false`
   (e.g. because `sink.write()` failed, meaning the client disconnected) marks
   the request cancelled. The engine loop notices at the top of its next tick,
-  finishes that request with `jx_gen_result::finish = JX_FINISH_CANCEL` and
+  finishes that request with `onyx_gen_result::finish = ONYX_FINISH_CANCEL` and
   releases its slot. Other slots are unaffected.
 
 ## Context shift
 
 With `--context-shift`, a generating slot that would otherwise stop at its
 per-slot context limit instead drops the oldest half of its non-preserved
-context and keeps going (`jx_engine::context_shift`, mirroring
+context and keeps going (`onyx_engine::context_shift`, mirroring
 `llama-server`):
 
 1. `n_keep` comes from `--keep` (`-1` = the whole prompt), `+1` if the vocab
@@ -88,10 +88,10 @@ context and keeps going (`jx_engine::context_shift`, mirroring
    `llama_memory_seq_add(mem, seq, n_keep + n_discard, n_past, -n_discard)`
    drop that window and shift everything after it down, and the slot's
    `cache_tokens` mirror is compacted the same way.
-4. `jx_gen_result::truncated` is set; generation continues.
+4. `onyx_gen_result::truncated` is set; generation continues.
 
 Without `--context-shift` (the default) the request finishes with
-`JX_FINISH_LENGTH` at the context limit, exactly as in v1. If the loaded
+`ONYX_FINISH_LENGTH` at the context limit, exactly as in v1. If the loaded
 context cannot shift (`llama_memory_can_shift()` is false, e.g. sliding-window
 attention), `load()` forces the flag off with a warning on stderr — as does
 loading a `--mmproj` projector (see
@@ -100,8 +100,8 @@ loading a `--mmproj` projector (see
 ## KV-cache prefix reuse
 
 Each slot keeps a copy of the token sequence currently materialized in *its*
-sequence's KV cache (`jx_slot::cache_tokens`). When the engine loop admits a
-queued request (`jx_engine::admit_queued`):
+sequence's KV cache (`onyx_slot::cache_tokens`). When the engine loop admits a
+queued request (`onyx_engine::admit_queued`):
 
 1. It scans the idle slots and picks the one whose `cache_tokens` share the
    longest common prefix with the new prompt — capped so at least one token
@@ -123,7 +123,7 @@ that share a long, unchanged prefix (e.g. a growing chat transcript, or the
 same system prompt across many requests) cheaper, at the cost of the linear
 scan and the memory of holding one previous token sequence per slot.
 
-`jx_gen_result` reports `n_cached` (tokens reused) and `n_prompt` (total
+`onyx_gen_result` reports `n_cached` (tokens reused) and `n_prompt` (total
 prompt tokens) so callers can see how much was actually reused; the
 `/v1/chat/completions` and `/v1/completions` responses surface these via the
 `timings` object (`cache_n`, `prompt_n` = `n_prompt - n_cached`).
@@ -136,7 +136,7 @@ positions cannot be prefix-matched token-by-token.
 
 ## Multimodal (`--mmproj`)
 
-`jx_engine::load` initializes an `mtmd_context` (`mtmd_init_from_file`) only
+`onyx_engine::load` initializes an `mtmd_context` (`mtmd_init_from_file`) only
 when `--mmproj` is passed; `mctx_` stays null otherwise, and
 `has_mmproj()`/`supports_vision()`/`supports_audio()` all read straight
 through to it (`mtmd_support_vision`/`mtmd_support_audio`), which is what
@@ -150,13 +150,13 @@ warning on stderr, mirroring `llama-server`.
 `messages` before the template renders: each `image_url`/`input_audio`
 content part is decoded (data: URI or bare base64 — `reject_media_url()`
 throws on `http://`/`https://`/`file://` before any capability check runs)
-into a `jx_media_buffer`, and the part itself is replaced in place by a
+into a `onyx_media_buffer`, and the part itself is replaced in place by a
 `media_marker` part carrying `engine.media_marker()`
 (`mtmd_get_marker(mctx_)`) — so the rendered prompt text contains one marker
 token sequence per decoded buffer, in order, and `gp.prompt_text` +
 `gp.media` (not `gp.prompt_tokens`) are what get passed to `generate()`.
 
-**Media prefill at admission.** `jx_engine::prefill_media()` runs when a
+**Media prefill at admission.** `onyx_engine::prefill_media()` runs when a
 newly admitted slot's request carries `media`: it never reuses KV
 (`n_past` starts at 0 — media prompts are never prefix-matched, see the KV
 reuse section above), calls `mtmd_helper_bitmap_init_from_buf` per buffer
@@ -172,8 +172,8 @@ otherwise unaffected — this is a momentary stall, not a global lock).
 
 ## Safetensors resolution and conversion
 
-`main.cpp` calls `jx_resolve_model(args, err)` (`src/convert.cpp`) before
-`jx_engine::load()` ever runs, and overwrites `args.model_path` with
+`main.cpp` calls `onyx_resolve_model(args, err)` (`src/convert.cpp`) before
+`onyx_engine::load()` ever runs, and overwrites `args.model_path` with
 whatever it returns:
 
 1. **GGUF passthrough.** A `.gguf`-extension file, or any regular file
@@ -184,16 +184,16 @@ whatever it returns:
    `.safetensors` file whose parent directory satisfies the same; anything
    else is a startup error.
 3. **Cache lookup.** The converted file lives at
-   `<--convert-dir or model dir>/jx-cache/<model dir name>-<path hash>-f16.gguf`
+   `<--convert-dir or model dir>/onyx-cache/<model dir name>-<path hash>-f16.gguf`
    (the 8-hex-digit hash of the absolute source path keeps two models that
    share a directory name from colliding under a shared `--convert-dir`). It is
    reused as-is if it exists and is newer than every `*.safetensors` file
    and `config.json` in the source directory (mtime comparison) — so editing
    the source model (or its config) invalidates the cache automatically.
 4. **Conversion.** On a cache miss, `resolve_converter_script()` locates
-   `scripts/convert-safetensors.py` — via `$JX_ENGINE_CONVERT_SCRIPT` first,
+   `scripts/convert-safetensors.py` — via `$ONYX_ENGINE_CONVERT_SCRIPT` first,
    then paths relative to the running binary (`../scripts/`,
-   `../../scripts/`), then (debug builds only) `JX_ENGINE_SOURCE_DIR` — and
+   `../../scripts/`), then (debug builds only) `ONYX_ENGINE_SOURCE_DIR` — and
    runs `python3 <script> <model_dir> --outfile <tmp> --outtype f16` via
    `popen`, streaming its combined output to stderr and keeping the last 20
    lines for the error message on failure. A successful run is renamed
@@ -215,7 +215,7 @@ whatever it returns:
 
 ## Reasoning budget (`--reasoning-budget`)
 
-Own-code state machine, not a llama.cpp sampler feature — `jx_slot::rb_state_t`
+Own-code state machine, not a llama.cpp sampler feature — `onyx_slot::rb_state_t`
 runs per slot, driven by `on_sampled()` after every token:
 
 - **`RB_OFF`** — no budget in effect for this request (`reasoning_budget <
@@ -224,7 +224,7 @@ runs per slot, driven by `on_sampled()` after every token:
   `reasoning_budget_tokens`) and the template's own thinking tags
   (`cp.thinking_start_tag`/`thinking_end_tags[0]`, falling back to
   `<think>`/`</think>`) once per request; a negative budget short-circuits
-  to a default-constructed (disabled) `jx_reasoning_budget` and the slot
+  to a default-constructed (disabled) `onyx_reasoning_budget` and the slot
   never leaves `RB_OFF`.
 - **`RB_IDLE`** — scanning newly generated tokens for the start tag via a
   rolling multi-token match (`rb_start_match`). A template whose rendered
@@ -236,7 +236,7 @@ runs per slot, driven by `on_sampled()` after every token:
   naturally moves to `RB_DONE`, reaching the budget first moves to
   `RB_FORCING`.
 - **`RB_FORCING`** — instead of sampling, tokens are emitted one at a time
-  from `jx_reasoning_budget::forced` (`rb_forced_idx`) — the configured
+  from `onyx_reasoning_budget::forced` (`rb_forced_idx`) — the configured
   `--reasoning-budget-message` (if set and budget > 0) followed by the
   closing tag; budget `0` forces the closing tag immediately with no
   message.
@@ -253,27 +253,27 @@ Captured inline during sampling, not as a post-hoc pass: `sample_slot()`
 calls `compute_token_probs()` (`src/engine.cpp`) whenever the request set
 `want_logprobs`, reading `llama_get_logits_ith(ctx_, tok_idx)` — the raw
 logits row for the token about to be sampled, from the same batch row
-`jx_slot::i_batch` recorded during `build_batch()` — and running a single
+`onyx_slot::i_batch` recorded during `build_batch()` — and running a single
 numerically-stable full-vocab softmax over it. This is deliberately the
 *raw* model distribution, computed before any sampler-chain transform
 (grammar, top-k/top-p/min-p, penalties), so a grammar-constrained or
 otherwise heavily-steered pick still reports its true (possibly very low)
 logprob, matching OpenAI semantics. The sampled token's own entry plus the
 top `n_probs` alternatives (`std::partial_sort`, clamped to `[0, 25]`) are
-recorded together as one `jx_token_probs`, appended to `jx_gen_result::probs`
+recorded together as one `onyx_token_probs`, appended to `onyx_gen_result::probs`
 in generation order and released to the caller in lockstep with the same
 stop-holdback byte-accounting rule used for the generated text itself
 (`collect_delivered_probs()`) — a token trimmed off by a stop sequence never
-gets an entry. `server.cpp` then renders that same `jx_token_probs` list
+gets an entry. `server.cpp` then renders that same `onyx_token_probs` list
 into either the nested OpenAI chat shape (`logprobs.content[]`) or the
 legacy flat `/v1/completions` shape, independently per endpoint.
 
 ## Chat templating, grammar, and sampling
 
 All three flow through llama.cpp's vendored `common` library rather than
-being reimplemented in `jx-engine`:
+being reimplemented in `onyx-engine`:
 
-- **Chat templates.** `jx_engine::load` calls `common_chat_templates_init`
+- **Chat templates.** `onyx_engine::load` calls `common_chat_templates_init`
   with the model plus an optional override (`--chat-template` or the
   contents of `--chat-template-file`), producing a
   `common_chat_templates_ptr`. `jinja` is always used (`common_chat_templates_apply`
@@ -302,7 +302,7 @@ being reimplemented in `jx-engine`:
 - **Sampling.** `parse_sampling()` reads `temperature`, `top_p`, `top_k`,
   `min_p`, `seed`, `repeat_penalty`, `repeat_last_n`, `presence_penalty`, and
   `frequency_penalty` from the request body into a `common_params_sampling`.
-  `jx_engine::generate()` constructs a `common_sampler` from that struct via
+  `onyx_engine::generate()` constructs a `common_sampler` from that struct via
   `common_sampler_init` and drives it with `common_sampler_sample`/
   `common_sampler_accept` — the sampling algorithms themselves (top-k/top-p/
   min-p/repetition penalties/grammar-constrained sampling) are llama.cpp's,
@@ -318,7 +318,7 @@ being reimplemented in `jx-engine`:
 ## Build layering
 
 ```
-jx-engine (src/*.cpp)
+onyx-engine (src/*.cpp)
     │  target_link_libraries: llama-common, llama, mtmd, Threads::Threads
     ▼
 llama-common ─┐        (<llama src>/common — chat templating, sampling,
@@ -334,13 +334,13 @@ llama                 (<llama src> — the core inference library:
 ggml                  (<llama src>'s tensor/compute library; CPU by
                         default, CUDA/Vulkan/Metal/HIP/BLAS backends
                         selected via GGML_* CMake cache variables that
-                        JX_ENGINE_CUDA/VULKAN/METAL/HIP/BLAS forward)
+                        ONYX_ENGINE_CUDA/VULKAN/METAL/HIP/BLAS forward)
 ```
 
 `<llama src>` is the llama.cpp source tree `CMakeLists.txt` resolves at
 configure time, in this order:
 
-1. `-DJX_ENGINE_LLAMA_DIR=<path>` — explicit override
+1. `-DONYX_ENGINE_LLAMA_DIR=<path>` — explicit override
 2. `node_modules/@jxburros/llama-cpp-source` — the npm package installed
    by `npm ci` (canonical path; see [`building.md`](building.md))
 3. `vendor/llama.cpp` — a manually placed source tree (gitignored, fallback
@@ -354,31 +354,31 @@ fetched automatically — it exists only as a manual escape hatch.
 `LLAMA_BUILD_SERVER`, and `LLAMA_BUILD_APP` are all forced `OFF` (so
 upstream's own `llama-server`, its app binary, and example binaries are
 never built), `LLAMA_BUILD_COMMON` is forced `ON` (so the `common` library
-`jx-engine` depends on is available), and `LLAMA_CURL` is forced `OFF`.
+`onyx-engine` depends on is available), and `LLAMA_CURL` is forced `OFF`.
 `LLAMA_BUILD_MTMD` is forced `ON` — upstream's escape hatch for building
 `tools/mtmd` as a standalone library directly (`add_subdirectory()`)
 without going through `tools/CMakeLists.txt` and the rest of the (still-off)
-tools tree — giving `jx-engine` multimodal projector support without
+tools tree — giving `onyx-engine` multimodal projector support without
 building any of upstream's own CLI tools. `MTMD_VIDEO` is forced `OFF`:
 mtmd's video path shells out to an `ffmpeg` binary at runtime, and
-`jx-engine` takes no runtime dependency on external processes.
-`jx-engine`'s include paths pull from exactly two places in that tree:
+`onyx-engine` takes no runtime dependency on external processes.
+`onyx-engine`'s include paths pull from exactly two places in that tree:
 `<llama src>/common` and `<llama src>/tools/mtmd`.
 
 `cpp-httplib` (the HTTP server used in `server.cpp`) is **not** one of them
-any more. It is jx-engine's own vendored copy under
+any more. It is onyx-engine's own vendored copy under
 [`third_party/cpp-httplib`](../third_party/cpp-httplib), compiled here as the
-`jx-httplib` static target. It used to be an include path into
+`onyx-httplib` static target. It used to be an include path into
 `<llama src>/vendor/cpp-httplib`, with the implementation coming out of
 `libllama-common.so` — which links upstream's own cpp-httplib statically and
-re-exports ~1200 `httplib::*` symbols. That made jx-engine's HTTP layer
+re-exports ~1200 `httplib::*` symbols. That made onyx-engine's HTTP layer
 depend on a private implementation detail of `llama-common`, and it meant the
 tuning macros upstream sets `PRIVATE` on its target (notably
 `CPPHTTPLIB_TCP_NODELAY`, a default member initializer of `httplib::Server`)
 applied to `httplib.cpp` but not to `server.cpp` — an ODR mismatch, latent
 rather than live, since the value that took effect came from the out-of-line
 constructor in `httplib.cpp`. Both go away with a local copy whose macros are
-`PUBLIC`. `jx-httplib` is deliberately listed **first** on the link line,
+`PUBLIC`. `onyx-httplib` is deliberately listed **first** on the link line,
 ahead of `llama-common`, so no httplib symbol resolves to llama.cpp's shared
 library; see that directory's `README.md`.
 
@@ -389,15 +389,15 @@ built against. This does **not** come from upstream's `llama_build_info()`.
 Upstream's `cmake/build-info.cmake` runs `git rev-parse` with the llama.cpp
 source directory as the working directory; in the canonical build that
 directory is `node_modules/@jxburros/llama-cpp-source`, which has no `.git` of
-its own, so git walks up and finds **jx-engine's** repository instead —
-reporting jx-engine's own commit and commit count as llama.cpp build info
-(before this was fixed, a build at jx-engine commit `c0394c2` reported
+its own, so git walks up and finds **onyx-engine's** repository instead —
+reporting onyx-engine's own commit and commit count as llama.cpp build info
+(before this was fixed, a build at onyx-engine commit `c0394c2` reported
 `b20-c0394c2`).
 
-`CMakeLists.txt` resolves the pin itself into `JX_ENGINE_LLAMA_PIN`: from the
+`CMakeLists.txt` resolves the pin itself into `ONYX_ENGINE_LLAMA_PIN`: from the
 npm package's `package.json` version (`0.3.0-b10711.g9723942ad` →
 `b10711-9723942ad`), which `packaging/make-vendor-package.sh` writes from the
-pinned commit; or, for a git checkout supplied via `-DJX_ENGINE_LLAMA_DIR` or
+pinned commit; or, for a git checkout supplied via `-DONYX_ENGINE_LLAMA_DIR` or
 `vendor/llama.cpp`, from git — but only after confirming that the repository's
 top level *is* that tree, so a parent repository can never be mistaken for it.
 Failing both, the pin is `unknown`.

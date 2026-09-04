@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# End-to-end smoke test for jx-engine using the offline tiny test model.
+# End-to-end smoke test for onyx-engine using the offline tiny test model.
 #
-# Usage: scripts/smoke-test.sh [path-to-jx-engine-binary]
+# Usage: scripts/smoke-test.sh [path-to-onyx-engine-binary]
 #
 # Requires: python3 + numpy (to generate the test model), curl.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-BIN="${1:-build/jx-engine}"
+BIN="${1:-build/onyx-engine}"
 MODEL="models-test/tiny-llama-random.gguf"
 MMPROJ="models-test/tiny-mmproj-random.gguf"
-PORT="${JX_SMOKE_PORT:-18190}"
+PORT="${ONYX_SMOKE_PORT:-18190}"
 EMB_PORT=$((PORT + 1))
 NP_PORT=$((PORT + 2))
 MM_PORT=$((PORT + 3))
@@ -51,7 +51,7 @@ json_has() { # url-args... jq-ish python expression reading parsed json as d
 [ -f "$MMPROJ" ] || python3 scripts/make-tiny-mmproj.py "$MMPROJ"
 
 echo "== CLI"
-check "--version" bash -c "'$BIN' --version | grep -q jx-engine"
+check "--version" bash -c "'$BIN' --version | grep -q onyx-engine"
 check "--help lists --cache-reuse" bash -c "'$BIN' --help | grep -q -- --cache-reuse"
 check "--help lists --parallel" bash -c "'$BIN' --help | grep -q -- --parallel"
 check "--help lists --context-shift" bash -c "'$BIN' --help | grep -q -- --context-shift"
