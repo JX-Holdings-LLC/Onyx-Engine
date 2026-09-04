@@ -7,7 +7,9 @@
 // flag must be absent from both so callers never pass it expecting behavior
 // we do not have. v2 added --parallel (real slots), --context-shift, --keep,
 // --reasoning-budget, --reasoning-budget-message, and --mmproj under this
-// rule.
+// rule. --no-webui is a no-op accepted under the same rule, purely for
+// compatibility: JX Runtime's llama.cpp adapter passes it on every launch,
+// and onyx-engine has no web UI to disable.
 #pragma once
 
 #include <cstdint>
@@ -44,6 +46,7 @@ struct onyx_args {
     int32_t     cache_reuse  = 1;     // min prefix length to reuse KV cache; 0 disables
     bool        jinja        = true;  // accepted for compat; jinja is always used
     bool        verbose      = false;
+    bool        no_webui     = false; // accepted for compat; onyx-engine has no web UI
 
     // context shift (v2): drop oldest tokens mid-generation instead of
     // stopping when the context fills

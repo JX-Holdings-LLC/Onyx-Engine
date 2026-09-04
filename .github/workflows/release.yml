@@ -1,0 +1,198 @@
+# onyx-engine release: build a self-contained static binary for each
+# supported platform and attach it to a GitHub Release for the pushed tag.
+#
+# Triggers: a `v*` tag push, or manual dispatch with a `tag` input (for
+# re-running a release without pushing a new tag). Each platform builds a
+# statically linked (-DBUILD_SHARED_LIBS=OFF) Release binary from the same
+# pinned vendored llama.cpp source CI uses, packages it flat (binary +
+# LICENSE, no subdirectory) as
+# `onyx-engine-<tag>-<platformKey>.tar.gz`/`.zip`, where `<platformKey>` is
+# exactly `linux-x64`, `darwin-arm64`, `darwin-x64`, or `win32-x64` — these
+# match Node's `${process.platform}-${process.arch}`, which is how JX
+# Runtime's managed downloader picks the right asset. A final `release` job
+# collects every archive, writes `checksums.txt`, and creates/updates the
+# GitHub Release for the tag.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release (e.g. v0.3.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform-key: linux-x64
+            runs-on: ubuntu-22.04
+            archive-ext: tar.gz
+            bin-name: onyx-engine
+          - platform-key: darwin-arm64
+            runs-on: macos-latest
+            archive-ext: tar.gz
+            bin-name: onyx-engine
+          - platform-key: darwin-x64
+            runs-on: macos-13
+            archive-ext: tar.gz
+            bin-name: onyx-engine
+          - platform-key: win32-x64
+            runs-on: windows-latest
+            archive-ext: zip
+            bin-name: onyx-engine.exe
+    name: build (${{ matrix.platform-key }})
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Same vendor-source staging as ci.yml: stage the pinned llama.cpp
+      # source package, then extract it into node_modules/@jxburros/llama-cpp-source
+      # (bash shell throughout, including on Windows, via the job-level
+      # `defaults.run.shell: bash` above).
+      - name: Read llama.cpp pin
+        id: pin
+        run: |
+          commit=$(sed -n 's/^LLAMA_COMMIT="\(.*\)"/\1/p' packaging/make-vendor-package.sh)
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Cache vendored llama.cpp source package
+        id: vendor-cache
+        uses: actions/cache@v4
+        with:
+          path: packaging/dist
+          key: vendor-${{ steps.pin.outputs.commit }}-${{ hashFiles('packaging/make-vendor-package.sh') }}
+
+      - name: Stage vendor package (downloads the pinned commit)
+        if: steps.vendor-cache.outputs.cache-hit != 'true'
+        run: bash packaging/make-vendor-package.sh
+
+      - name: Install vendor package
+        run: |
+          rm -rf node_modules/@jxburros/llama-cpp-source
+          mkdir -p node_modules/@jxburros/llama-cpp-source
+          tar -xzf packaging/dist/jxburros-llama-cpp-source-*.tgz --strip-components=1 \
+              -C node_modules/@jxburros/llama-cpp-source
+
+      - name: Configure (Release, static)
+        if: runner.os != 'Windows'
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF
+
+      # MSVC: Visual Studio 17 2022 generator, x64. Configuration is chosen
+      # at build time (--config Release) rather than via CMAKE_BUILD_TYPE,
+      # which multi-config generators like this one ignore.
+      - name: Configure (Release, static, MSVC)
+        if: runner.os == 'Windows'
+        run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DBUILD_SHARED_LIBS=OFF
+
+      - name: Build
+        if: runner.os != 'Windows'
+        run: cmake --build build --target onyx-engine --config Release -j "$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+
+      - name: Build (MSVC)
+        if: runner.os == 'Windows'
+        run: cmake --build build --target onyx-engine --config Release
+
+      - name: Locate binary
+        id: locate
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            # multi-config generator: binary lands under build/Release/
+            for cand in build/Release/onyx-engine.exe build/onyx-engine.exe; do
+              if [ -f "$cand" ]; then echo "path=$cand" >> "$GITHUB_OUTPUT"; break; fi
+            done
+          else
+            echo "path=build/onyx-engine" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sanity check (--version)
+        run: "'${{ steps.locate.outputs.path }}' --version"
+
+      - name: Package (tar.gz)
+        if: matrix.archive-ext == 'tar.gz'
+        run: |
+          stage=$(mktemp -d)
+          cp "${{ steps.locate.outputs.path }}" "$stage/${{ matrix.bin-name }}"
+          cp LICENSE "$stage/LICENSE"
+          chmod +x "$stage/${{ matrix.bin-name }}"
+          tar -czf "onyx-engine-${{ steps.tag.outputs.tag }}-${{ matrix.platform-key }}.tar.gz" \
+              -C "$stage" "${{ matrix.bin-name }}" LICENSE
+
+      - name: Package (zip)
+        if: matrix.archive-ext == 'zip'
+        run: |
+          stage=$(mktemp -d)
+          cp "${{ steps.locate.outputs.path }}" "$stage/${{ matrix.bin-name }}"
+          cp LICENSE "$stage/LICENSE"
+          (cd "$stage" && 7z a -tzip "$OLDPWD/onyx-engine-${{ steps.tag.outputs.tag }}-${{ matrix.platform-key }}.zip" \
+              "${{ matrix.bin-name }}" LICENSE)
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: onyx-engine-${{ matrix.platform-key }}
+          path: onyx-engine-${{ steps.tag.outputs.tag }}-${{ matrix.platform-key }}.${{ matrix.archive-ext }}
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download all archives
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: onyx-engine-*
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum onyx-engine-* > checksums.txt
+          cat checksums.txt
+
+      - name: Create/update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            dist/onyx-engine-*
+            dist/checksums.txt

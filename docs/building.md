@@ -167,6 +167,57 @@ the vendor package, `npm install`s it, builds with `ccache`, then runs
 separate model-download step — the test scripts generate everything they
 need themselves.
 
+## Release binaries
+
+`.github/workflows/release.yml` builds prebuilt `onyx-engine` binaries and
+publishes them to this repo's GitHub Releases whenever a `v*` tag is
+pushed (or via manual `workflow_dispatch` with a `tag` input, to re-run a
+release without pushing a new tag).
+
+For each of four platforms — `linux-x64` (ubuntu-22.04, for older-glibc
+portability), `darwin-arm64` (macOS, Apple Silicon), `darwin-x64` (macOS,
+Intel), and `win32-x64` (MSVC via the Visual Studio 17 2022 generator) — the
+job stages the same pinned vendored llama.cpp source as CI, configures with
+`-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF` (so `llama`,
+`llama-common`, `ggml`, and `mtmd` are all linked in statically and the
+result is a single self-contained binary with no `libllama`/`libggml`
+alongside it), builds the `onyx-engine` target, runs `onyx-engine --version`
+as a sanity check, then packages the binary flat — `onyx-engine` (or
+`onyx-engine.exe` on Windows) plus `LICENSE`, no subdirectory — as:
+
+- `onyx-engine-<tag>-linux-x64.tar.gz`
+- `onyx-engine-<tag>-darwin-arm64.tar.gz`
+- `onyx-engine-<tag>-darwin-x64.tar.gz`
+- `onyx-engine-<tag>-win32-x64.zip`
+
+where `<tag>` is the pushed git tag (e.g. `v0.3.0`) and each `<platformKey>`
+segment (`linux-x64`, `darwin-arm64`, `darwin-x64`, `win32-x64`) matches
+Node's `${process.platform}-${process.arch}` — this is what lets JX
+Runtime's managed downloader (`jx-runtime backend install --engine onyx`)
+compute the right asset name for the machine it's running on.
+
+A final `release` job downloads every platform's archive, writes a
+`checksums.txt` next to them (`sha256sum`-style lines: a lowercase hex
+digest, two spaces, then the filename — one line per archive), and
+creates or updates the GitHub Release for the tag with all four archives
+plus `checksums.txt` attached, with `generate_release_notes: true`.
+
+**Cutting a release:**
+
+```bash
+git tag v0.3.0
+git push origin v0.3.0
+```
+
+pushing the tag is the only step; the workflow does the rest. **JX
+Runtime's downloader pins the `v0.3.0` tag and the exact asset names above**
+— see the `[Unreleased]` entry in `CHANGELOG.md` — so the first release cut
+from this repo must be tagged `v0.3.0` and must succeed in producing all
+four archives plus `checksums.txt`, or JX Runtime's managed install will
+fail to find its asset. The Windows (`win32-x64`) leg of this workflow has
+not been run or verified as of this writing; treat it as unverified until a
+real release run confirms it.
+
 ## Version string
 
 `PROJECT_VERSION` (from `project(onyx-engine VERSION 0.1.0 ...)`) is baked
