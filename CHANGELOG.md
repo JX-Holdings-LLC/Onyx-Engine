@@ -9,10 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 
 - **`--no-webui` accepted as a compatibility no-op.** JX Runtime's llama.cpp
-  adapter (`src/backends/llamacpp.js`) passes `--no-webui` on every launch;
-  `onyx-engine` has no web UI to disable, but previously rejected the flag
-  as unknown, which would have broken a `onyxengine` adapter using the same
-  `buildArgs()` path. Added to both the parser and the curated `--help` text
+  adapter (`src/backends/llamacpp.js`) passes `--no-webui` on every launch,
+  and `onyx-engine` previously rejected the flag as unknown. JX Runtime's
+  `onyxengine` adapter strips the flag rather than relying on this, so
+  accepting it only matters for a launch that reuses `llama-server`
+  arguments by hand. Added to both the parser and the curated `--help` text
   together, per `src/args.h`'s "parser and `--help` move together" rule.
 - **Release workflow** (`.github/workflows/release.yml`), triggered on `v*`
   tag push (or manual dispatch with a `tag` input): builds a statically

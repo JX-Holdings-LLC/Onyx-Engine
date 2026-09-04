@@ -208,10 +208,12 @@ JX Runtime ships a `onyxengine` adapter alongside its `llamacpp` one:
   one: no flash-attn-style probing needed given `onyx-engine`'s value-only
   `-fa` form, and `--parallel`/`--context-shift`/`--mmproj`/
   `--reasoning-budget` are all passed on the same terms as to `llama-server`,
-  since v2 implements all of them. It also passes `--no-webui`
-  unconditionally, the same as the `llamacpp` adapter does — `onyx-engine`
-  accepts it as a no-op (see `src/args.h`/`src/args.cpp`) purely so this
-  shared launch code doesn't need an engine-specific branch for it.
+  since v2 implements all of them. It does *not* pass `--no-webui`: the
+  `onyxengine` adapter strips that flag from the shared launch arguments,
+  because v0.2.0 rejects it and v0.3.0 only accepts it as a no-op (see
+  `src/args.h`/`src/args.cpp`), so there is no build on which passing it
+  buys anything. Accepting it keeps a hand-configured launch that reuses
+  `llama-server` arguments from failing at argument parsing.
 - A managed install path (`jx-runtime backend install --engine onyx`)
   downloads a prebuilt `onyx-engine` binary from this repo's GitHub
   Releases (see [`README.md#prebuilt-binaries`](../README.md#prebuilt-binaries)
