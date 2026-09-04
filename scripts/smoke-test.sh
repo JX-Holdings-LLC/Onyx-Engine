@@ -56,6 +56,7 @@ check "--help lists --cache-reuse" bash -c "'$BIN' --help | grep -q -- --cache-r
 check "--help lists --parallel" bash -c "'$BIN' --help | grep -q -- --parallel"
 check "--help lists --context-shift" bash -c "'$BIN' --help | grep -q -- --context-shift"
 check "--help lists --mmproj" bash -c "'$BIN' --help | grep -q -- --mmproj"
+check "--help lists --no-webui" bash -c "'$BIN' --help | grep -q -- --no-webui"
 
 echo "== starting generation instance on :$PORT"
 "$BIN" -m "$MODEL" --port "$PORT" -c 512 --alias tiny-test > /dev/null 2>&1 &

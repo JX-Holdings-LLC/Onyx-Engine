@@ -14,9 +14,15 @@ Node.js model runtime — can spawn `onyx-engine` in place of a third-party
 `llama-server` binary: one `onyx-engine` process per loaded model, polled at
 `GET /health`, with its OpenAI-compatible endpoints proxied through to
 callers. See [`docs/jx-runtime-integration.md`](docs/jx-runtime-integration.md)
-for exactly how the two projects are meant to connect; that mapping is a
-description of the intended contract, not a claim that JX Runtime has an
-adapter for Onyx Engine today (it does not — see that document's last section).
+for exactly how the two projects are meant to connect. JX Runtime now ships
+that adapter: `src/backends/onyxengine.js`, selected via
+`execution.backend: 'onyxengine'` and configured under
+`backends.onyxengine.*`, plus a managed install path
+(`jx-runtime backend install --engine onyx`) that downloads a prebuilt
+`onyx-engine` from this repo's [Releases](#prebuilt-binaries) into
+`<data-dir>/engines/onyx-engine/` — the same way JX Runtime already manages
+its pinned `llama-server` download. See that document for the endpoint
+mapping this is built against.
 
 ## Features (v2)
 
@@ -150,6 +156,24 @@ npm install ./packaging/dist/jxburros-llama-cpp-source-*.tgz --no-save
 See [`docs/building.md`](docs/building.md#packaging--publishing-the-vendor-source-package)
 for the full packaging/publishing workflow.
 
+## Prebuilt binaries
+
+`.github/workflows/release.yml` publishes prebuilt `onyx-engine` binaries to
+this repo's [GitHub Releases](https://github.com/JX-Holdings-LLC/Onyx-Engine/releases)
+on every `v*` tag push, for `linux-x64`, `darwin-arm64`, `darwin-x64`, and
+`win32-x64`. Each release attaches:
+
+- `onyx-engine-<tag>-<platformKey>.tar.gz` (`.zip` for `win32-x64`) — the
+  binary (`onyx-engine`/`onyx-engine.exe`) plus `LICENSE`, flat at the top
+  level of the archive
+- `checksums.txt` — `sha256sum`-style lines for every archive in the release
+
+`<platformKey>` is exactly `linux-x64`, `darwin-arm64`, `darwin-x64`, or
+`win32-x64`, matching Node's `${process.platform}-${process.arch}` — this is
+what JX Runtime's managed downloader uses to pick the right asset. See
+["Release binaries"](docs/building.md#release-binaries) in `docs/building.md`
+for how a release is built and cut.
+
 ## Endpoints
 
 | Method | Path | Purpose |
@@ -181,6 +205,7 @@ and the SSE frame format, is in [`docs/api.md`](docs/api.md).
 | `--chat-template NAME` | — | override with a built-in template |
 | `--chat-template-file F` | — | override with a template read from a file |
 | `--jinja` | on | accepted for compatibility; jinja is always used |
+| `--no-webui` | off | accepted for compatibility; onyx-engine has no web UI |
 | `--host HOST` | `127.0.0.1` | bind address |
 | `--port PORT` | `8080` | listen port |
 | `--api-key KEY` | — | require this bearer token on every endpoint but `/health` |

@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`--no-webui` accepted as a compatibility no-op.** JX Runtime's llama.cpp
+  adapter (`src/backends/llamacpp.js`) passes `--no-webui` on every launch,
+  and `onyx-engine` previously rejected the flag as unknown. JX Runtime's
+  `onyxengine` adapter strips the flag rather than relying on this, so
+  accepting it only matters for a launch that reuses `llama-server`
+  arguments by hand. Added to both the parser and the curated `--help` text
+  together, per `src/args.h`'s "parser and `--help` move together" rule.
+- **Release workflow** (`.github/workflows/release.yml`), triggered on `v*`
+  tag push (or manual dispatch with a `tag` input): builds a statically
+  linked (`-DBUILD_SHARED_LIBS=OFF`) Release binary for `linux-x64`,
+  `darwin-arm64`, `darwin-x64`, and `win32-x64`, and publishes each as
+  `onyx-engine-<tag>-<platformKey>.tar.gz` (`.zip` on Windows) — binary plus
+  `LICENSE`, flat, no subdirectory — attached to a GitHub Release for the
+  tag alongside a `checksums.txt` (`sha256sum`-style, two-space separated).
+  `<platformKey>` is exactly `linux-x64`/`darwin-arm64`/`darwin-x64`/
+  `win32-x64`, matching Node's `${process.platform}-${process.arch}`, since
+  JX Runtime's managed downloader (`jx-runtime backend install --engine
+  onyx`) builds the asset URL from that pair. **JX Runtime's downloader
+  pins the `v0.3.0` tag and these exact asset names**, so the first release
+  cut from this repo must be tagged `v0.3.0` with a workflow run that
+  produces all four platform archives plus `checksums.txt`, or that
+  downloader will fail to find its asset.
+
 ### Changed
 
 - **Project renamed from JX Engine to Onyx Engine.** All identifiers,

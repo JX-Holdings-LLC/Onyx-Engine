@@ -1,13 +1,24 @@
 # JX Runtime Integration
 
-**Status: no adapter exists yet.** JX Runtime's current llama.cpp backend
-(`src/backends/llamacpp.js` in the JX-Runtime repository) spawns and speaks
-to upstream `llama-server`, not `onyx-engine`. This document maps what that
-adapter already does against upstream `llama-server` onto what `onyx-engine`
-actually provides, as a contract for a *future* `onyxengine` adapter — it does
-not describe integration that exists today. Treat every "the adapter does
-X" statement below as "JX Runtime's llamacpp adapter does X against
-`llama-server` today, and `onyx-engine` is built to answer the same way."
+**Status: JX Runtime has an `onyxengine` adapter.** JX Runtime's llama.cpp
+backend (`src/backends/llamacpp.js` in the JX-Runtime repository) spawns and
+speaks to upstream `llama-server`; alongside it, JX Runtime now ships a
+separate `onyxengine` adapter (`src/backends/onyxengine.js`), selected via
+`execution.backend: 'onyxengine'` and configured under
+`backends.onyxengine.*`, that spawns `onyx-engine` the same way the llamacpp
+adapter spawns `llama-server`. A managed install path
+(`jx-runtime backend install --engine onyx`) downloads a prebuilt
+`onyx-engine` from this repo's GitHub Releases (see
+[`README.md#prebuilt-binaries`](../README.md#prebuilt-binaries)) into
+`<data-dir>/engines/onyx-engine/`, pinned to a specific release tag and
+asset-name scheme — see `CHANGELOG.md` for which tag. This document maps
+what the llamacpp adapter does against upstream `llama-server` onto what
+`onyx-engine` actually provides; it describes the contract the `onyxengine`
+adapter is built against, not a line-by-line account of that adapter's own
+source, which this repository does not contain. Treat every "the adapter
+does X" statement below as "JX Runtime's llamacpp adapter does X against
+`llama-server` today, and `onyx-engine` is built to answer the same way" —
+the `onyxengine` adapter's own behavior lives in the JX-Runtime repository.
 
 ## Endpoints the adapter calls
 
@@ -179,30 +190,37 @@ than falling back to per-frame estimation against a real `onyx-engine`
 stream, and will pick up `finish_reason` and the `timings` breakdown from
 `onyx-engine`'s finish/usage frames the same way it does from `llama-server`'s.
 
-## Adding a `onyxengine` adapter (future work — not implemented)
+## The `onyxengine` adapter
 
-Nothing below exists in JX Runtime today; this is the shape a future
-integration would plausibly take, based on how the existing `llamacpp`
-adapter is structured, for a reader deciding whether/how to build it:
+JX Runtime ships a `onyxengine` adapter alongside its `llamacpp` one:
 
-- An `execution.backend` enum value (alongside whatever values JX Runtime
-  already supports there) naming `onyxengine`, selecting a new adapter class
-  implementing the same `BackendAdapter` interface `LlamaCppAdapter` does.
+- An `execution.backend: 'onyxengine'` value selects a `src/backends/onyxengine.js`
+  adapter class implementing the same `BackendAdapter` interface
+  `LlamaCppAdapter` does.
 - A `backends.onyxengine` config section, analogous to `backends.llamacpp`
   (`serverPath`/`autoManage`, timeouts, jinja/cache-reuse-style toggles),
-  though a `onyxengine` adapter would need less of it than the `llamacpp`
-  adapter carries today — `onyx-engine` has no separate `--jinja` toggle to
-  reason about (jinja is always on). It would still want `--mmproj`/
-  `--reasoning-budget` capability gating (via `supportsFlag`, same as any
-  other flag) since those remain optional features a given launch may or
-  may not want, even though both are real in v2.
-- The `buildArgs()`-equivalent for `onyxengine` would be substantially
-  simpler than the current `llamacpp` one: no flash-attn-style probing
-  needed if `onyx-engine`'s value-only `-fa` form is assumed, and
-  `--parallel`/`--context-shift`/`--mmproj`/`--reasoning-budget` can all be
-  passed on the same terms as to `llama-server`, since v2 implements all of
-  them.
+  needs less of it than the `llamacpp` adapter carries — `onyx-engine` has no
+  separate `--jinja` toggle to reason about (jinja is always on). It still
+  gates `--mmproj`/`--reasoning-budget` via `supportsFlag`, same as any other
+  flag, since those remain optional features a given launch may or may not
+  want, even though both are real as of `onyx-engine` v2.
+- Its `buildArgs()`-equivalent is substantially simpler than the `llamacpp`
+  one: no flash-attn-style probing needed given `onyx-engine`'s value-only
+  `-fa` form, and `--parallel`/`--context-shift`/`--mmproj`/
+  `--reasoning-budget` are all passed on the same terms as to `llama-server`,
+  since v2 implements all of them. It does *not* pass `--no-webui`: the
+  `onyxengine` adapter strips that flag from the shared launch arguments,
+  because v0.2.0 rejects it and v0.3.0 only accepts it as a no-op (see
+  `src/args.h`/`src/args.cpp`), so there is no build on which passing it
+  buys anything. Accepting it keeps a hand-configured launch that reuses
+  `llama-server` arguments from failing at argument parsing.
+- A managed install path (`jx-runtime backend install --engine onyx`)
+  downloads a prebuilt `onyx-engine` binary from this repo's GitHub
+  Releases (see [`README.md#prebuilt-binaries`](../README.md#prebuilt-binaries)
+  and [`docs/building.md#release-binaries`](building.md#release-binaries) for
+  the artifact naming scheme) into `<data-dir>/engines/onyx-engine/`, the
+  same way JX Runtime already manages its pinned `llama-server` download.
 
-This section is intentionally scoped to "what would this look like," not an
-implementation plan — building it is out of scope for this document and for
-`onyx-engine` itself.
+This section describes the contract the `onyxengine` adapter is built
+against from the `onyx-engine` side; the adapter's own implementation lives
+in the JX-Runtime repository, not here.

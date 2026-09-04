@@ -42,6 +42,7 @@ void onyx_args_print_help() {
         "       --chat-template NAME    override the model's chat template with a built-in one\n"
         "       --chat-template-file F  override the model's chat template from a file\n"
         "       --jinja                 apply the model's jinja chat template (always on)\n"
+        "       --no-webui              accepted for compatibility (onyx-engine has no web UI)\n"
         "\n"
         "network:\n"
         "       --host HOST             address to bind (default: 127.0.0.1)\n"
@@ -111,6 +112,7 @@ bool onyx_args_parse(int argc, char ** argv, onyx_args & out) {
         }
         if (is("-v", "--verbose")) { out.verbose = true; continue; }
         if (is("--jinja"))         { out.jinja   = true; continue; }
+        if (is("--no-webui"))      { out.no_webui = true; continue; }
         if (is("--mlock"))         { out.mlock   = true; continue; }
         if (is("--no-mmap"))       { out.no_mmap = true; continue; }
         if (is("--embedding", "--embeddings")) { out.embedding = true; continue; }
