@@ -27,7 +27,7 @@ npm ci   # or: npm install
 This installs the source tree into `node_modules/@jxburros/llama-cpp-source`.
 `CMakeLists.txt` resolves the llama.cpp source tree in this order:
 
-1. `-DJX_ENGINE_LLAMA_DIR=<path>` — explicit override, if passed
+1. `-DONYX_ENGINE_LLAMA_DIR=<path>` — explicit override, if passed
 2. `node_modules/@jxburros/llama-cpp-source` — canonical, from `npm ci`
 3. `vendor/llama.cpp` — a manually placed source tree (gitignored; fallback
    only, e.g. for offline work without npm)
@@ -53,13 +53,13 @@ cannot be skipped silently.
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target jx-engine -j
+cmake --build build --target onyx-engine -j
 ```
 
 (Equivalently: `npm run build`, which runs both `cmake` steps.)
 
-This produces `build/jx-engine`. No acceleration option is required — CPU
-execution is the default in both `jx-engine` (llama.cpp's CPU/ggml backend
+This produces `build/onyx-engine`. No acceleration option is required — CPU
+execution is the default in both `onyx-engine` (llama.cpp's CPU/ggml backend
 is always built in) and at runtime (`-ngl 0`, or simply not offloading
 layers).
 
@@ -67,43 +67,43 @@ layers).
 
 ## Acceleration option matrix
 
-`jx-engine`'s own CMake options forward to the corresponding `GGML_*` cache
+`onyx-engine`'s own CMake options forward to the corresponding `GGML_*` cache
 variables that llama.cpp's build reads (`CMakeLists.txt` uses
 `CACHE BOOL "" FORCE`, so these always take effect regardless of a prior
 cached value):
 
-| `jx-engine` option | Default | Forces (in llama.cpp/ggml) |
+| `onyx-engine` option | Default | Forces (in llama.cpp/ggml) |
 |---|---|---|
-| `JX_ENGINE_CUDA` | `OFF` | `GGML_CUDA` |
-| `JX_ENGINE_VULKAN` | `OFF` | `GGML_VULKAN` |
-| `JX_ENGINE_METAL` | `OFF` | `GGML_METAL` |
-| `JX_ENGINE_HIP` | `OFF` | `GGML_HIP` |
-| `JX_ENGINE_BLAS` | `OFF` | `GGML_BLAS` |
+| `ONYX_ENGINE_CUDA` | `OFF` | `GGML_CUDA` |
+| `ONYX_ENGINE_VULKAN` | `OFF` | `GGML_VULKAN` |
+| `ONYX_ENGINE_METAL` | `OFF` | `GGML_METAL` |
+| `ONYX_ENGINE_HIP` | `OFF` | `GGML_HIP` |
+| `ONYX_ENGINE_BLAS` | `OFF` | `GGML_BLAS` |
 
 Enable exactly the one matching your hardware:
 
 ```bash
 # CUDA (NVIDIA)
-cmake -B build -DJX_ENGINE_CUDA=ON
+cmake -B build -DONYX_ENGINE_CUDA=ON
 
 # Vulkan (cross-vendor GPU)
-cmake -B build -DJX_ENGINE_VULKAN=ON
+cmake -B build -DONYX_ENGINE_VULKAN=ON
 
 # Metal (Apple Silicon / macOS)
-cmake -B build -DJX_ENGINE_METAL=ON
+cmake -B build -DONYX_ENGINE_METAL=ON
 
 # ROCm / HIP (AMD)
-cmake -B build -DJX_ENGINE_HIP=ON
+cmake -B build -DONYX_ENGINE_HIP=ON
 
 # BLAS
-cmake -B build -DJX_ENGINE_BLAS=ON
+cmake -B build -DONYX_ENGINE_BLAS=ON
 
 cmake --build build
 ```
 
 Each option requires that backend's own SDK/toolchain to be installed and
-discoverable (the CUDA toolkit for `JX_ENGINE_CUDA`, the Vulkan SDK for
-`JX_ENGINE_VULKAN`, ROCm/HIP for `JX_ENGINE_HIP`, and so on) — `jx-engine`'s
+discoverable (the CUDA toolkit for `ONYX_ENGINE_CUDA`, the Vulkan SDK for
+`ONYX_ENGINE_VULKAN`, ROCm/HIP for `ONYX_ENGINE_HIP`, and so on) — `onyx-engine`'s
 `CMakeLists.txt` only sets the flag that tells llama.cpp/ggml's own build
 logic to look for it; it does not vendor or install those SDKs itself.
 CPU execution remains available as a fallback in every build regardless of
@@ -116,7 +116,7 @@ typically enabled per build").
 
 ## What llama.cpp's own build is told to skip
 
-To keep the build to just what `jx-engine` links against,
+To keep the build to just what `onyx-engine` links against,
 `CMakeLists.txt` forces these llama.cpp cache variables:
 
 | Variable | Value | Effect |
@@ -126,7 +126,7 @@ To keep the build to just what `jx-engine` links against,
 | `LLAMA_BUILD_TOOLS` | `OFF` | no llama.cpp CLI tools |
 | `LLAMA_BUILD_SERVER` | `OFF` | upstream's own `llama-server` is not built |
 | `LLAMA_BUILD_APP` | `OFF` | no llama.cpp app binary |
-| `LLAMA_BUILD_COMMON` | `ON` | the `common` library `jx-engine` depends on is built |
+| `LLAMA_BUILD_COMMON` | `ON` | the `common` library `onyx-engine` depends on is built |
 | `LLAMA_CURL` | `OFF` | no libcurl dependency pulled in |
 
 ## Install target
@@ -135,9 +135,9 @@ To keep the build to just what `jx-engine` links against,
 cmake --install build --prefix /usr/local
 ```
 
-Installs the `jx-engine` binary to `<prefix>/bin` (the only `install()`
+Installs the `onyx-engine` binary to `<prefix>/bin` (the only `install()`
 rule in `CMakeLists.txt` is `RUNTIME DESTINATION bin`). There is no
-`install` rule for headers, libraries, or config files — `jx-engine` is
+`install` rule for headers, libraries, or config files — `onyx-engine` is
 shipped as a single self-contained binary.
 
 ## Test scripts
@@ -149,7 +149,7 @@ hub and CI needs no external model access.
 | Script | Exercises | Test model generator |
 |---|---|---|
 | `scripts/smoke-test.sh` | CLI `--help`/`--version`, all HTTP endpoints, streaming, parallel slots, context shift, `--mmproj` multimodal chat, logprobs, `--reasoning-budget` | `scripts/make-tiny-model.py` (tiny GGUF, generation + embedding instances), `scripts/make-tiny-mmproj.py` (tiny llava-style projector GGUF) |
-| `scripts/safetensors-test.sh` | `scripts/convert-safetensors.py` directly, then `jx_resolve_model()`'s conversion cache end-to-end through a running `jx-engine` | `scripts/make-tiny-hf-model.py` (tiny HF directory: `config.json` + sharded-or-not `*.safetensors` + a byte-level BPE `tokenizer.json`) |
+| `scripts/safetensors-test.sh` | `scripts/convert-safetensors.py` directly, then `onyx_resolve_model()`'s conversion cache end-to-end through a running `onyx-engine` | `scripts/make-tiny-hf-model.py` (tiny HF directory: `config.json` + sharded-or-not `*.safetensors` + a byte-level BPE `tokenizer.json`) |
 
 `scripts/safetensors-test.sh` is standalone (not called from
 `smoke-test.sh` or `npm test`) since it needs `numpy` and exercises a
@@ -169,14 +169,14 @@ need themselves.
 
 ## Version string
 
-`PROJECT_VERSION` (from `project(jx-engine VERSION 0.1.0 ...)`) is baked
-into the binary as the `JX_ENGINE_VERSION` preprocessor define, which is
-what `jx-engine --version` and the `Server:` HTTP response header report.
+`PROJECT_VERSION` (from `project(onyx-engine VERSION 0.1.0 ...)`) is baked
+into the binary as the `ONYX_ENGINE_VERSION` preprocessor define, which is
+what `onyx-engine --version` and the `Server:` HTTP response header report.
 
 ## Packaging & publishing the vendor source package
 
 This section is for maintainers upgrading or publishing the vendored
-llama.cpp source, not for people building `jx-engine`. Consumers just run
+llama.cpp source, not for people building `onyx-engine`. Consumers just run
 `npm ci`.
 
 `packaging/make-vendor-package.sh` builds `@jxburros/llama-cpp-source`
@@ -194,13 +194,13 @@ packaging/make-vendor-package.sh [path-to-llama.cpp-checkout]
   checkout. Without one, it downloads the pinned commit's tarball from
   GitHub into `packaging/dist/` — this is the only point in the whole
   workflow that needs network access, and it's only needed for packaging,
-  never for building `jx-engine` itself.
+  never for building `onyx-engine` itself.
 - **Pruning.** It stages a copy of the source tree with `docs/`, `tests/`,
   `examples/`, `benches/`, `media/`, `pocs/`, `ci/`, `app/`, `conversion/`,
   `requirements/`/`requirements.txt`, and `.git*`/`.devops` removed, plus all
   of `models/` except `ggml-vocab-llama-spm.gguf` (the vocab file
   `scripts/make-tiny-model.py` reads to build its smoke-test model), plus
-  everything under `tools/` except `tools/mtmd` — `jx-engine` builds exactly
+  everything under `tools/` except `tools/mtmd` — `onyx-engine` builds exactly
   one thing out of `tools/` (the `mtmd` library, via `LLAMA_BUILD_MTMD=ON`,
   which `add_subdirectory()`s `tools/mtmd` directly), so `tools/server`,
   `tools/cli`, `tools/quantize`, and the rest of upstream's CLI tools are

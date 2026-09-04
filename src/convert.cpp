@@ -87,7 +87,7 @@ static std::string shquote(const std::string & s) {
 // ---------------------------------------------------------------------------
 
 static std::string resolve_converter_script(std::string & err) {
-    if (const char * env = std::getenv("JX_ENGINE_CONVERT_SCRIPT")) {
+    if (const char * env = std::getenv("ONYX_ENGINE_CONVERT_SCRIPT")) {
         if (*env) {
             return env;
         }
@@ -104,9 +104,9 @@ static std::string resolve_converter_script(std::string & err) {
         }
     }
 
-#ifdef JX_ENGINE_SOURCE_DIR
+#ifdef ONYX_ENGINE_SOURCE_DIR
     {
-        fs::path candidate = fs::path(JX_ENGINE_SOURCE_DIR) / "scripts" / CONVERT_SCRIPT_NAME;
+        fs::path candidate = fs::path(ONYX_ENGINE_SOURCE_DIR) / "scripts" / CONVERT_SCRIPT_NAME;
         if (fs::exists(candidate, ec)) {
             return candidate.string();
         }
@@ -114,7 +114,7 @@ static std::string resolve_converter_script(std::string & err) {
 #endif
 
     err = std::string("cannot find the safetensors converter script ('") + CONVERT_SCRIPT_NAME +
-          "'); set JX_ENGINE_CONVERT_SCRIPT to its path";
+          "'); set ONYX_ENGINE_CONVERT_SCRIPT to its path";
     return "";
 }
 
@@ -173,7 +173,7 @@ static int run_converter(const std::string & script, const std::string & model_d
 // public entry point
 // ---------------------------------------------------------------------------
 
-std::string jx_resolve_model(const jx_args & args, std::string & err) {
+std::string onyx_resolve_model(const onyx_args & args, std::string & err) {
     std::error_code ec;
     fs::path model_path(args.model_path);
 
@@ -210,10 +210,10 @@ std::string jx_resolve_model(const jx_args & args, std::string & err) {
         return "";
     }
 
-    // cache location: <convert_dir or model dir>/jx-cache/<dirname>-<pathhash>-f16.gguf
+    // cache location: <convert_dir or model dir>/onyx-cache/<dirname>-<pathhash>-f16.gguf
     // The path hash keeps two different models that share a directory name
     // from colliding under a shared --convert-dir.
-    fs::path cache_dir = args.convert_dir.empty() ? (model_dir / "jx-cache") : fs::path(args.convert_dir);
+    fs::path cache_dir = args.convert_dir.empty() ? (model_dir / "onyx-cache") : fs::path(args.convert_dir);
     const std::string abs_dir = fs::absolute(model_dir, ec).string();
     std::string dirname = fs::path(abs_dir).filename().string();
     if (dirname.empty()) {
@@ -241,7 +241,7 @@ std::string jx_resolve_model(const jx_args & args, std::string & err) {
             }
         }
         if (fresh) {
-            fprintf(stderr, "jx-engine: reusing cached conversion at '%s'\n", cache_path.string().c_str());
+            fprintf(stderr, "onyx-engine: reusing cached conversion at '%s'\n", cache_path.string().c_str());
             return cache_path.string();
         }
     }
@@ -256,7 +256,7 @@ std::string jx_resolve_model(const jx_args & args, std::string & err) {
     tmp_path += ".tmp";
     fs::remove(tmp_path, ec);
 
-    fprintf(stderr, "jx-engine: converting safetensors model '%s' to GGUF ...\n", model_dir.string().c_str());
+    fprintf(stderr, "onyx-engine: converting safetensors model '%s' to GGUF ...\n", model_dir.string().c_str());
 
     std::deque<std::string> tail;
     const size_t keep_lines = 20;
@@ -287,6 +287,6 @@ std::string jx_resolve_model(const jx_args & args, std::string & err) {
         fs::remove(tmp_path, ec);
     }
 
-    fprintf(stderr, "jx-engine: conversion complete, cached at '%s'\n", cache_path.string().c_str());
+    fprintf(stderr, "onyx-engine: conversion complete, cached at '%s'\n", cache_path.string().c_str());
     return cache_path.string();
 }

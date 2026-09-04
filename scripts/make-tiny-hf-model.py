@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Builds a tiny HF-format (safetensors) llama-architecture model directory
-for exercising jx-engine's safetensors -> GGUF conversion path end to end.
+for exercising onyx-engine's safetensors -> GGUF conversion path end to end.
 
 Unlike scripts/make-tiny-model.py (which writes a GGUF directly), this script
-produces the *source* format jx-engine's `-m <path>` conversion feature
+produces the *source* format onyx-engine's `-m <path>` conversion feature
 consumes: a directory with config.json, a tokenizer, and model.safetensors.
 It depends on numpy only - no torch, no transformers, no safetensors package -
 matching the same constraint placed on scripts/convert-safetensors.py, the

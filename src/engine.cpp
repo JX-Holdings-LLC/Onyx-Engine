@@ -13,7 +13,7 @@
 #include <sstream>
 #include <thread>
 
-jx_engine::~jx_engine() {
+onyx_engine::~onyx_engine() {
     if (loop_thread_.joinable()) {
         {
             // must hold q_mutex_ so the store cannot slip between the loop's
@@ -56,7 +56,7 @@ static enum llama_pooling_type pick_pooling(const std::string & name, bool embed
     return LLAMA_POOLING_TYPE_UNSPECIFIED;
 }
 
-bool jx_engine::load(const jx_args & args) {
+bool onyx_engine::load(const onyx_args & args) {
     alias_          = args.alias;
     embedding_mode_ = args.embedding;
     cache_reuse_    = std::max<int32_t>(0, args.cache_reuse);
@@ -174,26 +174,26 @@ bool jx_engine::load(const jx_args & args) {
     return true;
 }
 
-int32_t  jx_engine::n_ctx_train() const { return llama_model_n_ctx_train(model_); }
-int32_t  jx_engine::n_embd()      const { return llama_model_n_embd(model_); }
-uint64_t jx_engine::model_size_bytes() const { return llama_model_size(model_); }
-uint64_t jx_engine::model_n_params()   const { return llama_model_n_params(model_); }
+int32_t  onyx_engine::n_ctx_train() const { return llama_model_n_ctx_train(model_); }
+int32_t  onyx_engine::n_embd()      const { return llama_model_n_embd(model_); }
+uint64_t onyx_engine::model_size_bytes() const { return llama_model_size(model_); }
+uint64_t onyx_engine::model_n_params()   const { return llama_model_n_params(model_); }
 
-std::string jx_engine::model_desc() const {
+std::string onyx_engine::model_desc() const {
     char buf[256];
     llama_model_desc(model_, buf, sizeof(buf));
     return buf;
 }
 
-std::string jx_engine::chat_template_source() const {
+std::string onyx_engine::chat_template_source() const {
     return chat_templates_ ? common_chat_templates_source(chat_templates_.get()) : "";
 }
 
-std::vector<llama_token> jx_engine::tokenize(const std::string & text, bool add_special, bool parse_special) const {
+std::vector<llama_token> onyx_engine::tokenize(const std::string & text, bool add_special, bool parse_special) const {
     return common_tokenize(vocab_, text, add_special, parse_special);
 }
 
-std::string jx_engine::detokenize(const std::vector<llama_token> & tokens, bool special) const {
+std::string onyx_engine::detokenize(const std::vector<llama_token> & tokens, bool special) const {
     return common_detokenize(vocab_, tokens, special);
 }
 
@@ -219,9 +219,9 @@ static size_t stop_holdback(const std::string & text, const std::vector<std::str
 // the FULL vocab (not just the reported top-N), matching OpenAI's
 // logprobs semantics: report the raw distribution even when a grammar or
 // other constraint picked a token that had very low raw probability.
-static jx_token_probs compute_token_probs(llama_context * ctx, const llama_vocab * vocab,
+static onyx_token_probs compute_token_probs(llama_context * ctx, const llama_vocab * vocab,
                                           int32_t tok_idx, llama_token token, int32_t n_probs) {
-    jx_token_probs out;
+    onyx_token_probs out;
 
     const int32_t n_vocab = llama_vocab_n_tokens(vocab);
     const float * logits  = llama_get_logits_ith(ctx, tok_idx);
@@ -255,7 +255,7 @@ static jx_token_probs compute_token_probs(llama_context * ctx, const llama_vocab
 
         out.top.reserve((size_t) n_top);
         for (int32_t i = 0; i < n_top; i++) {
-            jx_prob_entry e;
+            onyx_prob_entry e;
             e.token   = (llama_token) idx[(size_t) i];
             e.piece   = common_token_to_piece(ctx, e.token);
             e.logprob = logprob_of(e.token);
@@ -272,8 +272,8 @@ static jx_token_probs compute_token_probs(llama_context * ctx, const llama_vocab
 // entries for tokens whose piece has now been fully flushed to the caller.
 // A token held back (in full or in part) by stop-holdback is not included
 // until a later call once the rest of its text has been sent.
-static std::vector<jx_token_probs> collect_delivered_probs(jx_slot & slot, jx_gen_result & res) {
-    std::vector<jx_token_probs> out;
+static std::vector<onyx_token_probs> collect_delivered_probs(onyx_slot & slot, onyx_gen_result & res) {
+    std::vector<onyx_token_probs> out;
     size_t covered = slot.probs_covered_bytes;
     while (slot.n_probs_sent < res.probs.size()) {
         const size_t next_covered = covered + res.probs[slot.n_probs_sent].sampled.piece.size();
@@ -292,8 +292,8 @@ static std::vector<jx_token_probs> collect_delivered_probs(jx_slot & slot, jx_ge
 // public entry points
 // ---------------------------------------------------------------------------
 
-jx_gen_result jx_engine::generate(const jx_gen_params & params, const jx_token_cb & cb) {
-    jx_gen_result res;
+onyx_gen_result onyx_engine::generate(const onyx_gen_params & params, const onyx_token_cb & cb) {
+    onyx_gen_result res;
 
     if (embedding_mode_) {
         res.error = "this instance is running in embedding mode; text generation is disabled";
@@ -305,7 +305,7 @@ jx_gen_result jx_engine::generate(const jx_gen_params & params, const jx_token_c
         return res;
     }
 
-    auto req = std::make_shared<jx_gen_request>();
+    auto req = std::make_shared<onyx_gen_request>();
     req->params       = params;
     req->wants_pieces = (bool) cb;
 
@@ -350,7 +350,7 @@ jx_gen_result jx_engine::generate(const jx_gen_params & params, const jx_token_c
     while (true) {
         req->cv.wait(lock, [&] { return !req->pieces.empty() || req->finished; });
         while (!req->pieces.empty()) {
-            jx_gen_piece piece = std::move(req->pieces.front());
+            onyx_gen_piece piece = std::move(req->pieces.front());
             req->pieces.pop_front();
             if (!cb) {
                 continue;
@@ -371,7 +371,7 @@ jx_gen_result jx_engine::generate(const jx_gen_params & params, const jx_token_c
     return req->result;
 }
 
-std::vector<float> jx_engine::embed(const std::vector<llama_token> & tokens, std::string & err) {
+std::vector<float> onyx_engine::embed(const std::vector<llama_token> & tokens, std::string & err) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     if (!embedding_mode_) {
@@ -443,7 +443,7 @@ std::vector<float> jx_engine::embed(const std::vector<llama_token> & tokens, std
 // engine loop (everything below runs on loop_thread_ only)
 // ---------------------------------------------------------------------------
 
-void jx_engine::loop() {
+void onyx_engine::loop() {
     llama_batch batch = llama_batch_init(n_batch_, 0, 1);
 
     while (true) {
@@ -454,7 +454,7 @@ void jx_engine::loop() {
                     return true;
                 }
                 for (const auto & slot : slots_) {
-                    if (slot.state != jx_slot::JX_SLOT_IDLE) {
+                    if (slot.state != onyx_slot::ONYX_SLOT_IDLE) {
                         return true;
                     }
                 }
@@ -467,7 +467,7 @@ void jx_engine::loop() {
 
         // release slots whose caller gave up (cb returned false)
         for (auto & slot : slots_) {
-            if (slot.state == jx_slot::JX_SLOT_IDLE) {
+            if (slot.state == onyx_slot::ONYX_SLOT_IDLE) {
                 continue;
             }
             bool cancelled = false;
@@ -476,7 +476,7 @@ void jx_engine::loop() {
                 cancelled = slot.req->cancelled;
             }
             if (cancelled) {
-                finish(slot, JX_FINISH_CANCEL);
+                finish(slot, ONYX_FINISH_CANCEL);
             }
         }
 
@@ -493,11 +493,11 @@ void jx_engine::loop() {
 
     // unblock anything still waiting on shutdown
     for (auto & slot : slots_) {
-        if (slot.state != jx_slot::JX_SLOT_IDLE) {
-            finish(slot, JX_FINISH_CANCEL, "engine is shutting down");
+        if (slot.state != onyx_slot::ONYX_SLOT_IDLE) {
+            finish(slot, ONYX_FINISH_CANCEL, "engine is shutting down");
         }
     }
-    std::deque<jx_gen_request_ptr> pending;
+    std::deque<onyx_gen_request_ptr> pending;
     {
         std::lock_guard<std::mutex> lock(q_mutex_);
         pending.swap(queue_);
@@ -516,11 +516,11 @@ void jx_engine::loop() {
     }
 }
 
-bool jx_engine::admit_queued() {
+bool onyx_engine::admit_queued() {
     bool admitted = false;
 
     while (true) {
-        jx_gen_request_ptr req;
+        onyx_gen_request_ptr req;
         {
             std::lock_guard<std::mutex> lock(q_mutex_);
             if (queue_.empty()) {
@@ -531,10 +531,10 @@ bool jx_engine::admit_queued() {
 
         // pick the idle slot whose cached tokens share the longest prefix with
         // this prompt; ties (and the no-reuse case) fall back to LRU
-        jx_slot * best     = nullptr;
+        onyx_slot * best     = nullptr;
         size_t    best_lcp = 0;
         for (auto & slot : slots_) {
-            if (slot.state != jx_slot::JX_SLOT_IDLE) {
+            if (slot.state != onyx_slot::ONYX_SLOT_IDLE) {
                 continue;
             }
             size_t lcp = 0;
@@ -561,11 +561,11 @@ bool jx_engine::admit_queued() {
             queue_.pop_front();
         }
 
-        jx_slot & slot = *best;
+        onyx_slot & slot = *best;
         slot.req       = req;
         slot.prompt    = req->params.prompt_tokens;
         slot.has_media = !req->params.media.empty();
-        slot.state     = jx_slot::JX_SLOT_PREFILL;
+        slot.state     = onyx_slot::ONYX_SLOT_PREFILL;
         slot.i_batch   = -1;
         slot.n_sent    = 0;
         slot.t_start   = ggml_time_us();
@@ -575,9 +575,9 @@ bool jx_engine::admit_queued() {
         slot.probs_covered_bytes = 0;
 
         if (req->params.reasoning.enabled) {
-            slot.rb_state = req->params.reasoning.start_in_prompt ? jx_slot::RB_COUNTING : jx_slot::RB_IDLE;
+            slot.rb_state = req->params.reasoning.start_in_prompt ? onyx_slot::RB_COUNTING : onyx_slot::RB_IDLE;
         } else {
-            slot.rb_state = jx_slot::RB_OFF;
+            slot.rb_state = onyx_slot::RB_OFF;
         }
         slot.rb_count       = 0;
         slot.rb_forced_idx  = 0;
@@ -613,7 +613,7 @@ bool jx_engine::admit_queued() {
     return admitted;
 }
 
-void jx_engine::build_batch(llama_batch & batch) {
+void onyx_engine::build_batch(llama_batch & batch) {
     common_batch_clear(batch);
     for (auto & slot : slots_) {
         slot.i_batch = -1;
@@ -621,7 +621,7 @@ void jx_engine::build_batch(llama_batch & batch) {
 
     // exactly one next-token row per generating slot
     for (auto & slot : slots_) {
-        if (slot.state != jx_slot::JX_SLOT_GENERATE) {
+        if (slot.state != onyx_slot::ONYX_SLOT_GENERATE) {
             continue;
         }
         if (batch.n_tokens >= n_batch_) {
@@ -642,7 +642,7 @@ void jx_engine::build_batch(llama_batch & batch) {
     // that are still prefilling
     int32_t n_prefilling = 0;
     for (const auto & slot : slots_) {
-        if (slot.state == jx_slot::JX_SLOT_PREFILL) {
+        if (slot.state == onyx_slot::ONYX_SLOT_PREFILL) {
             n_prefilling++;
         }
     }
@@ -654,7 +654,7 @@ void jx_engine::build_batch(llama_batch & batch) {
     const int32_t per_slot = std::max(1, budget / n_prefilling);
 
     for (auto & slot : slots_) {
-        if (slot.state != jx_slot::JX_SLOT_PREFILL) {
+        if (slot.state != onyx_slot::ONYX_SLOT_PREFILL) {
             continue;
         }
         const int32_t n_prompt = (int32_t) slot.prompt.size();
@@ -671,7 +671,7 @@ void jx_engine::build_batch(llama_batch & batch) {
     }
 }
 
-bool jx_engine::decode_batch(llama_batch & batch) {
+bool onyx_engine::decode_batch(llama_batch & batch) {
     int32_t n_view = n_batch_;
 
     for (int32_t off = 0; off < batch.n_tokens; ) {
@@ -700,13 +700,13 @@ bool jx_engine::decode_batch(llama_batch & batch) {
                           : "compute error (llama_decode)";
             llama_memory_t mem = llama_get_memory(ctx_);
             for (auto & slot : slots_) {
-                if (slot.state == jx_slot::JX_SLOT_IDLE) {
+                if (slot.state == onyx_slot::ONYX_SLOT_IDLE) {
                     continue;
                 }
                 llama_memory_seq_rm(mem, slot.seq_id, -1, -1);
                 slot.cache_tokens.clear();
                 slot.n_past = 0;
-                finish(slot, JX_FINISH_STOP, err);
+                finish(slot, ONYX_FINISH_STOP, err);
             }
             return false;
         }
@@ -740,14 +740,14 @@ bool jx_engine::decode_batch(llama_batch & batch) {
 // prompt is prefilling. That is the trade upstream makes too (its own slot
 // loop encodes media chunks inline); text-only requests are unaffected and
 // keep the interleaved chunked-prefill path in build_batch().
-bool jx_engine::prefill_media(jx_slot & slot) {
-    jx_gen_request & req = *slot.req;
+bool onyx_engine::prefill_media(onyx_slot & slot) {
+    onyx_gen_request & req = *slot.req;
 
     auto fail = [&](const std::string & err) {
         llama_memory_seq_rm(llama_get_memory(ctx_), slot.seq_id, -1, -1);
         slot.n_past = 0;
         slot.cache_tokens.clear();
-        finish(slot, JX_FINISH_STOP, err);
+        finish(slot, ONYX_FINISH_STOP, err);
         return false;
     };
 
@@ -812,12 +812,12 @@ bool jx_engine::prefill_media(jx_slot & slot) {
 
 // Samples one token for `slot` from row `tok_idx` of the decode that just ran
 // (-1 = the last row) and applies the v1 per-token bookkeeping.
-void jx_engine::sample_slot(jx_slot & slot, int32_t tok_idx) {
-    jx_gen_request & req = *slot.req;
-    jx_gen_result  & res = req.result;
+void onyx_engine::sample_slot(onyx_slot & slot, int32_t tok_idx) {
+    onyx_gen_request & req = *slot.req;
+    onyx_gen_result  & res = req.result;
 
-    if (slot.state == jx_slot::JX_SLOT_PREFILL) {
-        slot.state      = jx_slot::JX_SLOT_GENERATE;
+    if (slot.state == onyx_slot::ONYX_SLOT_PREFILL) {
+        slot.state      = onyx_slot::ONYX_SLOT_GENERATE;
         slot.t_prompt   = ggml_time_us();
         res.t_prompt_ms = (slot.t_prompt - slot.t_start) / 1000.0;
     }
@@ -825,12 +825,12 @@ void jx_engine::sample_slot(jx_slot & slot, int32_t tok_idx) {
     // v1 ordering: budget checks first, then sample from the logits this
     // decode just produced
     if (req.params.n_predict >= 0 && res.n_predicted >= req.params.n_predict) {
-        finish(slot, JX_FINISH_LENGTH);
+        finish(slot, ONYX_FINISH_LENGTH);
         return;
     }
     if (slot.n_past >= (int32_t) n_ctx_slot_) {
         if (!ctx_shift_ || !context_shift(slot)) {
-            finish(slot, JX_FINISH_LENGTH);
+            finish(slot, ONYX_FINISH_LENGTH);
             return;
         }
     }
@@ -840,14 +840,14 @@ void jx_engine::sample_slot(jx_slot & slot, int32_t tok_idx) {
     // generated token, and budget==N forces exactly after N counted tokens
     // (the token that would be the (N+1)th inside the block is forced
     // instead of sampled).
-    const jx_reasoning_budget & rb = req.params.reasoning;
-    if (slot.rb_state == jx_slot::RB_COUNTING && rb.budget >= 0 && slot.rb_count >= rb.budget) {
-        slot.rb_state      = jx_slot::RB_FORCING;
+    const onyx_reasoning_budget & rb = req.params.reasoning;
+    if (slot.rb_state == onyx_slot::RB_COUNTING && rb.budget >= 0 && slot.rb_count >= rb.budget) {
+        slot.rb_state      = onyx_slot::RB_FORCING;
         slot.rb_forced_idx = 0;
     }
 
     llama_token tok;
-    const bool forcing = slot.rb_state == jx_slot::RB_FORCING && slot.rb_forced_idx < rb.forced.size();
+    const bool forcing = slot.rb_state == onyx_slot::RB_FORCING && slot.rb_forced_idx < rb.forced.size();
     if (forcing) {
         // still "decode" the forced token through the sampler's accept path
         // so its penalty/repeat/grammar state stays consistent, but it is
@@ -856,18 +856,18 @@ void jx_engine::sample_slot(jx_slot & slot, int32_t tok_idx) {
         tok = rb.forced[slot.rb_forced_idx++];
         common_sampler_accept(req.smpl, tok, true);
         if (slot.rb_forced_idx >= rb.forced.size()) {
-            slot.rb_state = jx_slot::RB_DONE;
+            slot.rb_state = onyx_slot::RB_DONE;
         }
     } else {
         tok = common_sampler_sample(req.smpl, ctx_, tok_idx);
         common_sampler_accept(req.smpl, tok, true);
 
-        if (slot.rb_state == jx_slot::RB_IDLE && !rb.start_tag.empty()) {
+        if (slot.rb_state == onyx_slot::RB_IDLE && !rb.start_tag.empty()) {
             // rolling match: a mismatch restarts the match window at 1 if
             // this token happens to also be the tag's first token
             if (tok == rb.start_tag[slot.rb_start_match]) {
                 if (++slot.rb_start_match >= rb.start_tag.size()) {
-                    slot.rb_state       = jx_slot::RB_COUNTING;
+                    slot.rb_state       = onyx_slot::RB_COUNTING;
                     slot.rb_count       = 0;
                     slot.rb_start_match = 0;
                     slot.rb_end_match   = 0;
@@ -875,12 +875,12 @@ void jx_engine::sample_slot(jx_slot & slot, int32_t tok_idx) {
             } else {
                 slot.rb_start_match = (tok == rb.start_tag[0]) ? 1 : 0;
             }
-        } else if (slot.rb_state == jx_slot::RB_COUNTING) {
+        } else if (slot.rb_state == onyx_slot::RB_COUNTING) {
             slot.rb_count++;
             if (!rb.end_tag.empty()) {
                 if (tok == rb.end_tag[slot.rb_end_match]) {
                     if (++slot.rb_end_match >= rb.end_tag.size()) {
-                        slot.rb_state = jx_slot::RB_DONE;   // natural close
+                        slot.rb_state = onyx_slot::RB_DONE;   // natural close
                     }
                 } else {
                     slot.rb_end_match = (tok == rb.end_tag[0]) ? 1 : 0;
@@ -892,7 +892,7 @@ void jx_engine::sample_slot(jx_slot & slot, int32_t tok_idx) {
     res.n_predicted++;
     slot.sampled = tok;
 
-    jx_token_probs probs;
+    onyx_token_probs probs;
     const bool have_probs = req.params.want_logprobs;
     if (have_probs) {
         probs = compute_token_probs(ctx_, vocab_, tok_idx, tok, req.params.n_probs);
@@ -905,12 +905,12 @@ void jx_engine::sample_slot(jx_slot & slot, int32_t tok_idx) {
 // Mirrors v1's per-token block, extended to keep `result.probs` (and what is
 // delivered to the streaming callback) consistent with the trimmed text a
 // client actually sees.
-void jx_engine::on_sampled(jx_slot & slot, const jx_token_probs * probs) {
-    jx_gen_request & req = *slot.req;
-    jx_gen_result  & res = req.result;
+void onyx_engine::on_sampled(onyx_slot & slot, const onyx_token_probs * probs) {
+    onyx_gen_request & req = *slot.req;
+    onyx_gen_result  & res = req.result;
 
     if (llama_vocab_is_eog(vocab_, slot.sampled)) {
-        finish(slot, JX_FINISH_STOP);
+        finish(slot, ONYX_FINISH_STOP);
         return;
     }
 
@@ -938,7 +938,7 @@ void jx_engine::on_sampled(jx_slot & slot, const jx_token_probs * probs) {
                 }
                 res.probs.resize(keep);
             }
-            finish(slot, JX_FINISH_STOP);
+            finish(slot, ONYX_FINISH_STOP);
             return;
         }
     }
@@ -955,7 +955,7 @@ void jx_engine::on_sampled(jx_slot & slot, const jx_token_probs * probs) {
 
 // Drops the oldest half of this slot's non-preserved context, exactly as
 // llama-server does, so generation can continue past the context limit.
-bool jx_engine::context_shift(jx_slot & slot) {
+bool onyx_engine::context_shift(onyx_slot & slot) {
     const int32_t n_ctx_s = (int32_t) n_ctx_slot_;
 
     int32_t n_keep = n_keep_ < 0 ? (int32_t) slot.prompt.size() : n_keep_;
@@ -985,18 +985,18 @@ bool jx_engine::context_shift(jx_slot & slot) {
     return true;
 }
 
-void jx_engine::emit(jx_slot & slot, std::string piece, std::vector<jx_token_probs> probs) {
-    jx_gen_request & req = *slot.req;
+void onyx_engine::emit(onyx_slot & slot, std::string piece, std::vector<onyx_token_probs> probs) {
+    onyx_gen_request & req = *slot.req;
     {
         std::lock_guard<std::mutex> lock(req.mu);
-        req.pieces.push_back(jx_gen_piece{std::move(piece), std::move(probs)});
+        req.pieces.push_back(onyx_gen_piece{std::move(piece), std::move(probs)});
     }
     req.cv.notify_all();
 }
 
-void jx_engine::finish(jx_slot & slot, jx_finish_reason reason, const std::string & error) {
-    jx_gen_request_ptr req = slot.req;
-    jx_gen_result &    res = req->result;
+void onyx_engine::finish(onyx_slot & slot, onyx_finish_reason reason, const std::string & error) {
+    onyx_gen_request_ptr req = slot.req;
+    onyx_gen_result &    res = req->result;
 
     res.finish = reason;
     if (!error.empty()) {
@@ -1012,7 +1012,7 @@ void jx_engine::finish(jx_slot & slot, jx_finish_reason reason, const std::strin
 
     // hand over any text withheld for stop-sequence matching, along with
     // whatever prob entries that final flush now fully covers
-    if (req->wants_pieces && res.error.empty() && reason != JX_FINISH_CANCEL && res.text.size() > slot.n_sent) {
+    if (req->wants_pieces && res.error.empty() && reason != ONYX_FINISH_CANCEL && res.text.size() > slot.n_sent) {
         const size_t old_sent = slot.n_sent;
         slot.n_sent = res.text.size();
         emit(slot, res.text.substr(old_sent), collect_delivered_probs(slot, res));
@@ -1024,14 +1024,14 @@ void jx_engine::finish(jx_slot & slot, jx_finish_reason reason, const std::strin
     }
 
     slot.req.reset();
-    slot.state       = jx_slot::JX_SLOT_IDLE;
+    slot.state       = onyx_slot::ONYX_SLOT_IDLE;
     slot.has_media   = false;
     slot.prompt.clear();
     slot.i_batch     = -1;
     slot.n_sent      = 0;
     slot.n_probs_sent        = 0;
     slot.probs_covered_bytes = 0;
-    slot.rb_state    = jx_slot::RB_OFF;
+    slot.rb_state    = onyx_slot::RB_OFF;
     slot.rb_count    = 0;
     slot.rb_forced_idx  = 0;
     slot.rb_start_match = 0;

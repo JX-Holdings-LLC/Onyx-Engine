@@ -8,15 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
-- **`cpp-httplib` is now jx-engine's own vendored dependency**
+- **Project renamed from JX Engine to Onyx Engine.** All identifiers,
+  targets, macros, env vars, and docs moved from the `jx`/`JX` prefix to
+  `onyx`/`ONYX` (binary `jx-engine` → `onyx-engine`, class `jx_engine` →
+  `onyx_engine`, `JX_ENGINE_*` build options → `ONYX_ENGINE_*`, etc.). No
+  behavior changed. JX Runtime, the separate Node.js project this engine is
+  built to be spawned by, keeps its own name.
+- **`cpp-httplib` is now onyx-engine's own vendored dependency**
   ([`third_party/cpp-httplib`](third_party/cpp-httplib), v0.54.1), compiled
-  as the `jx-httplib` target, instead of being reached for inside the
+  as the `onyx-httplib` target, instead of being reached for inside the
   vendored llama.cpp tree. `server.cpp` previously included
   `<llama src>/vendor/cpp-httplib/httplib.h` while the implementation came
   out of `libllama-common.so`, which links upstream's copy statically and
-  re-exports ~1200 `httplib::*` symbols — so jx-engine's HTTP layer rode on
+  re-exports ~1200 `httplib::*` symbols — so onyx-engine's HTTP layer rode on
   a private implementation detail of `llama-common`, and a llama.cpp bump
-  could break it for reasons unrelated to inference. `jx-engine`'s include
+  could break it for reasons unrelated to inference. `onyx-engine`'s include
   paths into the llama.cpp tree are now just `common/` and `tools/mtmd/`.
   - cpp-httplib's tuning macros (`CPPHTTPLIB_TCP_NODELAY`,
     `CPPHTTPLIB_LISTEN_BACKLOG`, `CPPHTTPLIB_REQUEST_URI_MAX_LENGTH`,
@@ -27,22 +33,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     mismatch. It was latent, not live: the effective value came from the
     out-of-line constructor in `httplib.cpp`, so Nagle was disabled either
     way.
-  - `jx-httplib` is linked ahead of `llama-common` deliberately; in the other
+  - `onyx-httplib` is linked ahead of `llama-common` deliberately; in the other
     order 15 httplib symbols still resolved to llama.cpp's shared library.
 
 ### Fixed
 
-- **`--version` and `/props`'s `build_info` reported jx-engine's own git
+- **`--version` and `/props`'s `build_info` reported onyx-engine's own git
   commit as the llama.cpp build info.** They used llama.cpp's
   `llama_build_info()`, whose value comes from `cmake/build-info.cmake`
   running `git rev-parse` in the llama.cpp source directory. In the canonical
   build that directory is `node_modules/@jxburros/llama-cpp-source`, which
-  has no `.git`, so git walked up into jx-engine's repository: a build at
-  jx-engine commit `c0394c2` reported `b20-c0394c2`. `CMakeLists.txt` now
-  resolves the pin itself (`JX_ENGINE_LLAMA_PIN`) from the npm package's
+  has no `.git`, so git walked up into onyx-engine's repository: a build at
+  onyx-engine commit `c0394c2` reported `b20-c0394c2`. `CMakeLists.txt` now
+  resolves the pin itself (`ONYX_ENGINE_LLAMA_PIN`) from the npm package's
   `package.json` version, falling back to git only when the repository's top
   level is the llama.cpp tree itself, and `unknown` otherwise. `build_info`
-  now reads `jx-engine/0.2.0 (llama.cpp b10711-9723942ad)`, matching the
+  now reads `onyx-engine/0.2.0 (llama.cpp b10711-9723942ad)`, matching the
   shape `docs/api.md` already documented.
 
 ## [0.2.0] - 2026-09-01
@@ -53,7 +59,7 @@ multimodal input via `--mmproj`, and safetensors model support.
 
 ### Added
 
-- **Parallel request slots + continuous batching.** `jx_engine` now runs a
+- **Parallel request slots + continuous batching.** `onyx_engine` now runs a
   dedicated batching-loop thread over `--parallel`/`-np` slots sharing one
   `llama_context` (slot `i` = llama.cpp sequence id `i`, per-slot context
   budget from `llama_n_ctx_seq`): each tick packs one next-token row per
@@ -85,7 +91,7 @@ multimodal input via `--mmproj`, and safetensors model support.
   entry.
 - **Reasoning-budget control** (`--reasoning-budget`,
   `--reasoning-budget-message`, per-request `reasoning_budget_tokens`): a
-  per-slot state machine (`jx_slot::rb_state_t`) in the engine loop, not a
+  per-slot state machine (`onyx_slot::rb_state_t`) in the engine loop, not a
   llama.cpp sampler feature — rolling-matches the chat template's own
   thinking tags (falling back to `<think>`/`</think>`), counts generated
   tokens once inside the block, and force-emits
@@ -93,12 +99,12 @@ multimodal input via `--mmproj`, and safetensors model support.
   budget is spent (budget `0`: closing tag only, immediately). Handles
   deepseek-style templates whose rendered generation prompt already opens
   the thinking block.
-- **Multimodal input via `--mmproj`.** `jx_engine` loads an `mtmd_context`
+- **Multimodal input via `--mmproj`.** `onyx_engine` loads an `mtmd_context`
   (`mtmd_init_from_file`) when `--mmproj` is passed; `GET /props`'s
   `modalities` now reports real vision/audio support. Chat requests accept
   `image_url` (and `input_audio`, projector permitting) content parts as
   `data:` URIs or raw base64 only — `http://`/`https://`/`file://` are
-  rejected with `400` by design, since `jx-engine` performs no network or
+  rejected with `400` by design, since `onyx-engine` performs no network or
   filesystem I/O on a request's behalf. Media parts are rewritten to mtmd
   marker text before the chat template renders, then prefilled through
   mtmd at slot admission (running the vision/audio encoder and its own
@@ -110,15 +116,15 @@ multimodal input via `--mmproj`, and safetensors model support.
   partially discarded. `CMakeLists.txt` adds `LLAMA_BUILD_MTMD=ON`
   (building `tools/mtmd` as a standalone library without the rest of the
   `tools/` tree) and forces `MTMD_VIDEO=OFF` (mtmd's video path shells out
-  to `ffmpeg` at runtime; `jx-engine` takes no such dependency).
+  to `ffmpeg` at runtime; `onyx-engine` takes no such dependency).
   `scripts/make-tiny-mmproj.py` generates a tiny llava-style projector for
   offline testing.
 - **Safetensors model support.** `-m` now also accepts a Hugging Face model
   directory (or a `.safetensors` file inside one); `src/convert.{h,cpp}`
-  adds `jx_resolve_model()`, called from `main.cpp` before `jx_engine::load`:
+  adds `onyx_resolve_model()`, called from `main.cpp` before `onyx_engine::load`:
   GGUF passthrough, safetensors detection, conversion via
   `scripts/convert-safetensors.py`, and mtime-based cache reuse under
-  `<model dir>/jx-cache/` (or `--convert-dir`). `--convert-dir DIR`
+  `<model dir>/onyx-cache/` (or `--convert-dir`). `--convert-dir DIR`
   configures the cache location. `scripts/convert-safetensors.py` converts
   the standard HF `LlamaForCausalLM` layout (optionally sharded via
   `model.safetensors.index.json`) with a byte-level BPE `tokenizer.json`,
@@ -153,7 +159,7 @@ multimodal input via `--mmproj`, and safetensors model support.
 ### Changed
 
 - `packaging/make-vendor-package.sh` now also prunes everything under
-  `tools/` except `tools/mtmd` (the one thing `jx-engine` builds out of that
+  `tools/` except `tools/mtmd` (the one thing `onyx-engine` builds out of that
   tree, via `LLAMA_BUILD_MTMD=ON`) — upstream's own CLI tools
   (`tools/server`, `tools/cli`, `tools/quantize`, etc.) are never configured
   and were dead weight in the tarball; this shrinks it from roughly 9.85 MB
@@ -173,14 +179,14 @@ multimodal input via `--mmproj`, and safetensors model support.
   declared as a dependency in the new `package.json` and installed to
   `node_modules` by `npm ci`/`npm install`. `.gitmodules` is removed.
 - `CMakeLists.txt` now resolves the llama.cpp source tree in order:
-  `-DJX_ENGINE_LLAMA_DIR=<path>` override, then
+  `-DONYX_ENGINE_LLAMA_DIR=<path>` override, then
   `node_modules/@jxburros/llama-cpp-source`, then a manually placed
   `vendor/llama.cpp` tree (gitignored, fallback only). `scripts/make-tiny-model.py`
   resolves the source tree with the same order (minus the CMake override).
 - `CMakeLists.txt` additionally forces `LLAMA_BUILD_APP=OFF`.
 - Quick start is now `npm ci` (or `npm install`), then
   `cmake -B build -DCMAKE_BUILD_TYPE=Release` and
-  `cmake --build build --target jx-engine -j`. `package.json` adds npm
+  `cmake --build build --target onyx-engine -j`. `package.json` adds npm
   scripts `build` (wraps those two `cmake` steps) and `test` (runs
   `scripts/smoke-test.sh`).
 
@@ -196,9 +202,9 @@ multimodal input via `--mmproj`, and safetensors model support.
   writes the package's `package.json`, and runs `npm pack` to produce the
   publishable tarball. Without a source argument it downloads the pinned
   commit's tarball from GitHub — network access is needed for packaging
-  only, never for building `jx-engine`.
+  only, never for building `onyx-engine`.
 
-- Initial implementation of `jx-engine`: a single-model, OpenAI-compatible
+- Initial implementation of `onyx-engine`: a single-model, OpenAI-compatible
   model-serving binary built on a vendored, pinned llama.cpp source tree
   (`@jxburros/llama-cpp-source`, an npm package — not yet published; see
   "Changed" above).
@@ -206,7 +212,7 @@ multimodal input via `--mmproj`, and safetensors model support.
   alias, chat template overrides, network binding, API-key auth, context /
   batch / thread / GPU-offload sizing, flash attention, KV-cache prefix
   reuse, embedding mode, and pooling type.
-- `jx_engine` (`src/engine.h`, `src/engine.cpp`): model/context loading,
+- `onyx_engine` (`src/engine.h`, `src/engine.cpp`): model/context loading,
   text generation with stop-sequence handling and streaming token callback,
   pooled+L2-normalized embeddings, tokenize/detokenize helpers, and
   longest-common-prefix KV-cache reuse across requests (`--cache-reuse`).
@@ -220,8 +226,8 @@ multimodal input via `--mmproj`, and safetensors model support.
   GBNF/`json_schema`/`response_format` structured output via llama.cpp's
   `common` library.
 - CMake build (`CMakeLists.txt`) with CPU-only default and opt-in
-  CUDA/Vulkan/Metal/ROCm(HIP)/BLAS acceleration via `JX_ENGINE_CUDA`,
-  `JX_ENGINE_VULKAN`, `JX_ENGINE_METAL`, `JX_ENGINE_HIP`, `JX_ENGINE_BLAS`.
+  CUDA/Vulkan/Metal/ROCm(HIP)/BLAS acceleration via `ONYX_ENGINE_CUDA`,
+  `ONYX_ENGINE_VULKAN`, `ONYX_ENGINE_METAL`, `ONYX_ENGINE_HIP`, `ONYX_ENGINE_BLAS`.
 - Documentation: `README.md`, `docs/architecture.md`, `docs/api.md`,
   `docs/building.md`, `docs/jx-runtime-integration.md`.
 

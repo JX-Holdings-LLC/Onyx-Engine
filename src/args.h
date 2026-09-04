@@ -1,4 +1,4 @@
-// jx-engine command line arguments.
+// onyx-engine command line arguments.
 //
 // Flag names deliberately mirror llama-server's flags for the subset we
 // implement, because JX Runtime's llamacpp adapter probes `--help` text to
@@ -13,7 +13,7 @@
 #include <cstdint>
 #include <string>
 
-struct jx_args {
+struct onyx_args {
     // model
     std::string model_path;
     std::string alias;               // reported as the OpenAI "model" id
@@ -68,7 +68,7 @@ struct jx_args {
 
 // Parses argv. Returns false (after printing an error to stderr) on invalid
 // input. On --help/--version, sets the corresponding flag and returns true.
-bool jx_args_parse(int argc, char ** argv, jx_args & out);
+bool onyx_args_parse(int argc, char ** argv, onyx_args & out);
 
-void jx_args_print_help();
-void jx_args_print_version();
+void onyx_args_print_help();
+void onyx_args_print_version();

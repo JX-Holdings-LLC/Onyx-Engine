@@ -3,7 +3,7 @@
 
 The tokenizer is copied from llama.cpp's checked-in test vocab
 (models/ggml-vocab-llama-spm.gguf), so the result tokenizes real text but
-generates gibberish. It exists so jx-engine's endpoints can be exercised
+generates gibberish. It exists so onyx-engine's endpoints can be exercised
 offline in CI without downloading a real model.
 
 Usage: python3 scripts/make-tiny-model.py [output.gguf]
@@ -70,7 +70,7 @@ def main() -> None:
     toktypes = field_arr("tokenizer.ggml.token_type", np.int32)[:N_VOCAB].tolist()
 
     w = gguf.GGUFWriter(str(out_path), "llama")
-    w.add_name("jx-engine-tiny-test")
+    w.add_name("onyx-engine-tiny-test")
     w.add_context_length(N_CTX)
     w.add_embedding_length(N_EMBD)
     w.add_block_count(N_LAYER)

@@ -19,16 +19,16 @@ static bool parse_int(const char * s, int32_t & out) {
     return true;
 }
 
-void jx_args_print_version() {
-    printf("jx-engine %s\n", JX_ENGINE_VERSION);
-    printf("llama.cpp %s\n", JX_ENGINE_LLAMA_PIN);
+void onyx_args_print_version() {
+    printf("onyx-engine %s\n", ONYX_ENGINE_VERSION);
+    printf("llama.cpp %s\n", ONYX_ENGINE_LLAMA_PIN);
 }
 
-void jx_args_print_help() {
+void onyx_args_print_help() {
     printf(
-        "usage: jx-engine [options]\n"
+        "usage: onyx-engine [options]\n"
         "\n"
-        "JX Engine - OpenAI-compatible model serving binary for JX Runtime.\n"
+        "Onyx Engine - OpenAI-compatible model serving binary for JX Runtime.\n"
         "Serves a single GGUF model per process.\n"
         "\n"
         "model:\n"
@@ -85,7 +85,7 @@ void jx_args_print_help() {
         "       --version               show version and exit\n");
 }
 
-bool jx_args_parse(int argc, char ** argv, jx_args & out) {
+bool onyx_args_parse(int argc, char ** argv, onyx_args & out) {
     auto need_value = [&](int & i, const char * flag) -> const char * {
         if (i + 1 >= argc) {
             fprintf(stderr, "error: %s requires a value\n", flag);

@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Standalone end-to-end test for jx-engine's safetensors -> GGUF conversion
+# Standalone end-to-end test for onyx-engine's safetensors -> GGUF conversion
 # path (scripts/convert-safetensors.py + src/convert.cpp). NOT wired into
 # scripts/smoke-test.sh.
 #
-# Usage: scripts/safetensors-test.sh [path-to-jx-engine-binary]
+# Usage: scripts/safetensors-test.sh [path-to-onyx-engine-binary]
 #
 # Requires: python3. numpy is installed automatically if missing (network
 # permitting); if that install is impossible, the test SKIPS (exit 0) rather
 # than failing, since CI has full network and will run it for real. If
-# build/jx-engine does not exist yet (it may be mid-rework), the serving part
+# build/onyx-engine does not exist yet (it may be mid-rework), the serving part
 # is skipped but the converter itself is still exercised directly.
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
 
-BIN="${1:-build/jx-engine}"
+BIN="${1:-build/onyx-engine}"
 MODEL_DIR="models-test/tiny-hf-llama"
-PORT="${JX_SAFETENSORS_TEST_PORT:-18290}"
+PORT="${ONYX_SAFETENSORS_TEST_PORT:-18290}"
 BASE="http://127.0.0.1:$PORT"
 
 PASS=0
@@ -78,15 +78,15 @@ fi
 check "direct conversion produced a GGUF" test -s "$DIRECT_OUT"
 check "direct conversion GGUF has magic bytes" bash -c "head -c4 '$DIRECT_OUT' | grep -qU GGUF"
 
-# ---- serve it through jx-engine, exercising src/convert.cpp's cache -------
+# ---- serve it through onyx-engine, exercising src/convert.cpp's cache -------
 if [ ! -x "$BIN" ]; then
     echo "=================================================================="
-    echo " jx-engine binary '$BIN' not found - skipping the serving part"
+    echo " onyx-engine binary '$BIN' not found - skipping the serving part"
     echo " (conversion itself was already exercised above and passed)"
     echo "=================================================================="
 else
-    export JX_ENGINE_CONVERT_SCRIPT="$(pwd)/scripts/convert-safetensors.py"
-    rm -rf "$MODEL_DIR/jx-cache"
+    export ONYX_ENGINE_CONVERT_SCRIPT="$(pwd)/scripts/convert-safetensors.py"
+    rm -rf "$MODEL_DIR/onyx-cache"
 
     echo "== first launch (expect a real conversion)"
     LOG1="$(mktemp)"
@@ -104,14 +104,14 @@ else
             && ! grep -qi "converting safetensors" "$LOG1" \
             && grep -qi "gguf_init_from_reader\|failed to load model" "$LOG1"; then
         # The binary never attempted a conversion and choked mmap'ing the HF
-        # directory as a GGUF: it predates the jx_resolve_model() wiring in
+        # directory as a GGUF: it predates the onyx_resolve_model() wiring in
         # main.cpp. Not a failure of the converter itself: skip the serving
         # assertions but keep the direct-conversion results above. A binary
         # that DID run a conversion and still failed to serve falls through
         # to the hard failure below - that is a real regression.
         kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true
         echo "=================================================================="
-        echo " SKIPPED serving checks: '$BIN' does not yet call jx_resolve_model()"
+        echo " SKIPPED serving checks: '$BIN' does not yet call onyx_resolve_model()"
         echo " before loading the model (see src/convert.h) - conversion itself"
         echo " already passed above."
         echo "=================================================================="
@@ -122,7 +122,7 @@ else
 
     check "server came up after conversion" curl -sf "$BASE/health"
     # cache name carries a hash of the absolute source path: <dirname>-<hash8>-f16.gguf
-    CACHE_GGUF="$(ls "$MODEL_DIR"/jx-cache/"$(basename "$MODEL_DIR")"-*-f16.gguf 2>/dev/null | head -1)"
+    CACHE_GGUF="$(ls "$MODEL_DIR"/onyx-cache/"$(basename "$MODEL_DIR")"-*-f16.gguf 2>/dev/null | head -1)"
     check "conversion cache file appeared"  test -n "$CACHE_GGUF" -a -f "$CACHE_GGUF"
     check "log shows a real conversion ran" grep -q "converting safetensors" "$LOG1"
     check "completion request answers" curl -sf "$BASE/v1/completions" \
