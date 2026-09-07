@@ -306,9 +306,11 @@ correctly withheld the release:
   quoting, `GetModuleFileNameW`, `python`), so the Windows leg is the
   proof that a `win32-x64` release asset can be built at all.
 
-**These fixes are not yet proven by a real release run.** They are reasoned
-from the run's logs and validated only as YAML; the `win32-x64` leg in
-particular has still never completed successfully. **`v0.3.1` must be cut
+**These fixes are not yet proven by a real release run**, but the Windows
+half is proven by CI: the `windows` leg of `ci.yml` builds the same static
+MSVC configuration `release.yml` ships and runs `--version` on the result,
+and it is green (the first Windows build of `onyx-engine.exe` ever). The
+`macos-15-intel` leg is exercised only by a release run. **`v0.3.1` must be cut
 by the maintainer** once this lands on `main`: run the `release` workflow
 via `workflow_dispatch` with tag input `v0.3.1` from `main` (JX Runtime is
 moving its pin to `v0.3.1` in parallel). `softprops/action-gh-release@v2`

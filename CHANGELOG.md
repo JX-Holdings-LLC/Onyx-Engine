@@ -194,9 +194,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     fail with a bare 404 on the others — a per-machine breakage, from a
     release GitHub reports as green.
 
-  **These fixes are reasoned from the failed run's logs and validated only
-  as YAML; no release run has exercised them.** The `win32-x64` leg has
-  still never completed successfully. **Maintainer action: `v0.3.1` must be
+  **No release run has exercised these fixes yet**, but the new Windows CI
+  leg has: on `windows-latest` CMake selected Visual Studio 18 on its own,
+  the static (`-DBUILD_SHARED_LIBS=OFF`) `onyx-engine.exe` built, and
+  `--version` ran — the same configuration `release.yml` ships, and the
+  first time the engine has ever built on Windows. The `macos-15-intel` leg
+  is still unexercised until a release run. **Maintainer action: `v0.3.1` must be
   cut from `main`** once this lands — run the `release` workflow via
   `workflow_dispatch` with tag input `v0.3.1` (JX Runtime is moving its pin
   to `v0.3.1` in parallel). `softprops/action-gh-release@v2` creates or
