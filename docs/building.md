@@ -40,14 +40,47 @@ cannot be skipped silently.
 > published to the npm registry, so `npm ci`/`npm install` currently fails
 > with a 404/not-found error. Until the maintainer publishes it (see
 > ["Packaging & publishing the vendor source package"](#packaging--publishing-the-vendor-source-package)
-> below), install it locally from a tarball instead:
+> below), run the local fallback instead — one command, no npm registry:
 >
 > ```bash
-> packaging/make-vendor-package.sh
-> npm install ./packaging/dist/jxburros-llama-cpp-source-*.tgz --no-save
+> npm run vendor      # or, without npm:  bash scripts/vendor.sh
 > ```
->
-> This is exactly how the npm-based build was verified during development.
+
+### `npm run vendor` — the local fallback
+
+`scripts/vendor.sh` stages the pinned vendor tarball with
+`packaging/make-vendor-package.sh` and extracts it into
+`node_modules/@jxburros/llama-cpp-source`, which is the exact layout `npm
+ci` would produce and the one `CMakeLists.txt` looks for. After it, build
+normally:
+
+```bash
+npm run vendor
+npm run build
+```
+
+It takes an optional path to a llama.cpp checkout you already have, in which
+case nothing is downloaded:
+
+```bash
+npm run vendor -- /path/to/llama.cpp
+```
+
+Two details worth knowing:
+
+- **It extracts with `tar`, not `npm install <tarball>`**, so the only tools
+  it needs are bash and tar. `.github/workflows/{ci,release}.yml` do the same
+  two steps inline for the same reason (self-hosted runners need no npm), and
+  the resulting tree is byte-identical either way.
+- **It fetches the pinned commit over HTTPS, falling back to git.**
+  `make-vendor-package.sh` first tries the GitHub source archive
+  (`.../archive/<commit>.tar.gz`); if that is unreachable — some corporate
+  proxies and CI/agent sandboxes allow `git clone` but return 403 for
+  codeload archive URLs — it falls back to a depth-1 `git fetch` of the same
+  commit. The fallback lives in `make-vendor-package.sh` rather than in
+  `scripts/vendor.sh` so CI's cache-miss path, which calls the packaging
+  script directly, gets it too. Either way the commit is the same pin, so
+  the staged tree is identical.
 
 ## CPU build
 
@@ -159,13 +192,21 @@ be installed, since CI always has network access and runs it for real.
 ## CI
 
 `.github/workflows/ci.yml` runs on every push to `main`, every pull request,
-and on demand (`workflow_dispatch`), on both `ubuntu-latest` and
-`macos-latest`: it reads the pinned commit straight out of
+and on demand (`workflow_dispatch`), on `ubuntu-latest`, `macos-latest`, and
+`windows-latest`: it reads the pinned commit straight out of
 `packaging/make-vendor-package.sh`, stages (and caches, keyed on that pin)
-the vendor package, `npm install`s it, builds with `ccache`, then runs
-`scripts/smoke-test.sh` and `scripts/safetensors-test.sh`. There is no
-separate model-download step — the test scripts generate everything they
-need themselves.
+the vendor package, installs it, and builds. There is no separate
+model-download step — the test scripts generate everything they need
+themselves.
+
+The `linux` and `macos` legs build with `ccache` and then run
+`scripts/smoke-test.sh` and `scripts/safetensors-test.sh`. The `windows` leg
+is configure + build + `onyx-engine --version` only: it exists so a
+Windows/MSVC toolchain break is caught on a pull request rather than during
+a release (the first `v0.3.0` release run failed at exactly this step and
+published nothing — see ["Release binaries"](#release-binaries)). The test
+scripts are POSIX shell and are not run there; porting them would add no
+coverage of the failure this leg is here to catch.
 
 ## Release binaries
 
@@ -175,9 +216,9 @@ pushed (or via manual `workflow_dispatch` with a `tag` input, to re-run a
 release without pushing a new tag).
 
 For each of four platforms — `linux-x64` (ubuntu-22.04, for older-glibc
-portability), `darwin-arm64` (macOS, Apple Silicon), `darwin-x64` (macOS,
-Intel), and `win32-x64` (MSVC via the Visual Studio 17 2022 generator) — the
-job stages the same pinned vendored llama.cpp source as CI, configures with
+portability), `darwin-arm64` (`macos-latest`, Apple Silicon), `darwin-x64`
+(`macos-15-intel`, macOS on Intel), and `win32-x64` (`windows-latest`, MSVC,
+generator chosen by CMake) — the job stages the same pinned vendored llama.cpp source as CI, configures with
 `-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF` (so `llama`,
 `llama-common`, `ggml`, and `mtmd` are all linked in statically and the
 result is a single self-contained binary with no `libllama`/`libggml`
@@ -205,18 +246,77 @@ plus `checksums.txt` attached, with `generate_release_notes: true`.
 **Cutting a release:**
 
 ```bash
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.3.1
+git push origin v0.3.1
 ```
 
 pushing the tag is the only step; the workflow does the rest. **JX
-Runtime's downloader pins the `v0.3.0` tag and the exact asset names above**
-— see the `[Unreleased]` entry in `CHANGELOG.md` — so the first release cut
-from this repo must be tagged `v0.3.0` and must succeed in producing all
-four archives plus `checksums.txt`, or JX Runtime's managed install will
-fail to find its asset. The Windows (`win32-x64`) leg of this workflow has
-not been run or verified as of this writing; treat it as unverified until a
-real release run confirms it.
+Runtime's downloader pins the `v0.3.1` tag and the exact asset names above**
+(JX Runtime is moving its pin to `v0.3.1` in parallel with this release) —
+see the `[0.3.1]` entry in `CHANGELOG.md` — so the first release cut from
+this repo must be tagged `v0.3.1` and must succeed in producing all four
+archives plus `checksums.txt`, or JX Runtime's managed install will fail to
+find its asset.
+
+### The `release` job is all-or-nothing, on purpose
+
+`release` declares `needs: build` with no `if: always()`, so a single failing
+platform blocks publication entirely. That is deliberate. JX Runtime derives
+each asset's name from `${process.platform}-${process.arch}` against one
+pinned tag, so a partial release installs cleanly on the platforms that built
+and fails with a bare 404 on the ones that did not — a per-machine breakage
+that looks like a network problem, from a release GitHub reports as green.
+Failing the whole release makes the gap visible to the maintainer instead.
+
+`fail-fast: false` on the build matrix is complementary rather than
+contradictory: every platform still reports its own result, so one run shows
+all the breakage at once rather than only the first failure.
+
+### The first v0.3.0 attempt, and what changed
+
+The first `v0.3.0` release run
+([run 33906146774](https://github.com/JX-Holdings-LLC/Onyx-Engine/actions/runs/33906146774))
+failed and **published a `v0.3.0` GitHub Release with zero assets**, which is
+why `jx-runtime backend install --engine onyx` cannot work today. `linux-x64`
+and `darwin-arm64` built fine; the other two legs did not, and `needs: build`
+correctly withheld the release:
+
+- **`win32-x64` failed at configure** with `CMake Error at CMakeLists.txt:3
+  (project): Generator Visual Studio 17 2022 could not find any instance of
+  Visual Studio.` The `windows-latest` image had moved past VS 2022, and the
+  workflow pinned that generator by name. **Fix:** drop `-G` entirely and
+  pass only `-A x64`, letting CMake select the newest installed Visual
+  Studio. A pinned generator has to be updated on every runner-image roll;
+  the default never does. The "Locate binary" step now probes both the
+  multi-config (`build/Release/`) and single-config (`build/`) layouts and
+  fails with an explicit error if neither holds a binary, instead of silently
+  emitting an empty path.
+- **`darwin-x64` was cancelled after 24 h queued** on `macos-13`, a runner
+  label GitHub has retired. **Fix:** `macos-15-intel`, GitHub's supported
+  x86_64 macOS image.
+- **CI now configures and builds on Windows too**
+  (`.github/workflows/ci.yml`, the `windows` matrix leg), so this class of
+  failure is caught on a pull request rather than during a release. That leg
+  is configure + build + `--version` only; the test scripts are POSIX shell
+  and are not run there.
+- **The first Windows CI run then found that `src/convert.cpp` had never
+  compiled under MSVC** (`<sys/wait.h>`, `popen`/`WIFEXITED`, `/proc/self/exe`,
+  `python3`). The generator fix was correct — all of llama.cpp built — and
+  the converter launcher is now ported (`_popen`/`_pclose`, cmd.exe
+  quoting, `GetModuleFileNameW`, `python`), so the Windows leg is the
+  proof that a `win32-x64` release asset can be built at all.
+
+**These fixes are not yet proven by a real release run**, but the Windows
+half is proven by CI: the `windows` leg of `ci.yml` builds the same static
+MSVC configuration `release.yml` ships and runs `--version` on the result,
+and it is green (the first Windows build of `onyx-engine.exe` ever). The
+`macos-15-intel` leg is exercised only by a release run. **`v0.3.1` must be cut
+by the maintainer** once this lands on `main`: run the `release` workflow
+via `workflow_dispatch` with tag input `v0.3.1` from `main` (JX Runtime is
+moving its pin to `v0.3.1` in parallel). `softprops/action-gh-release@v2`
+creates or updates the release for a given tag, so this creates a fresh
+`v0.3.1` release rather than touching the abandoned, asset-less `v0.3.0`
+one.
 
 ## Version string
 
@@ -228,7 +328,7 @@ what `onyx-engine --version` and the `Server:` HTTP response header report.
 
 This section is for maintainers upgrading or publishing the vendored
 llama.cpp source, not for people building `onyx-engine`. Consumers just run
-`npm ci`.
+`npm ci` (or, today, `npm run vendor`).
 
 `packaging/make-vendor-package.sh` builds `@jxburros/llama-cpp-source`
 from a pinned llama.cpp commit:
@@ -243,9 +343,11 @@ packaging/make-vendor-package.sh [path-to-llama.cpp-checkout]
   `0.3.0-b10711.g9723942ad`).
 - **Source.** With an argument, it stages from that local llama.cpp
   checkout. Without one, it downloads the pinned commit's tarball from
-  GitHub into `packaging/dist/` — this is the only point in the whole
-  workflow that needs network access, and it's only needed for packaging,
-  never for building `onyx-engine` itself.
+  GitHub into `packaging/dist/`, and if that download is unavailable
+  (proxies that block codeload archive URLs but allow git) it falls back to a
+  depth-1 `git fetch` of the same commit into the same directory — this is
+  the only point in the whole workflow that needs network access, and it's
+  only needed for packaging, never for building `onyx-engine` itself.
 - **Pruning.** It stages a copy of the source tree with `docs/`, `tests/`,
   `examples/`, `benches/`, `media/`, `pocs/`, `ci/`, `app/`, `conversion/`,
   `requirements/`/`requirements.txt`, and `.git*`/`.devops` removed, plus all
@@ -270,21 +372,55 @@ packaging/make-vendor-package.sh [path-to-llama.cpp-checkout]
   `llamaCppCommit`/`llamaCppUpstream` fields recording provenance), then
   runs `npm pack` to produce `packaging/dist/jxburros-llama-cpp-source-<version>.tgz`.
 
-To publish, once the tarball is built:
+### Publishing (`.github/workflows/publish-vendor.yml`)
+
+Publishing is automated: `.github/workflows/publish-vendor.yml`,
+`workflow_dispatch`-only with a `dry_run` boolean input (default `true`),
+reads the pin the same way `ci.yml` does, runs
+`packaging/make-vendor-package.sh` to build the tarball, checks `npm view
+@jxburros/llama-cpp-source@<version>` and skips with a notice if that exact
+version is already on the registry (so re-dispatching after a successful
+publish is a no-op, not an error), and otherwise runs
 
 ```bash
-npm publish packaging/dist/jxburros-llama-cpp-source-*.tgz --access public
+npm publish packaging/dist/jxburros-llama-cpp-source-*.tgz --access public --provenance
 ```
 
-This needs npm credentials with publish rights on the `@jxburros` scope.
-If that scope isn't available to you, rename it — it appears in exactly two
-places: the `PKG_NAME` variable in `packaging/make-vendor-package.sh`, and
-the `@jxburros/llama-cpp-source` dependency name in `package.json`.
+(with `--dry-run` appended when `dry_run` is `true`).
+
+**One-time setup**, before the first real run:
+
+1. Create an npm **granular access token** with publish rights scoped to
+   `@jxburros`, and store it as this repo's `NPM_TOKEN` secret (Settings →
+   Secrets and variables → Actions) — this is what
+   `actions/setup-node@v4`'s `registry-url` plus the workflow's
+   `NODE_AUTH_TOKEN` env var authenticate with. **Or**, skip the token
+   entirely and set up [npm Trusted
+   Publishing](https://docs.npmjs.com/trusted-publishers) for this
+   repository and the `publish-vendor.yml` workflow — npm then accepts the
+   OIDC identity the workflow already requests (`permissions: id-token:
+   write`, needed for `--provenance` regardless) instead of a stored
+   secret.
+2. If `@jxburros` isn't available to you, rename it — it appears in exactly
+   two places: the `PKG_NAME` variable in
+   `packaging/make-vendor-package.sh`, and the `@jxburros/llama-cpp-source`
+   dependency name in `package.json`.
+
+**To run it:** Actions → `publish-vendor` → Run workflow. Run it once with
+`dry_run` left `true` (checked into the input default) to exercise the
+whole path — build, version check, `npm publish --dry-run` — without
+actually publishing, then run it again with `dry_run` set to `false`.
+
+**When to run it again:** only when the llama.cpp pin in
+`packaging/make-vendor-package.sh` changes (a new commit means a new
+package version, per the `PKG_VERSION` format above), not on every push —
+the version-check step makes an accidental extra dispatch harmless either
+way.
 
 **Until it's published**, `npm ci`/`npm install` fails on a clean checkout;
-use `npm install ./packaging/dist/<tarball>.tgz --no-save` as a local
-workaround after running the packaging script (see the note under
-["Fetching the llama.cpp source"](#fetching-the-llama.cpp-source-npm-ci)
+`npm run vendor` is the supported local workaround, and it calls this script
+for you (see
+["`npm run vendor` — the local fallback"](#npm-run-vendor--the-local-fallback)
 above).
 
 **After the first publish**, run `npm install` once in a clean checkout and

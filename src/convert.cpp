@@ -10,7 +10,18 @@
 #include <fstream>
 #include <string>
 #include <vector>
-#include <sys/wait.h>
+
+#ifdef _WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#else
+#  include <sys/wait.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -61,15 +72,45 @@ static std::vector<fs::path> safetensors_source_files(const fs::path & dir) {
 }
 
 static fs::path executable_dir() {
+#ifdef _WIN32
+    std::wstring buf(MAX_PATH, L'\0');
+    for (;;) {
+        DWORD n = GetModuleFileNameW(nullptr, buf.data(), (DWORD) buf.size());
+        if (n == 0) {
+            return {};
+        }
+        if (n < buf.size()) {
+            buf.resize(n);
+            break;
+        }
+        buf.resize(buf.size() * 2);
+    }
+    return fs::path(buf).parent_path();
+#else
     std::error_code ec;
     fs::path exe = fs::read_symlink("/proc/self/exe", ec);
     if (ec || exe.empty()) {
         return {};
     }
     return exe.parent_path();
+#endif
 }
 
+// Quote one argument for the shell `popen` hands the command line to: a
+// POSIX sh on Unix (single quotes, with embedded quotes closed and
+// re-opened), cmd.exe on Windows (double quotes; a literal `"` is not
+// representable inside a cmd.exe-quoted argument and is dropped).
 static std::string shquote(const std::string & s) {
+#ifdef _WIN32
+    std::string out = "\"";
+    for (char c : s) {
+        if (c != '"') {
+            out += c;
+        }
+    }
+    out += "\"";
+    return out;
+#else
     std::string out = "'";
     for (char c : s) {
         if (c == '\'') {
@@ -80,7 +121,17 @@ static std::string shquote(const std::string & s) {
     }
     out += "'";
     return out;
+#endif
 }
+
+// The interpreter name differs by platform: `python3` on Unix, where a
+// bare `python` may still be Python 2 or absent; `python` on Windows, where
+// the python.org installer provides no `python3` alias.
+#ifdef _WIN32
+static const char * PYTHON_EXE = "python";
+#else
+static const char * PYTHON_EXE = "python3";
+#endif
 
 // ---------------------------------------------------------------------------
 // converter script resolution
@@ -128,10 +179,14 @@ static std::string resolve_converter_script(std::string & err) {
 // the child's exit code, or -1 if it could not be started/waited on.
 static int run_converter(const std::string & script, const std::string & model_dir,
                           const std::string & outfile, std::deque<std::string> & tail, size_t keep) {
-    const std::string cmd = "python3 " + shquote(script) + " " + shquote(model_dir) +
+    const std::string cmd = std::string(PYTHON_EXE) + " " + shquote(script) + " " + shquote(model_dir) +
                              " --outfile " + shquote(outfile) + " --outtype f16 2>&1";
 
+#ifdef _WIN32
+    FILE * pipe = _popen(cmd.c_str(), "r");
+#else
     FILE * pipe = popen(cmd.c_str(), "r");
+#endif
     if (!pipe) {
         return -1;
     }
@@ -159,6 +214,11 @@ static int run_converter(const std::string & script, const std::string & model_d
         flush_line();
     }
 
+#ifdef _WIN32
+    // _pclose returns the child's exit status directly.
+    int status = _pclose(pipe);
+    return status == -1 ? -1 : status;
+#else
     int status = pclose(pipe);
     if (status == -1) {
         return -1;
@@ -167,6 +227,7 @@ static int run_converter(const std::string & script, const std::string & model_d
         return WEXITSTATUS(status);
     }
     return -1;
+#endif
 }
 
 // ---------------------------------------------------------------------------

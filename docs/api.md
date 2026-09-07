@@ -58,6 +58,7 @@ Model and build metadata. No request body.
   "chat_template": "<jinja source or empty string>",
   "build_info": "onyx-engine/0.2.0 (llama.cpp b10711-9723942ad)",
   "n_ctx": 4096,
+  "n_ctx_total": 4096,
   "n_ctx_train": 32768,
   "n_embd": 4096,
   "embedding_mode": false,
@@ -70,10 +71,22 @@ Model and build metadata. No request body.
 ```
 
 Notes:
-- `n_ctx` appears both top-level and nested under
-  `default_generation_settings` — both are the same value
-  (`onyx_engine::n_ctx()`, the actual context size the running context was
-  created with, from `llama_n_ctx`).
+- **`n_ctx` is the PER-SLOT context** — the window one request is measured
+  against (`onyx_engine::n_ctx_slot()`, from `llama_n_ctx_seq`). It appears
+  both top-level and nested under `default_generation_settings`, and the two
+  are always the same number, so a client may read either.
+
+  This is llama-server parity: llama-server's `get_res_props()` publishes
+  `default_generation_settings.n_ctx` as `meta.slot_n_ctx`, which is its own
+  `n_ctx_slot()`. It matters because `--parallel N` divides the context —
+  llama.cpp gives each of the `N` slots roughly `n_ctx / N` tokens — so with
+  `-c 512 --parallel 2` a request is refused above 256 tokens, and reporting
+  the undivided 512 would tell a caller it had twice the window it really
+  has. With the default `--parallel 1` the two values coincide.
+- `n_ctx_total` is the whole context the llama.cpp context was created with
+  (`onyx_engine::n_ctx()`, from `llama_n_ctx`) — that is, `n_ctx` times the
+  slot count. It has no llama-server counterpart and is informational; size
+  requests against `n_ctx`, not this.
 - `modalities.vision`/`modalities.audio` reflect the loaded `--mmproj`
   projector's real capabilities (`mtmd_support_vision`/`mtmd_support_audio`)
   — both `false` when no projector is loaded.

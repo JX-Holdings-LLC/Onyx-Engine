@@ -58,7 +58,13 @@ void onyx_args_print_help() {
         "  -tb, --threads-batch N       prompt processing threads, -1 = same as --threads\n"
         "  -np, --parallel N            concurrent request slots; requests beyond this\n"
         "                               queue (default: 1)\n"
-        "  -fa, --flash-attn VAL        flash attention: on, off, auto (default: auto)\n"
+        // "on|off|auto" (pipes), not "on, off, auto": JX Runtime's generic
+        // llama.cpp adapter decides whether to pass `-fa <value>` or a bare
+        // `-fa` by matching /on\|off\|auto|'on'/ against this line, and the
+        // comma form reads as the old bare-toggle flag — which onyx-engine
+        // rejects ("error: -fa requires a value"). The pipe form is also what
+        // the error message on line ~141 and llama-server's own help use.
+        "  -fa, --flash-attn VAL        flash attention: on|off|auto (default: auto)\n"
         "       --mlock                 lock model memory in RAM\n"
         "       --no-mmap               do not memory-map the model file\n"
         "  -s,  --seed N                default RNG seed (default: random)\n"

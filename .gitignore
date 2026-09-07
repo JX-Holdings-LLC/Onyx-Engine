@@ -10,3 +10,6 @@ node_modules/
 packaging/dist/
 vendor/
 models-test/
+.ci-venv/
+.venv/
+venv/

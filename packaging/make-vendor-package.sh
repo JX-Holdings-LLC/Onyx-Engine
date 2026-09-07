@@ -3,14 +3,18 @@
 # source tree, pruned to what onyx-engine's build and test tooling need.
 #
 # This is the MAINTAINER packaging step (run once per llama.cpp upgrade, then
-# `npm publish` the tarball). Consumers of onyx-engine never run this; their
-# only external build input is the published npm package.
+# `npm publish` the tarball). It is also the local fallback a fresh clone
+# uses while `@jxburros/llama-cpp-source` is unpublished — `npm run vendor`
+# (scripts/vendor.sh) calls this script and installs the resulting tarball
+# into node_modules, which is all CMake needs.
 #
 # Usage:
 #   packaging/make-vendor-package.sh [path-to-llama.cpp-source]
 #
-# Without an argument the pinned commit is downloaded from GitHub (network
-# access required for packaging only, not for building onyx-engine).
+# Without an argument the pinned commit is fetched from GitHub — first as a
+# source archive over HTTPS, and if that is unreachable, as a depth-1 git
+# fetch of the exact commit (network access required for packaging only, not
+# for building onyx-engine).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -26,13 +30,45 @@ SRC="${1:-}"
 DIST="packaging/dist"
 STAGE="$DIST/package"
 
+LLAMA_UPSTREAM="https://github.com/ggml-org/llama.cpp"
+
+# Fetch the pinned commit with git. Used as a fallback when the codeload
+# tarball is unreachable — some networks (corporate proxies, the sandboxes
+# CI and agents run in) allow `git clone` over HTTPS but return 403 for
+# `github.com/.../archive/*.tar.gz`. A depth-1 fetch of the exact commit
+# costs about the same as the tarball and pins identically.
+fetch_with_git() {
+    local dest="$1"
+    rm -rf "$dest"
+    mkdir -p "$dest"
+    git init -q "$dest"
+    git -C "$dest" remote add origin "$LLAMA_UPSTREAM"
+    git -C "$dest" fetch --depth 1 -q origin "$LLAMA_COMMIT"
+    git -C "$dest" checkout -q FETCH_HEAD
+    rm -rf "$dest/.git"
+}
+
 if [ -z "$SRC" ]; then
     SRC="$DIST/llama.cpp-$LLAMA_COMMIT"
     if [ ! -d "$SRC" ]; then
-        echo "downloading llama.cpp @ $LLAMA_COMMIT ..."
         mkdir -p "$DIST"
-        curl -fsSL "https://github.com/ggml-org/llama.cpp/archive/$LLAMA_COMMIT.tar.gz" \
-            | tar -xz -C "$DIST"
+        echo "downloading llama.cpp @ $LLAMA_COMMIT ..."
+        # Downloaded to a file rather than piped into tar so a failed fetch
+        # reports the HTTP error instead of tar's "unexpected end of file".
+        ARCHIVE="$DIST/llama.cpp-$LLAMA_COMMIT.tar.gz"
+        if curl -fsSL -o "$ARCHIVE" "$LLAMA_UPSTREAM/archive/$LLAMA_COMMIT.tar.gz" \
+           && tar -xzf "$ARCHIVE" -C "$DIST"; then
+            rm -f "$ARCHIVE"
+        else
+            rm -f "$ARCHIVE"
+            rm -rf "$SRC"
+            echo "archive download unavailable; falling back to git fetch ..."
+            command -v git > /dev/null || {
+                echo "error: neither the archive download nor git is available" >&2
+                exit 1
+            }
+            fetch_with_git "$SRC"
+        fi
     fi
 fi
 [ -f "$SRC/CMakeLists.txt" ] || { echo "error: '$SRC' is not a llama.cpp source tree"; exit 1; }

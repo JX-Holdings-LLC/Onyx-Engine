@@ -9,17 +9,17 @@ copied verbatim. `LICENSE` is that project's (MIT).
 llama.cpp source tree for it — an include path pointing at
 `<llama src>/vendor/cpp-httplib` — while the *implementation* came from
 `libllama-common.so`, which has upstream's own cpp-httplib statically linked
-into it and re-exports ~1200 `httplib::*` symbols. Nothing about jx-engine's
+into it and re-exports ~1200 `httplib::*` symbols. Nothing about onyx-engine's
 HTTP layer is llama.cpp's concern, and that arrangement had two problems:
 
-1. jx-engine's HTTP server ran on code it got out of llama.cpp's shared
+1. onyx-engine's HTTP server ran on code it got out of llama.cpp's shared
    library, as a private implementation detail of `llama-common`. Any
    upstream change — moving the vendored copy, building `common` with hidden
-   visibility, bumping cpp-httplib, dropping it — breaks jx-engine's server,
+   visibility, bumping cpp-httplib, dropping it — breaks onyx-engine's server,
    or silently binds it to a different cpp-httplib than the header it was
    compiled against.
 2. Upstream sets cpp-httplib's tuning macros `PRIVATE` to *its* target, so
-   they applied when `httplib.cpp` was compiled but **not** when jx-engine
+   they applied when `httplib.cpp` was compiled but **not** when onyx-engine
    compiled `server.cpp` against the same header. One of them is used from
    the header: `CPPHTTPLIB_TCP_NODELAY` is the default member initializer of
    `httplib::Server::tcp_nodelay_`. The two translation units therefore
@@ -35,15 +35,15 @@ HTTP layer is llama.cpp's concern, and that arrangement had two problems:
 Owning the copy fixes both: the macros below are `PUBLIC` on our target, so
 the header and the implementation are always compiled with identical values.
 
-`CMakeLists.txt` also lists `jx-httplib` **before** `llama-common` on
-jx-engine's link line. That ordering is load-bearing: with `llama-common`
+`CMakeLists.txt` also lists `onyx-httplib` **before** `llama-common` on
+onyx-engine's link line. That ordering is load-bearing: with `llama-common`
 first, 15 httplib symbols still resolved to its shared library, leaving the
 HTTP layer split across two copies of cpp-httplib. Our archive first means
-`nm -u build/jx-engine | grep httplib` is empty.
+`nm -u build/onyx-engine | grep httplib` is empty.
 
 ## Local build settings
 
-Set in `CMakeLists.txt` (`jx-httplib` target), matching the values llama.cpp
+Set in `CMakeLists.txt` (`onyx-httplib` target), matching the values llama.cpp
 chose for the same workload:
 
 | macro | value | why |
@@ -53,7 +53,7 @@ chose for the same workload:
 | `CPPHTTPLIB_REQUEST_URI_MAX_LENGTH` | `32768` | longer prompts in a query string |
 | `CPPHTTPLIB_TCP_NODELAY` | `1` | disable Nagle — SSE frames must not be delayed |
 
-TLS is deliberately not enabled: jx-engine binds `127.0.0.1` and is fronted
+TLS is deliberately not enabled: onyx-engine binds `127.0.0.1` and is fronted
 by JX Runtime, so cpp-httplib is built without OpenSSL.
 
 ## Updating
