@@ -42,7 +42,23 @@ shapes):
   cover both old and new `llama-server` response shapes). `onyx-engine`'s
   `/props` sets **both** `n_ctx` at the top level and
   `default_generation_settings.n_ctx` nested, to the same value — so either
-  read path the adapter already has finds the real context size.
+  read path the adapter already has finds the same number.
+
+  **That number is the per-slot context**, matching `llama-server`
+  (`get_res_props()` publishes `default_generation_settings.n_ctx` as
+  `meta.slot_n_ctx`, its own `n_ctx_slot()`), and matching the comment in
+  `_captureProps()` itself ("`/props` reports the context of a single slot
+  under `n_ctx`"). This is load-bearing here rather than cosmetic: the
+  adapter launches with `-c contextLength * slots` and always passes
+  `--parallel`, so it expects `/props` to hand back the per-slot
+  `contextLength` it asked for. `onyx-engine` previously reported the
+  undivided total, which with `slots > 1` recorded a window `slots` times
+  too large — preflight would admit a prompt the engine then refused with
+  `prompt (N tokens) does not fit in the context window`. Reproduced against
+  a built binary at `-c 512 --parallel 2`: `/props` said `512`, the engine
+  enforced `256`. Fixed; the undivided value is still available as the
+  top-level `n_ctx_total` (see [`api.md`](api.md)), which the adapter does
+  not read.
 - **`/tokenize` for preflight.** `tokenCount()` calls `POST /tokenize` with
   `{"content": ...}` and reads `data.tokens.length`. `onyx-engine`'s
   `/tokenize` accepts exactly that body shape and returns

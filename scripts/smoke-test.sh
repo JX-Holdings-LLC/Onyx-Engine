@@ -91,8 +91,10 @@ done
 
 echo "== endpoints"
 check "GET /health" curl -sf "$BASE/health"
+# One slot, so per-slot context and total context are the same 512 here; the
+# 2-slot instance below is what pins them apart.
 check "GET /props reports n_ctx" \
-    json_has 'd["n_ctx"] == 512 and d["default_generation_settings"]["n_ctx"] == 512 and "chat_template" in d' "$BASE/props"
+    json_has 'd["n_ctx"] == 512 and d["default_generation_settings"]["n_ctx"] == 512 and d["n_ctx_total"] == 512 and "chat_template" in d' "$BASE/props"
 check "GET /v1/models echoes alias" \
     json_has 'd["data"][0]["id"] == "tiny-test"' "$BASE/v1/models"
 check "POST /tokenize" \
@@ -136,6 +138,17 @@ check "embeddings rejected in generation mode (501)" bash -c "
     [ \"\$code\" = 501 ]"
 
 echo "== parallel slots (-np 2) instance"
+# /props n_ctx is PER-SLOT, matching llama-server (its get_res_props reports
+# default_generation_settings.n_ctx as meta.slot_n_ctx). This instance runs
+# -c 512 -np 2, so llama.cpp divides the context and each slot gets 256 --
+# and 256 is the window a single request is measured against. JX Runtime
+# passes --parallel on every launch and records this number as the model's
+# context length, so reporting the undivided 512 here made it admit prompts
+# the engine then rejected. The undivided value stays available as
+# n_ctx_total. Both read paths (top-level and nested) must agree.
+check "GET /props reports per-slot n_ctx on the 2-slot instance" \
+    json_has 'd["n_ctx"] == 256 and d["default_generation_settings"]["n_ctx"] == 256 and d["n_ctx_total"] == 512' \
+    "$NP_BASE/props"
 check "chat completion on the 2-slot instance" \
     json_has 'd["choices"][0]["message"]["role"] == "assistant" and d["usage"]["completion_tokens"] == 8' \
     -X POST "$NP_BASE/v1/chat/completions" -d '{"messages":[{"role":"user","content":"Hi"}],"max_tokens":8}'

@@ -93,6 +93,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **`GET /props` reported the undivided context as `n_ctx`, so JX Runtime
+  recorded a window `--parallel` times too large.** `n_ctx` (top level) and
+  `default_generation_settings.n_ctx` both now report the **per-slot**
+  context (`onyx_engine::n_ctx_slot()`, from `llama_n_ctx_seq`) — the window
+  a single request is actually measured against — and stay equal to each
+  other so either read path yields the same number. This is llama-server
+  parity: its `get_res_props()` publishes
+  `default_generation_settings.n_ctx` as `meta.slot_n_ctx`, which is its own
+  `n_ctx_slot()` (`tools/server/server-context.cpp:4579,4173` at the pinned
+  commit), and it has no top-level `n_ctx` at all.
+
+  `--parallel N` divides the context — llama.cpp gives each slot roughly
+  `n_ctx / N` tokens — and JX Runtime's adapter launches with
+  `-c contextLength * slots` and passes `--parallel` on every launch, then
+  reads this field back as the model's context length. Reporting the
+  undivided total therefore told it the window was `slots` times larger than
+  the engine would accept, so its request preflight admitted prompts the
+  engine then refused. Reproduced against a built binary at
+  `-c 512 --parallel 2`: `/props` reported `512`, the server log said
+  `2 slots x 256 ctx`, and a 355-token prompt failed with
+  `prompt (355 tokens) does not fit in the context window (256 tokens)`.
+  After the fix `/props` reports `256`. The undivided value is not lost — it
+  is the new top-level `n_ctx_total` — and the single-slot default is
+  unchanged, since the two coincide there. `scripts/smoke-test.sh` now
+  asserts both: `512`/`512` on the one-slot instance and `256` per slot with
+  `n_ctx_total` `512` on the existing `-np 2` instance.
 - **Release workflow: both platform failures that made the `v0.3.0` release
   publish zero assets.** Release run
   [33906146774](https://github.com/JX-Holdings-LLC/Onyx-Engine/actions/runs/33906146774)

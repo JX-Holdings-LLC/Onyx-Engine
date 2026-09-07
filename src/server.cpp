@@ -575,7 +575,14 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
 
     svr.Get("/props", [&](const httplib::Request &, httplib::Response & res) {
         common_json defaults = common_json::object();
-        defaults["n_ctx"] = (int64_t) engine.n_ctx();
+        // Per-slot, not the whole context - llama-server parity. Its
+        // get_res_props() reports default_generation_settings.n_ctx as
+        // meta.slot_n_ctx, which is its own impl->n_ctx_slot(). This is the
+        // window a single request is actually measured against (see
+        // onyx_engine::n_ctx_slot_ / llama_n_ctx_seq), so it is the number a
+        // caller sizing a request needs. The whole context is still reported,
+        // as the top-level n_ctx_total below.
+        defaults["n_ctx"] = (int64_t) engine.n_ctx_slot();
 
         common_json modalities = common_json::object();
         modalities["vision"] = engine.supports_vision();
@@ -585,7 +592,12 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         props["model_alias"]                 = engine.alias();
         props["chat_template"]               = engine.chat_template_source();
         props["build_info"]                  = std::string("onyx-engine/" ONYX_ENGINE_VERSION " (llama.cpp " ONYX_ENGINE_LLAMA_PIN ")");
-        props["n_ctx"]                       = (int64_t) engine.n_ctx();
+        // Deliberately the same value as default_generation_settings.n_ctx
+        // above: llama-server publishes only the nested one, and consumers
+        // differ on which they read (JX Runtime's adapter takes the first of
+        // the two that is a positive number), so the two must never disagree.
+        props["n_ctx"]                       = (int64_t) engine.n_ctx_slot();
+        props["n_ctx_total"]                 = (int64_t) engine.n_ctx();
         props["n_ctx_train"]                 = (int64_t) engine.n_ctx_train();
         props["n_embd"]                      = (int64_t) engine.n_embd();
         props["embedding_mode"]              = engine.embedding_mode();
