@@ -130,9 +130,14 @@ jobs:
       # image bumping its VS version does not break the build (same note in
       # release.yml). Multi-config generator, so the configuration is chosen
       # at build time with --config.
+      # Static, exactly as release.yml builds the shipped win32-x64 binary.
+      # A shared build puts ggml/llama/mtmd DLLs under build/bin/Release/
+      # while the exe lands in build/Release/, so the exe cannot even start
+      # (the loader fails before main; bash reports exit 127) — and it is the
+      # static configuration that a release has to prove anyway.
       - name: Configure (MSVC)
         if: runner.os == 'Windows'
-        run: cmake -B build -A x64
+        run: cmake -B build -A x64 -DBUILD_SHARED_LIBS=OFF
 
       - name: Build
         if: runner.os != 'Windows'
