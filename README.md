@@ -99,7 +99,7 @@ See [Roadmap](#roadmap) for what remains genuinely out of scope.
 ```bash
 git clone <this-repo>
 cd Onyx-Engine
-npm ci   # or: npm install
+npm run vendor   # fetch the pinned llama.cpp source (see note below)
 
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target onyx-engine -j
@@ -122,9 +122,13 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 > **`npm ci` doesn't work yet.** `@jxburros/llama-cpp-source` has not been
 > published to the npm registry, so `npm ci`/`npm install` currently fails.
-> Until it's published, build the package locally and install it from the
-> tarball — see [Vendored source via npm](#vendored-source-via-npm) below and
-> [`docs/building.md`](docs/building.md).
+> `npm run vendor` (above) is the supported fallback until it is published:
+> it stages the pinned llama.cpp source locally and installs it into
+> `node_modules/@jxburros/llama-cpp-source`, exactly where `npm ci` would put
+> it and where `CMakeLists.txt` looks. Once the package is published, `npm
+> ci` replaces it and nothing else changes. See
+> [Vendored source via npm](#vendored-source-via-npm) below and
+> [`docs/building.md`](docs/building.md#npm-run-vendor--the-local-fallback).
 
 For acceleration builds (CUDA, Vulkan, Metal, ROCm, BLAS) see
 [`docs/building.md`](docs/building.md).
@@ -146,12 +150,17 @@ manually placed `vendor/llama.cpp`).
 **Status: not yet published.** `@jxburros/llama-cpp-source` is not on the
 npm registry today, so a fresh clone's `npm ci` fails until the maintainer
 runs `packaging/make-vendor-package.sh` and `npm publish <tarball> --access
-public`. Until then, build the tarball yourself and install it locally:
+public`. Until then, one command does the whole fallback:
 
 ```bash
-packaging/make-vendor-package.sh
-npm install ./packaging/dist/jxburros-llama-cpp-source-*.tgz --no-save
+npm run vendor                        # or: bash scripts/vendor.sh
+npm run vendor -- /path/to/llama.cpp  # reuse a checkout you already have
 ```
+
+`scripts/vendor.sh` stages the pinned vendor tarball and extracts it into
+`node_modules/@jxburros/llama-cpp-source`. It needs only bash and tar, and
+it fetches the pinned commit over HTTPS with a depth-1 `git fetch` fallback
+for networks that block GitHub's archive URLs.
 
 See [`docs/building.md`](docs/building.md#packaging--publishing-the-vendor-source-package)
 for the full packaging/publishing workflow.
@@ -173,6 +182,20 @@ on every `v*` tag push, for `linux-x64`, `darwin-arm64`, `darwin-x64`, and
 what JX Runtime's managed downloader uses to pick the right asset. See
 ["Release binaries"](docs/building.md#release-binaries) in `docs/building.md`
 for how a release is built and cut.
+
+> **No release assets are published yet — `v0.3.0` must be re-cut.** The
+> first `v0.3.0` release run failed on two of four platforms (a Visual
+> Studio generator pinned by name that `windows-latest` no longer ships, and
+> the retired `macos-13` runner label), and because the `release` job
+> requires every platform to succeed, it created the `v0.3.0` GitHub Release
+> with **zero assets**. `jx-runtime backend install --engine onyx`
+> consequently cannot work today, on any platform. Both causes are fixed in
+> `.github/workflows/release.yml`, but the fix is unproven until a real run
+> exercises it. **Maintainer action:** once these changes are on `main`, run
+> the `release` workflow via `workflow_dispatch` with tag input `v0.3.0`
+> — the release is created/updated idempotently, so this attaches the assets
+> to the existing empty release. See
+> ["The first v0.3.0 attempt, and what changed"](docs/building.md#the-first-v030-attempt-and-what-changed).
 
 ## Endpoints
 

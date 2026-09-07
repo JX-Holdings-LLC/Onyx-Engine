@@ -142,11 +142,24 @@ explicitly because they matter to correctness, not just capability:
 
 - **`--flash-attn` value vs. toggle form.** The adapter's `flashAttnStyle()`
   probe distinguishes `-fa on|off|auto` (value form) from a bare `-fa`
-  toggle by pattern-matching the `--help` line. `onyx-engine`'s `-fa`/
-  `--flash-attn` only accepts the value form (`on`/`off`/`auto` — see
-  `src/args.cpp`); its `--help` text lists `on, off, auto` explicitly, which
-  the adapter's existing value-form regex (`/on\|off\|auto|'on'/`) already
-  matches correctly.
+  toggle by pattern-matching the `--help` line with `/on\|off\|auto|'on'/`.
+  `onyx-engine`'s `-fa`/`--flash-attn` only accepts the value form
+  (`on`/`off`/`auto` — see `src/args.cpp`), and a bare `-fa` exits with
+  `error: -fa requires a value`, so being classified as a toggle would break
+  every launch with flash attention enabled.
+
+  This paragraph previously claimed the probe already matched. It did not:
+  the `--help` line read `flash attention: on, off, auto`, with **commas**,
+  and that regex only accepts pipe-separated `on|off|auto` or a quoted
+  `'on'`. Running the adapter's own regex against the real `--help` output
+  returned `toggle`. The help line now reads `on|off|auto` and the probe
+  returns `value`, verified against a built binary.
+
+  Nothing was broken in practice, because `src/backends/onyxengine.js`
+  overrides the probe outright (`async flashAttnStyle() { return 'value'; }`)
+  rather than spawning `--help`. The fix matters for anything that does run
+  the generic probe — the parent `llamacpp` adapter pointed at an
+  `onyx-engine` binary, or a future adapter that drops the override.
 - **`--parallel` is always passed, unconditionally, by the adapter** (see
   the long comment in `buildArgs()`), on the premise that an engine handed
   no `--parallel` at all might default to more than one slot — the adapter

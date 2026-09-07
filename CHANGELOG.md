@@ -8,6 +8,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **`npm run vendor` — one command for the fresh-clone build.**
+  `scripts/vendor.sh` stages the pinned llama.cpp vendor tarball with
+  `packaging/make-vendor-package.sh` and extracts it into
+  `node_modules/@jxburros/llama-cpp-source`, which is exactly the layout
+  `npm ci` would produce and the one `CMakeLists.txt` resolves. It replaces
+  the manual two-step (`packaging/make-vendor-package.sh` then `npm install
+  ./packaging/dist/*.tgz --no-save`) documented in `README.md` and
+  `docs/building.md`, and takes an optional path to an existing llama.cpp
+  checkout (`npm run vendor -- /path/to/llama.cpp`), in which case nothing is
+  downloaded. Extraction uses `tar`, not `npm install <tarball>`, so bash and
+  tar are the only requirements — the same reasoning the CI and release
+  workflows already used for their inline copies of these steps. The pinned
+  commit and package version are unchanged.
+- **`packaging/make-vendor-package.sh` falls back to `git fetch` when the
+  source archive is unreachable.** It still prefers
+  `github.com/ggml-org/llama.cpp/archive/<commit>.tar.gz`; when that fails it
+  does a depth-1 `git fetch` of the same commit instead. Some corporate
+  proxies and CI/agent sandboxes allow `git clone` over HTTPS but return 403
+  for codeload archive URLs, which made the documented fallback unusable
+  there. The fallback lives in this script rather than in `scripts/vendor.sh`
+  so the cache-miss path in `.github/workflows/{ci,release}.yml`, which calls
+  the packaging script directly, gets it too. Same pin either way, so the
+  staged tree is identical.
+- **CI builds on Windows** (`.github/workflows/ci.yml`, new `windows` matrix
+  leg on `windows-latest`): configure, build, and `onyx-engine --version`.
+  The test scripts are POSIX shell and are deliberately not run there. This
+  exists because the first `v0.3.0` release run failed at the Windows
+  configure step and nothing in CI had ever configured on Windows to catch
+  it before a tag.
+
 - **`--no-webui` accepted as a compatibility no-op.** JX Runtime's llama.cpp
   adapter (`src/backends/llamacpp.js`) passes `--no-webui` on every launch,
   and `onyx-engine` previously rejected the flag as unknown. JX Runtime's
@@ -62,6 +92,70 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     order 15 httplib symbols still resolved to llama.cpp's shared library.
 
 ### Fixed
+
+- **Release workflow: both platform failures that made the `v0.3.0` release
+  publish zero assets.** Release run
+  [33906146774](https://github.com/JX-Holdings-LLC/Onyx-Engine/actions/runs/33906146774)
+  built `linux-x64` and `darwin-arm64` successfully but failed on the other
+  two, and since the `release` job declares `needs: build`, nothing was
+  published — the `v0.3.0` GitHub Release exists with **no assets at all**,
+  so `jx-runtime backend install --engine onyx` cannot work today on any
+  platform.
+  - `build (win32-x64)` failed at configure with `CMake Error at
+    CMakeLists.txt:3 (project): Generator Visual Studio 17 2022 could not
+    find any instance of Visual Studio.` — the `windows-latest` image no
+    longer ships VS 2022. The generator is no longer named: the configure
+    step passes only `-A x64` and lets CMake select the newest installed
+    Visual Studio. A version-pinned generator must be updated on every
+    runner-image roll; the default never does.
+  - `build (darwin-x64)` sat queued on `macos-13` for 24 hours and was
+    cancelled — GitHub has retired that runner label. Moved to
+    `macos-15-intel`, GitHub's supported x86_64 macOS image.
+  - The "Locate binary" step no longer assumes the Windows output layout
+    (which is no longer fixed, since the generator is not): it probes both
+    the multi-config `build/Release/` and single-config `build/` paths on
+    every platform and fails with an explicit `::error::` if neither holds a
+    binary, instead of emitting an empty path that surfaced as a confusing
+    failure two steps later.
+  - The `release` job stays all-or-nothing, and `.github/workflows/release.yml`
+    now says why in a comment: JX Runtime derives each asset name from
+    `${process.platform}-${process.arch}` against one pinned tag, so a
+    partial release would install cleanly on the platforms that built and
+    fail with a bare 404 on the others — a per-machine breakage, from a
+    release GitHub reports as green.
+
+  **These fixes are reasoned from the failed run's logs and validated only
+  as YAML; no release run has exercised them.** The `win32-x64` leg has
+  still never completed successfully. **Maintainer action: `v0.3.0` must be
+  re-cut** once this lands on `main` — run the `release` workflow via
+  `workflow_dispatch` with tag input `v0.3.0`. `softprops/action-gh-release@v2`
+  creates or updates the release for the tag, so this attaches assets to the
+  existing empty `v0.3.0` release rather than erroring. The asset names
+  (`onyx-engine-<tag>-<platformKey>.tar.gz`/`.zip`) and the `sha256sum`-style
+  two-space `checksums.txt` format are unchanged; JX Runtime's
+  `src/binaries.js` depends on both.
+- **`--flash-attn`'s `--help` line now advertises `on|off|auto` rather than
+  `on, off, auto`.** JX Runtime's generic llama.cpp adapter decides between
+  passing `-fa <value>` and a bare `-fa` by matching `/on\|off\|auto|'on'/`
+  against this line; the comma form matched neither alternative, so the probe
+  classified `onyx-engine` as the old bare-toggle build — and a bare `-fa`
+  exits with `error: -fa requires a value`. Verified by running that exact
+  regex against a built binary's `--help`: `toggle` before, `value` after.
+  Nothing was broken in practice, because `src/backends/onyxengine.js`
+  overrides the probe (`async flashAttnStyle() { return 'value'; }`) instead
+  of spawning `--help`; the mismatch mattered only for the parent `llamacpp`
+  adapter pointed at an `onyx-engine` binary. Parser behavior is unchanged —
+  the accepted values were and remain `on`/`off`/`auto`.
+- **`docs/jx-runtime-integration.md` claimed the flash-attn probe already
+  matched `onyx-engine`'s help text.** It did not, as above. The paragraph
+  now states what the probe actually returned, what changed, and why the
+  live adapter was unaffected.
+- **`third_party/cpp-httplib/README.md` still used the pre-rename
+  `jx-engine`/`jx-httplib` names** in its Onyx-authored provenance notes;
+  the target is `onyx-httplib` and the binary is `onyx-engine`. Upstream
+  cpp-httplib's own license text is untouched. (The note's claim that `nm -u
+  build/onyx-engine | grep httplib` is empty was re-verified against a
+  freshly built binary: 0 matches.)
 
 - **`--version` and `/props`'s `build_info` reported onyx-engine's own git
   commit as the llama.cpp build info.** They used llama.cpp's
