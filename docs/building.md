@@ -299,6 +299,12 @@ correctly withheld the release:
   failure is caught on a pull request rather than during a release. That leg
   is configure + build + `--version` only; the test scripts are POSIX shell
   and are not run there.
+- **The first Windows CI run then found that `src/convert.cpp` had never
+  compiled under MSVC** (`<sys/wait.h>`, `popen`/`WIFEXITED`, `/proc/self/exe`,
+  `python3`). The generator fix was correct — all of llama.cpp built — and
+  the converter launcher is now ported (`_popen`/`_pclose`, cmd.exe
+  quoting, `GetModuleFileNameW`, `python`), so the Windows leg is the
+  proof that a `win32-x64` release asset can be built at all.
 
 **These fixes are not yet proven by a real release run.** They are reasoned
 from the run's logs and validated only as YAML; the `win32-x64` leg in

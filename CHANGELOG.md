@@ -112,6 +112,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **`src/convert.cpp` did not compile on Windows** — it included
+  `<sys/wait.h>` and used `popen`/`pclose` with `WIFEXITED`, a POSIX shell
+  quoting style, `/proc/self/exe`, and the `python3` interpreter name, none
+  of which exist under MSVC. The first Windows CI run (added in this release)
+  surfaced it immediately: the release-workflow generator fix worked and all
+  of llama.cpp built, then `convert.cpp` failed with `C1083: Cannot open
+  include file: 'sys/wait.h'`. The converter launcher is now portable:
+  `_popen`/`_pclose` (whose return value is the exit status directly),
+  cmd.exe double-quote argument quoting, `GetModuleFileNameW` for the
+  executable directory, and `python` as the interpreter on Windows. Unix
+  behaviour is unchanged (safetensors tests 13/13, smoke tests 52/52 after
+  the change). The Windows build itself is validated by the CI leg, not by
+  a local run; the converter has not been exercised end to end on Windows.
+
 - **`GET /props` reported the undivided context as `n_ctx`, so JX Runtime
   recorded a window `--parallel` times too large.** `n_ctx` (top level) and
   `default_generation_settings.n_ctx` both now report the **per-slot**
