@@ -310,15 +310,27 @@ if d[\"choices\"][0][\"finish_reason\"] == \"length\":
     assert len(content) == n, content
 else:
     assert len(content) in (n, n - 1), content
+def check_bytes(e):
+    # bytes is always the raw token bytes. token is a JSON string, so a
+    # byte-fallback token (a lone UTF-8 continuation byte such as <0x88>,
+    # which the random model samples now and then) cannot round-trip:
+    # it is serialized as U+FFFD, exactly as OpenAI does. Require equality
+    # only when the string decodes cleanly; otherwise require a raw byte
+    # list that is not the encoding of the replacement character.
+    assert isinstance(e[\"bytes\"], list) and all(isinstance(b, int) and 0 <= b <= 255 for b in e[\"bytes\"]), e
+    if \"\\ufffd\" not in e[\"token\"]:
+        assert e[\"bytes\"] == list(e[\"token\"].encode(\"utf-8\")), e
+    else:
+        assert e[\"bytes\"] and e[\"bytes\"] != list(\"\\ufffd\".encode(\"utf-8\")), e
 for e in content:
     assert isinstance(e[\"token\"], str)
     assert e[\"logprob\"] <= 0
-    assert e[\"bytes\"] == list(e[\"token\"].encode(\"utf-8\"))
+    check_bytes(e)
     assert len(e[\"top_logprobs\"]) == 3
     lps = [t[\"logprob\"] for t in e[\"top_logprobs\"]]
     assert lps == sorted(lps, reverse=True), lps
     for t in e[\"top_logprobs\"]:
-        assert t[\"bytes\"] == list(t[\"token\"].encode(\"utf-8\"))
+        check_bytes(t)
 '"
 check "top_logprobs without logprobs is rejected (400)" bash -c "
     code=\$(curl -s -o /dev/null -w '%{http_code}' -X POST '$BASE/v1/chat/completions' \

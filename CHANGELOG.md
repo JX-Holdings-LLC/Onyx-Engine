@@ -112,6 +112,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **Flaky smoke-test assertion on logprobs byte-fallback tokens.** About
+  one sampled request in twenty put a byte-fallback token (a lone UTF-8
+  continuation byte such as `<0x88>`) in `top_logprobs`; the engine reports
+  it correctly as `bytes: [136]` with `token` serialized as U+FFFD (the
+  only representable JSON string, and what OpenAI does), but
+  `scripts/smoke-test.sh` asserted `bytes == utf8(token)` unconditionally,
+  which no byte-fallback token can satisfy. The check now requires that
+  equality only for tokens whose string round-trips, and a valid raw byte
+  list otherwise. Reproduced at 5% over 200 requests before, 0 over 300
+  after; the engine output is unchanged.
+
 - **`src/convert.cpp` did not compile on Windows** — it included
   `<sys/wait.h>` and used `popen`/`pclose` with `WIFEXITED`, a POSIX shell
   quoting style, `/proc/self/exe`, and the `python3` interpreter name, none
