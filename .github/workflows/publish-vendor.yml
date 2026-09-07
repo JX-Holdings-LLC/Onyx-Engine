@@ -1,0 +1,93 @@
+# Publish the vendored llama.cpp source package (@jxburros/llama-cpp-source)
+# to the npm registry.
+#
+# It is not published today, so a fresh clone's `npm ci` fails; `npm run
+# vendor` (packaging/make-vendor-package.sh) is the working fallback until
+# this has been run once. This workflow builds the same tarball
+# packaging/make-vendor-package.sh already produces locally and publishes
+# it, checking first whether the pinned version is already on the registry
+# so a re-run is a no-op rather than an error.
+#
+# Manual dispatch only: a publish is only needed when the llama.cpp pin in
+# packaging/make-vendor-package.sh changes, not on every push. Defaults to
+# a dry run (`npm publish --dry-run`) so a first-time run can be exercised
+# without actually publishing.
+#
+# One-time setup: see the "Packaging & publishing the vendor source
+# package" section of docs/building.md (and README.md's "Vendored source
+# via npm") for how to create the NPM_TOKEN repo secret, or set up npm
+# Trusted Publishing instead so no token is needed at all.
+name: publish-vendor
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (npm publish --dry-run; nothing is actually published)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write # required for `npm publish --provenance`
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same extraction ci.yml uses, so both workflows agree on which commit
+      # is pinned without duplicating the pin itself.
+      - name: Read llama.cpp pin
+        id: pin
+        run: |
+          commit=$(sed -n 's/^LLAMA_COMMIT="\(.*\)"/\1/p' packaging/make-vendor-package.sh)
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "pinned llama.cpp commit: $commit"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: https://registry.npmjs.org
+
+      - name: Build vendor package
+        run: bash packaging/make-vendor-package.sh
+
+      # The package version is computed inside make-vendor-package.sh from
+      # the pin (LLAMA_VERSION + LLAMA_COMMIT); read it back from the
+      # package.json the script just staged rather than re-deriving the
+      # format here, so the two can never disagree.
+      - name: Read package version
+        id: pkg
+        run: |
+          version=$(node -p "require('./packaging/dist/package/package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "package version: @jxburros/llama-cpp-source@$version"
+
+      # Idempotent re-runs: if this exact version is already on the
+      # registry (e.g. a re-dispatch after a previous run already published
+      # it), skip rather than erroring on a duplicate-version publish.
+      - name: Check whether this version is already published
+        id: check
+        run: |
+          if npm view "@jxburros/llama-cpp-source@${{ steps.pkg.outputs.version }}" version > /dev/null 2>&1; then
+            echo "::notice::@jxburros/llama-cpp-source@${{ steps.pkg.outputs.version }} is already on the registry; skipping publish."
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        if: steps.check.outputs.already_published != 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          tarball=$(ls packaging/dist/jxburros-llama-cpp-source-*.tgz | tail -1)
+          args=(--access public --provenance)
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            args+=(--dry-run)
+            echo "::notice::dry_run is true; running npm publish --dry-run (nothing will be published)."
+          fi
+          npm publish "$tarball" "${args[@]}"

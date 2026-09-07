@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-09-07
+
 ### Added
 
 - **`npm run vendor` — one command for the fresh-clone build.**
@@ -37,6 +39,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   exists because the first `v0.3.0` release run failed at the Windows
   configure step and nothing in CI had ever configured on Windows to catch
   it before a tag.
+- **`publish-vendor` GitHub Actions workflow**
+  (`.github/workflows/publish-vendor.yml`, `workflow_dispatch`-only with a
+  `dry_run` boolean input, default `true`): reads the llama.cpp pin the same
+  way `ci.yml` does, runs `packaging/make-vendor-package.sh` to build the
+  `@jxburros/llama-cpp-source` tarball, skips with a `::notice::` if `npm
+  view @jxburros/llama-cpp-source@<version>` shows that exact version
+  already published (idempotent re-dispatch), and otherwise runs `npm
+  publish <tarball> --access public --provenance` (`--dry-run` appended when
+  `dry_run` is `true`), authenticating via `actions/setup-node@v4`'s
+  `registry-url` and the `NPM_TOKEN` repo secret as `NODE_AUTH_TOKEN`
+  (`permissions: id-token: write` for `--provenance`). This is what turns
+  the "not yet published" status in `README.md`/`docs/building.md` into a
+  one-click Actions run instead of a manual local `npm publish`; see
+  `docs/building.md`'s "Publishing" section for one-time setup (an
+  `NPM_TOKEN` secret, or npm Trusted Publishing) and when a re-publish is
+  needed (only when the llama.cpp pin changes).
 
 - **`--no-webui` accepted as a compatibility no-op.** JX Runtime's llama.cpp
   adapter (`src/backends/llamacpp.js`) passes `--no-webui` on every launch,
@@ -56,8 +74,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `win32-x64`, matching Node's `${process.platform}-${process.arch}`, since
   JX Runtime's managed downloader (`jx-runtime backend install --engine
   onyx`) builds the asset URL from that pair. **JX Runtime's downloader
-  pins the `v0.3.0` tag and these exact asset names**, so the first release
-  cut from this repo must be tagged `v0.3.0` with a workflow run that
+  pins the `v0.3.1` tag and these exact asset names** (JX Runtime is moving
+  its pin to `v0.3.1` in parallel with this release), so the first release
+  cut from this repo must be tagged `v0.3.1` with a workflow run that
   produces all four platform archives plus `checksums.txt`, or that
   downloader will fail to find its asset.
 
@@ -152,11 +171,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
   **These fixes are reasoned from the failed run's logs and validated only
   as YAML; no release run has exercised them.** The `win32-x64` leg has
-  still never completed successfully. **Maintainer action: `v0.3.0` must be
-  re-cut** once this lands on `main` — run the `release` workflow via
-  `workflow_dispatch` with tag input `v0.3.0`. `softprops/action-gh-release@v2`
-  creates or updates the release for the tag, so this attaches assets to the
-  existing empty `v0.3.0` release rather than erroring. The asset names
+  still never completed successfully. **Maintainer action: `v0.3.1` must be
+  cut from `main`** once this lands — run the `release` workflow via
+  `workflow_dispatch` with tag input `v0.3.1` (JX Runtime is moving its pin
+  to `v0.3.1` in parallel). `softprops/action-gh-release@v2` creates or
+  updates the release for the tag, so a re-run against the same tag attaches
+  assets rather than erroring; the abandoned, asset-less `v0.3.0` release is
+  left as-is. The asset names
   (`onyx-engine-<tag>-<platformKey>.tar.gz`/`.zip`) and the `sha256sum`-style
   two-space `checksums.txt` format are unchanged; JX Runtime's
   `src/binaries.js` depends on both.

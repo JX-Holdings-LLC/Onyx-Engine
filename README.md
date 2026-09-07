@@ -149,8 +149,12 @@ manually placed `vendor/llama.cpp`).
 
 **Status: not yet published.** `@jxburros/llama-cpp-source` is not on the
 npm registry today, so a fresh clone's `npm ci` fails until the maintainer
-runs `packaging/make-vendor-package.sh` and `npm publish <tarball> --access
-public`. Until then, one command does the whole fallback:
+runs the `publish-vendor` GitHub Actions workflow (Actions → `publish-vendor`
+→ Run workflow, `dry_run` first) — see
+[`docs/building.md`](docs/building.md#publishing-githubworkflowspublish-vendoryml)
+for one-time setup (an `NPM_TOKEN` repo secret, or npm Trusted Publishing)
+and when a new publish is needed. Until then, one command does the whole
+fallback:
 
 ```bash
 npm run vendor                        # or: bash scripts/vendor.sh
@@ -183,8 +187,8 @@ what JX Runtime's managed downloader uses to pick the right asset. See
 ["Release binaries"](docs/building.md#release-binaries) in `docs/building.md`
 for how a release is built and cut.
 
-> **No release assets are published yet — `v0.3.0` must be re-cut.** The
-> first `v0.3.0` release run failed on two of four platforms (a Visual
+> **No release assets are published yet — `v0.3.1` must be cut from `main`.**
+> The first `v0.3.0` release run failed on two of four platforms (a Visual
 > Studio generator pinned by name that `windows-latest` no longer ships, and
 > the retired `macos-13` runner label), and because the `release` job
 > requires every platform to succeed, it created the `v0.3.0` GitHub Release
@@ -192,9 +196,9 @@ for how a release is built and cut.
 > consequently cannot work today, on any platform. Both causes are fixed in
 > `.github/workflows/release.yml`, but the fix is unproven until a real run
 > exercises it. **Maintainer action:** once these changes are on `main`, run
-> the `release` workflow via `workflow_dispatch` with tag input `v0.3.0`
-> — the release is created/updated idempotently, so this attaches the assets
-> to the existing empty release. See
+> the `release` workflow via `workflow_dispatch` with tag input `v0.3.1`
+> (JX Runtime is moving its pin to `v0.3.1` in parallel) — the abandoned,
+> asset-less `v0.3.0` release is left as-is. See
 > ["The first v0.3.0 attempt, and what changed"](docs/building.md#the-first-v030-attempt-and-what-changed).
 
 ## Endpoints

@@ -246,16 +246,17 @@ plus `checksums.txt` attached, with `generate_release_notes: true`.
 **Cutting a release:**
 
 ```bash
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.3.1
+git push origin v0.3.1
 ```
 
 pushing the tag is the only step; the workflow does the rest. **JX
-Runtime's downloader pins the `v0.3.0` tag and the exact asset names above**
-— see the `[Unreleased]` entry in `CHANGELOG.md` — so the first release cut
-from this repo must be tagged `v0.3.0` and must succeed in producing all
-four archives plus `checksums.txt`, or JX Runtime's managed install will
-fail to find its asset.
+Runtime's downloader pins the `v0.3.1` tag and the exact asset names above**
+(JX Runtime is moving its pin to `v0.3.1` in parallel with this release) —
+see the `[0.3.1]` entry in `CHANGELOG.md` — so the first release cut from
+this repo must be tagged `v0.3.1` and must succeed in producing all four
+archives plus `checksums.txt`, or JX Runtime's managed install will fail to
+find its asset.
 
 ### The `release` job is all-or-nothing, on purpose
 
@@ -301,12 +302,13 @@ correctly withheld the release:
 
 **These fixes are not yet proven by a real release run.** They are reasoned
 from the run's logs and validated only as YAML; the `win32-x64` leg in
-particular has still never completed successfully. **The `v0.3.0` release
-must be re-cut by the maintainer** once this lands on `main`: run the
-`release` workflow via `workflow_dispatch` with tag input `v0.3.0` from
-`main`. `softprops/action-gh-release@v2` creates or updates the release for
-the tag, so re-running against the existing empty `v0.3.0` release attaches
-the assets to it rather than erroring.
+particular has still never completed successfully. **`v0.3.1` must be cut
+by the maintainer** once this lands on `main`: run the `release` workflow
+via `workflow_dispatch` with tag input `v0.3.1` from `main` (JX Runtime is
+moving its pin to `v0.3.1` in parallel). `softprops/action-gh-release@v2`
+creates or updates the release for a given tag, so this creates a fresh
+`v0.3.1` release rather than touching the abandoned, asset-less `v0.3.0`
+one.
 
 ## Version string
 
@@ -362,16 +364,50 @@ packaging/make-vendor-package.sh [path-to-llama.cpp-checkout]
   `llamaCppCommit`/`llamaCppUpstream` fields recording provenance), then
   runs `npm pack` to produce `packaging/dist/jxburros-llama-cpp-source-<version>.tgz`.
 
-To publish, once the tarball is built:
+### Publishing (`.github/workflows/publish-vendor.yml`)
+
+Publishing is automated: `.github/workflows/publish-vendor.yml`,
+`workflow_dispatch`-only with a `dry_run` boolean input (default `true`),
+reads the pin the same way `ci.yml` does, runs
+`packaging/make-vendor-package.sh` to build the tarball, checks `npm view
+@jxburros/llama-cpp-source@<version>` and skips with a notice if that exact
+version is already on the registry (so re-dispatching after a successful
+publish is a no-op, not an error), and otherwise runs
 
 ```bash
-npm publish packaging/dist/jxburros-llama-cpp-source-*.tgz --access public
+npm publish packaging/dist/jxburros-llama-cpp-source-*.tgz --access public --provenance
 ```
 
-This needs npm credentials with publish rights on the `@jxburros` scope.
-If that scope isn't available to you, rename it — it appears in exactly two
-places: the `PKG_NAME` variable in `packaging/make-vendor-package.sh`, and
-the `@jxburros/llama-cpp-source` dependency name in `package.json`.
+(with `--dry-run` appended when `dry_run` is `true`).
+
+**One-time setup**, before the first real run:
+
+1. Create an npm **granular access token** with publish rights scoped to
+   `@jxburros`, and store it as this repo's `NPM_TOKEN` secret (Settings →
+   Secrets and variables → Actions) — this is what
+   `actions/setup-node@v4`'s `registry-url` plus the workflow's
+   `NODE_AUTH_TOKEN` env var authenticate with. **Or**, skip the token
+   entirely and set up [npm Trusted
+   Publishing](https://docs.npmjs.com/trusted-publishers) for this
+   repository and the `publish-vendor.yml` workflow — npm then accepts the
+   OIDC identity the workflow already requests (`permissions: id-token:
+   write`, needed for `--provenance` regardless) instead of a stored
+   secret.
+2. If `@jxburros` isn't available to you, rename it — it appears in exactly
+   two places: the `PKG_NAME` variable in
+   `packaging/make-vendor-package.sh`, and the `@jxburros/llama-cpp-source`
+   dependency name in `package.json`.
+
+**To run it:** Actions → `publish-vendor` → Run workflow. Run it once with
+`dry_run` left `true` (checked into the input default) to exercise the
+whole path — build, version check, `npm publish --dry-run` — without
+actually publishing, then run it again with `dry_run` set to `false`.
+
+**When to run it again:** only when the llama.cpp pin in
+`packaging/make-vendor-package.sh` changes (a new commit means a new
+package version, per the `PKG_VERSION` format above), not on every push —
+the version-check step makes an accidental extra dispatch harmless either
+way.
 
 **Until it's published**, `npm ci`/`npm install` fails on a clean checkout;
 `npm run vendor` is the supported local workaround, and it calls this script
