@@ -41,8 +41,12 @@ jobs:
             runs-on: macos-latest
             archive-ext: tar.gz
             bin-name: onyx-engine
+          # GitHub retired the `macos-13` label; jobs targeting it queue
+          # forever and are eventually cancelled (which is exactly what
+          # stalled the first v0.3.0 release run). `macos-15-intel` is
+          # GitHub's supported x86_64 macOS image.
           - platform-key: darwin-x64
-            runs-on: macos-13
+            runs-on: macos-15-intel
             archive-ext: tar.gz
             bin-name: onyx-engine
           - platform-key: win32-x64
@@ -101,12 +105,18 @@ jobs:
         if: runner.os != 'Windows'
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF
 
-      # MSVC: Visual Studio 17 2022 generator, x64. Configuration is chosen
-      # at build time (--config Release) rather than via CMAKE_BUILD_TYPE,
-      # which multi-config generators like this one ignore.
+      # MSVC: let CMake select the Visual Studio generator itself (the
+      # newest installed) and only pin the architecture with `-A x64`.
+      # Hardcoding `-G "Visual Studio 17 2022"` is what broke the first
+      # v0.3.0 release run: `windows-latest` had moved on and configure
+      # failed with "Generator Visual Studio 17 2022 could not find any
+      # instance of Visual Studio". A version-pinned generator has to be
+      # updated every time the runner image rolls; the default never does.
+      # Configuration is chosen at build time (--config Release) rather than
+      # via CMAKE_BUILD_TYPE, which multi-config generators ignore.
       - name: Configure (Release, static, MSVC)
         if: runner.os == 'Windows'
-        run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DBUILD_SHARED_LIBS=OFF
+        run: cmake -B build -A x64 -DBUILD_SHARED_LIBS=OFF
 
       - name: Build
         if: runner.os != 'Windows'
@@ -116,17 +126,29 @@ jobs:
         if: runner.os == 'Windows'
         run: cmake --build build --target onyx-engine --config Release
 
+      # The Windows generator is no longer pinned, so the output layout is
+      # not known ahead of time: a multi-config generator (any Visual Studio
+      # one) puts the binary in build/Release/, a single-config one (Ninja,
+      # Makefiles) puts it in build/. Probe both and fail loudly rather than
+      # emitting an empty path that only shows up as a confusing error two
+      # steps later.
       - name: Locate binary
         id: locate
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
-            # multi-config generator: binary lands under build/Release/
-            for cand in build/Release/onyx-engine.exe build/onyx-engine.exe; do
-              if [ -f "$cand" ]; then echo "path=$cand" >> "$GITHUB_OUTPUT"; break; fi
-            done
+            candidates="build/Release/onyx-engine.exe build/onyx-engine.exe"
           else
-            echo "path=build/onyx-engine" >> "$GITHUB_OUTPUT"
+            candidates="build/onyx-engine build/Release/onyx-engine"
           fi
+          for cand in $candidates; do
+            if [ -f "$cand" ]; then
+              echo "path=$cand" >> "$GITHUB_OUTPUT"
+              echo "found $cand"
+              exit 0
+            fi
+          done
+          echo "::error::onyx-engine binary not found in any of: $candidates"
+          exit 1
 
       - name: Sanity check (--version)
         run: "'${{ steps.locate.outputs.path }}' --version"
@@ -157,6 +179,22 @@ jobs:
           path: onyx-engine-${{ steps.tag.outputs.tag }}-${{ matrix.platform-key }}.${{ matrix.archive-ext }}
           if-no-files-found: error
 
+  # All-or-nothing on purpose. `needs: build` with no `if: always()` means a
+  # single failing platform blocks the whole release, and that is the
+  # behavior we want: JX Runtime pins one release tag and derives each
+  # asset's name from `${process.platform}-${process.arch}`
+  # (`onyx-engine-<tag>-<platformKey>.<ext>`), so a partial release would
+  # install cleanly on the platforms that built and fail with a bare 404 on
+  # the ones that did not — a per-machine breakage that looks like a network
+  # problem, from a release that GitHub reports as green. Failing the whole
+  # release instead makes the gap visible to the maintainer, who can fix the
+  # platform and re-run with `workflow_dispatch` against the same tag (the
+  # release is created/updated idempotently, so a re-run is safe).
+  #
+  # Note that `fail-fast: false` on the build matrix is complementary, not
+  # contradictory: it lets every platform report its own result in one run
+  # so a broken release shows all the breakage at once, rather than only the
+  # first failure.
   release:
     name: publish release
     needs: build
