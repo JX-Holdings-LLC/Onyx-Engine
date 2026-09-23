@@ -102,7 +102,7 @@ cd Onyx-Engine
 npm run vendor   # fetch the pinned llama.cpp source (see note below)
 
 cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target onyx-engine -j
+cmake --build build --target onyx-engine -j "$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
 
 ./build/onyx-engine -m model.gguf --port 8080
 ```
