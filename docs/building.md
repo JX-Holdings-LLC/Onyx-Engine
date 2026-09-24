@@ -86,10 +86,14 @@ Two details worth knowing:
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target onyx-engine -j
+cmake --build build --target onyx-engine -j "$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
 ```
 
-(Equivalently: `npm run build`, which runs both `cmake` steps.)
+(Equivalently: `npm run build`, which runs both `cmake` steps via
+`scripts/build.js`, one job per CPU; set `ONYX_BUILD_JOBS=N` to change that.)
+Always give `-j` a number: a bare `-j` means *unlimited* jobs to GNU make,
+which starts every llama.cpp translation unit at once and exhausts the memory
+of a typical 16 GB machine (`Killed signal terminated program cc1plus`).
 
 This produces `build/onyx-engine`. No acceleration option is required — CPU
 execution is the default in both `onyx-engine` (llama.cpp's CPU/ggml backend

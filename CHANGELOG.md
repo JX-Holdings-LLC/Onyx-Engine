@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`npm run build` no longer runs out of memory.** It ran
+  `cmake --build build --target onyx-engine -j` with no job count, which GNU
+  make treats as unlimited: on a 4-CPU / 16 GB machine it started ~170
+  `cc1plus` processes at once, the kernel OOM-killed the compilers (and
+  anything else running, such as a JX Runtime or AI Server Studio process
+  on the same box), and the build failed with `Killed signal terminated
+  program cc1plus`. The script now runs `scripts/build.js`, which passes one
+  job per CPU (override with `ONYX_BUILD_JOBS=N`) — the same bound CI and
+  the release workflow already used. The bare `-j` in `README.md` and
+  `docs/building.md` is replaced with the same `-j "$(nproc)"` form CI uses.
+
 ## [0.3.1] — 2026-09-07
 
 ### Added
