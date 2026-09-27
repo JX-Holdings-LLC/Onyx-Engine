@@ -84,7 +84,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          tarball=$(ls packaging/dist/jxburros-llama-cpp-source-*.tgz | tail -1)
+          tarball="packaging/dist/jxburros-llama-cpp-source-${{ steps.pkg.outputs.version }}.tgz"
           args=(--access public --provenance)
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             args+=(--dry-run)

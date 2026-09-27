@@ -32,6 +32,7 @@ import struct
 import sys
 import os
 import tempfile
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -509,6 +510,7 @@ def main() -> int:
     ap.add_argument("model", type=Path, help="HF model directory (config.json + *.safetensors + tokenizer.json)")
     ap.add_argument("--outfile", type=Path, required=True, help="path to write the GGUF file to")
     ap.add_argument("--outtype", choices=["f16", "f32"], default="f16", help="output tensor precision (default: f16)")
+    ap.add_argument("--traceback", action="store_true", help="show a traceback for unexpected converter failures")
     args = ap.parse_args()
 
     if not args.model.is_dir():
@@ -522,6 +524,11 @@ def main() -> int:
         return 1
     except (KeyError, TypeError, ValueError, IndexError, struct.error) as e:
         print(f"error: invalid model input: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"error: unexpected converter failure: {e}", file=sys.stderr)
+        if args.traceback:
+            traceback.print_exc()
         return 1
 
     print(f"wrote {args.outfile}")

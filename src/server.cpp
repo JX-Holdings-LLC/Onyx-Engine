@@ -63,6 +63,22 @@ static bool reject_unsupported_fields(const common_json & body, httplib::Respons
     return false;
 }
 
+static bool validate_stream_sampler(const onyx_engine & engine, onyx_gen_params params,
+                                    httplib::Response & res) {
+    try {
+        common_sampler * sampler = common_sampler_init(engine.model(), params.sampling);
+        if (!sampler) {
+            send_error(res, 400, "invalid sampling grammar", "invalid_request_error");
+            return false;
+        }
+        common_sampler_free(sampler);
+        return true;
+    } catch (const std::exception & e) {
+        send_error(res, 400, e.what(), "invalid_request_error");
+        return false;
+    }
+}
+
 static std::string finish_reason_str(const onyx_gen_result & r, bool has_tool_calls) {
     if (r.finish == ONYX_FINISH_LENGTH) {
         return "length";
@@ -890,6 +906,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         st->created       = created;
         st->parser_params = parser_params;
 
+        if (!validate_stream_sampler(engine, gp, res)) return;
         res.set_chunked_content_provider("text/event-stream", [&engine, gp, st, include_usage](size_t offset, httplib::DataSink & sink) {
             if (offset > 0) {
                 // single-shot provider: everything is written on the first call
@@ -1118,6 +1135,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
             return;
         }
 
+        if (!validate_stream_sampler(engine, gp, res)) return;
         res.set_chunked_content_provider("text/event-stream", [&engine, gp, make_cmpl_payload, include_usage](size_t offset, httplib::DataSink & sink) {
             if (offset > 0) {
                 return false;

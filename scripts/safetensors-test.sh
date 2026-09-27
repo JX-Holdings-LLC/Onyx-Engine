@@ -56,6 +56,7 @@ if ! python3 -c "import numpy" 2>/dev/null; then
     python3 -c "import numpy" 2>/dev/null || skip_all "numpy install reported success but import still fails"
 fi
 echo "== numpy available: $(python3 -c 'import numpy; print(numpy.__version__)')"
+python3 scripts/converter-regression-test.py || exit 1
 
 # ---- generate the tiny HF (safetensors) model ------------------------------
 echo "== generating tiny HF model at $MODEL_DIR"

@@ -111,7 +111,8 @@ jobs:
         run: |
           rm -rf node_modules/@jxburros/llama-cpp-source
           mkdir -p node_modules/@jxburros/llama-cpp-source
-          tar -xzf "$(find packaging/dist -maxdepth 1 -name 'jxburros-llama-cpp-source-*.tgz' -print -quit)" --strip-components=1 \
+          version=$(node -p "require('./packaging/dist/package/package.json').version")
+          tar -xzf "packaging/dist/jxburros-llama-cpp-source-$version.tgz" --strip-components=1 \
               -C node_modules/@jxburros/llama-cpp-source
 
       - name: ccache (GitHub-hosted only)
