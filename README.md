@@ -169,8 +169,8 @@ what JX Runtime's managed downloader uses to pick the right asset. See
 ["Release binaries"](docs/building.md#release-binaries) in `docs/building.md`
 for how a release is built and cut.
 
-The `v0.3.1` release has archives for all four supported platforms and
-`checksums.txt`. The next release will include the packaging changes above.
+The upcoming `v0.4.0` release will include archives for all four supported
+platforms, `checksums.txt`, and the packaging changes above.
 
 ## Endpoints
 
