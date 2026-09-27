@@ -33,9 +33,7 @@ set(GGML_BLAS ${ONYX_ENGINE_BLAS} CACHE BOOL "" FORCE)
 # ---------------------------------------------------------------------------
 # Vendored llama.cpp — only the libraries, none of its tools/examples.
 #
-# The source tree comes from the npm registry (@jxburros/llama-cpp-source,
-# installed by `npm ci` into node_modules) so the build's only external input
-# is an npm package. Resolution order:
+# `npm ci` fetches the pinned Git commit into node_modules. Resolution order:
 #   1. -DONYX_ENGINE_LLAMA_DIR=<path>          explicit override
 #   2. node_modules/@jxburros/llama-cpp-source   (canonical: npm ci)
 #   3. vendor/llama.cpp                      manually placed source tree

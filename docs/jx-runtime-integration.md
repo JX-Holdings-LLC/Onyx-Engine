@@ -91,7 +91,8 @@ blob path passed via `-m`. `onyx-engine`'s `--alias` does exactly this: it
 sets `onyx_engine::alias_`, which is what `/v1/models`, `/v1/chat/completions`,
 `/v1/completions`, and `/v1/embeddings` all report as `model`/`id`. If
 `--alias` is not passed, `onyx-engine` derives one from the model filename
-(stripping directory and `.gguf` extension) — an adapter integration should
+(stripping directories, trailing slashes, and `.gguf`/`.safetensors`; a
+safetensors directory uses its directory name) — an adapter integration should
 always pass `--alias` explicitly rather than rely on that derivation, to
 guarantee its own model id is what comes back.
 

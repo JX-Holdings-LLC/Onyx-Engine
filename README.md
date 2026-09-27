@@ -88,7 +88,8 @@ mapping this is built against.
 - The safetensors converter only handles the standard Hugging Face
   `LlamaForCausalLM` layout (optionally sharded via
   `model.safetensors.index.json`) with a byte-level BPE `tokenizer.json`.
-  Anything else — another architecture, a SentencePiece
+  Tokenizer pre-processing layouts and RoPE scaling it cannot represent are
+  rejected. Anything else — another architecture, a SentencePiece
   `tokenizer.model`, exotic dtypes — is refused with a clear error rather
   than silently mishandled.
 

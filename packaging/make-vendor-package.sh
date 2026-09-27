@@ -41,7 +41,7 @@ fetch_with_git() {
     git init -q "$dest"
     git -C "$dest" remote add origin "$LLAMA_UPSTREAM"
     git -C "$dest" sparse-checkout init --cone
-    git -C "$dest" sparse-checkout set cmake common src ggml include tools/mtmd vendor models
+    git -C "$dest" sparse-checkout set cmake common src ggml gguf-py include tools/mtmd vendor models
     git -C "$dest" fetch --depth 1 -q origin "$LLAMA_COMMIT"
     git -C "$dest" checkout -q FETCH_HEAD
     rm -rf "$dest/.git"

@@ -80,9 +80,6 @@ def write_config(out_dir: Path) -> None:
 def write_tokenizer(out_dir: Path) -> None:
     byte_encoder = bytes_to_unicode()
     vocab = {byte_encoder[b]: b for b in range(256)}
-    vocab["<unk>"] = UNK_ID
-    vocab["<s>"] = BOS_ID
-    vocab["</s>"] = EOS_ID
 
     tokenizer_json = {
         "model": {

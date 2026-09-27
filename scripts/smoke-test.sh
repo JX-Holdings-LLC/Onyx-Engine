@@ -93,8 +93,10 @@ for i in $(seq 1 100); do
         && curl -sf "$RB_BASE/health" > /dev/null 2>&1 && break
     sleep 0.2
 done
-if ! curl -sf "$BASE/health" > /dev/null; then
-    echo "error: generation server did not become ready" >&2
+if ! curl -sf "$BASE/health" > /dev/null || ! curl -sf "$EMB_BASE/health" > /dev/null ||
+   ! curl -sf "$NP_BASE/health" > /dev/null || ! curl -sf "$MM_BASE/health" > /dev/null ||
+   ! curl -sf "$RB_BASE/health" > /dev/null; then
+    echo "error: one or more test servers did not become ready" >&2
     for log in models-test/onyx-*.log; do [ -f "$log" ] && { echo "== $log"; tail -50 "$log"; }; done
     exit 1
 fi

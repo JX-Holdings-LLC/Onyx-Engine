@@ -383,8 +383,8 @@ npm publish packaging/dist/jxburros-llama-cpp-source-*.tgz --access public --pro
    secret.
 2. If `@jxburros` isn't available to you, rename it — it appears in exactly
    two places: the `PKG_NAME` variable in
-   `packaging/make-vendor-package.sh`, and the `@jxburros/llama-cpp-source`
-   dependency name in `package.json`.
+   `packaging/make-vendor-package.sh`, and the path in
+   `scripts/install-vendor.js` if the scope changes.
 
 **To run it:** Actions → `publish-vendor` → Run workflow. Run it once with
 `dry_run` left `true` (checked into the input default) to exercise the
@@ -397,13 +397,6 @@ package version, per the `PKG_VERSION` format above), not on every push —
 the version-check step makes an accidental extra dispatch harmless either
 way.
 
-**Until it's published**, `npm ci`/`npm install` fails on a clean checkout;
-`npm run vendor` is the supported local workaround, and it calls this script
-for you (see
-["`npm run vendor` — the local fallback"](#npm-run-vendor--the-local-fallback)
-above).
-
-**After the first publish**, run `npm install` once in a clean checkout and
-commit the `package-lock.json` it generates, so that `npm ci` gives
-reproducible, lockfile-pinned installs going forward. No `package-lock.json`
-is committed yet.
+Publishing this optional package is no longer required for a clean build.
+`npm ci` fetches and verifies the pinned Git commit directly, and the
+committed `package-lock.json` records the local install script.

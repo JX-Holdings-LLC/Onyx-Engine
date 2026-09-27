@@ -11,7 +11,8 @@ const commit = match[1];
 const destination = path.join(root, 'node_modules', '@jxburros', 'llama-cpp-source');
 const stamp = path.join(destination, '.onyx-source-commit');
 if (fs.existsSync(stamp) && fs.readFileSync(stamp, 'utf8').trim() === commit &&
-    fs.existsSync(path.join(destination, 'CMakeLists.txt'))) {
+    fs.existsSync(path.join(destination, 'CMakeLists.txt')) &&
+    fs.existsSync(path.join(destination, 'gguf-py', 'gguf'))) {
   console.log(`llama.cpp ${commit} is already installed`);
   process.exit(0);
 }
@@ -25,7 +26,7 @@ try {
   git('init', '-q');
   git('remote', 'add', 'origin', 'https://github.com/ggml-org/llama.cpp.git');
   git('sparse-checkout', 'init', '--cone');
-  git('sparse-checkout', 'set', 'cmake', 'common', 'src', 'ggml', 'include', 'tools/mtmd', 'vendor', 'models');
+  git('sparse-checkout', 'set', 'cmake', 'common', 'src', 'ggml', 'gguf-py', 'include', 'tools/mtmd', 'vendor', 'models');
   git('fetch', '--depth', '1', 'origin', commit);
   git('checkout', '-q', 'FETCH_HEAD');
   const actual = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: destination, encoding: 'utf8' }).trim();
