@@ -56,7 +56,7 @@ Model and build metadata. No request body.
 {
   "model_alias": "my-model",
   "chat_template": "<resolved Jinja source>",
-  "build_info": "onyx-engine/0.3.1 (llama.cpp b10711-9723942ad)",
+  "build_info": "onyx-engine/0.4 (llama.cpp b10711-9723942ad)",
   "n_ctx": 4096,
   "n_ctx_total": 4096,
   "n_ctx_train": 32768,
