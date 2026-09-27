@@ -28,7 +28,9 @@ DEST="node_modules/@jxburros/llama-cpp-source"
 
 bash packaging/make-vendor-package.sh "$@"
 
-TARBALL=$(ls packaging/dist/jxburros-llama-cpp-source-*.tgz | tail -1)
+PKG_VERSION=$(node -p "require('./packaging/dist/package/package.json').version")
+TARBALL="packaging/dist/jxburros-llama-cpp-source-$PKG_VERSION.tgz"
+[ -f "$TARBALL" ] || { echo "error: expected package $TARBALL was not created" >&2; exit 1; }
 
 echo "installing $TARBALL -> $DEST ..."
 rm -rf "$DEST"

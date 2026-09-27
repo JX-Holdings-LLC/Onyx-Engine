@@ -56,7 +56,7 @@ Model and build metadata. No request body.
 {
   "model_alias": "my-model",
   "chat_template": "<jinja source or empty string>",
-  "build_info": "onyx-engine/0.2.0 (llama.cpp b10711-9723942ad)",
+  "build_info": "onyx-engine/0.3.1 (llama.cpp b10711-9723942ad)",
   "n_ctx": 4096,
   "n_ctx_total": 4096,
   "n_ctx_train": 32768,
@@ -90,9 +90,8 @@ Notes:
 - `modalities.vision`/`modalities.audio` reflect the loaded `--mmproj`
   projector's real capabilities (`mtmd_support_vision`/`mtmd_support_audio`)
   — both `false` when no projector is loaded.
-- `chat_template` is the chat template source llama.cpp resolved
-  (`common_chat_templates_source`), which can be an empty string if the
-  model carries no template and none was overridden.
+- `chat_template` is the resolved chat template source. Models without one
+  use the ChatML fallback.
 
 ## `GET /v1/models`
 
@@ -157,11 +156,12 @@ the output text).
 
 ## `POST /apply-template`
 
-Renders a chat prompt from `messages` without generating anything. Same
-request-body fields as `/v1/chat/completions` (`messages`, `tools`,
+Renders a chat prompt from `messages` without generating anything. Supports
+the chat-template fields (`messages`, `tools`,
 `tool_choice`, `parallel_tool_calls`, `grammar`, `json_schema`,
 `response_format`, `chat_template_kwargs` — see `parse_chat_inputs` in
-`server.cpp`), but nothing is tokenized or decoded.
+`server.cpp`), but does not process image or audio content parts. Nothing is
+tokenized or decoded.
 
 Request requires `messages`; missing it returns `400`.
 
@@ -211,7 +211,9 @@ prefilled at slot admission (see
 | `messages` | required; parsed via `common_chat_msgs_parse_oaicompat`; `content` may include `image_url`/`input_audio` parts (above) |
 | `stream` | bool, default `false` |
 | `tools` | array; parsed if non-empty |
-| `tool_choice` | string only (`common_chat_tool_choice_parse_oaicompat`) |
+| `tool_choice` | `auto`, `none`, `required`, or a function object naming one provided tool |
+| `n` | only `1` is supported; other values return `400` |
+| `stream_options.include_usage` | `false` omits the final usage frame |
 | `parallel_tool_calls` | bool |
 | `grammar` | string; GBNF grammar, used as `COMMON_GRAMMAR_TYPE_USER` |
 | `json_schema` | object; used as `COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT` |
@@ -223,6 +225,11 @@ prefilled at slot admission (see
 | `logprobs` | bool, default `false`; when `true`, report per-token logprobs (see below) |
 | `top_logprobs` | int `0..20`; how many alternative tokens to report per position; requires `logprobs: true`, else `400` |
 | `reasoning_budget_tokens` | int; per-request override of `--reasoning-budget` (see below); ignored on `/v1/completions` (no chat template there) |
+
+`model` and `user` are accepted as client metadata; this single-model server
+always uses the loaded model alias. Unsupported sampler fields such as
+`typical_p`, `mirostat*`, `dynatemp*`, `dry_*`, `xtc_*`, and `logit_bias`
+return `400` rather than being silently ignored.
 
 **Logprobs.** When `logprobs: true`, `choices[0].logprobs` is:
 
@@ -250,12 +257,9 @@ grammar- or constraint-picked token can legitimately show a very low raw
 logprob. `top_logprobs` has exactly `top_logprobs` entries (0 if the request
 field was absent/`0`), sorted by `logprob` descending; it does not
 necessarily include the sampled token itself. `null` when `logprobs` was not
-requested. Streaming: each SSE chunk that delivers newly-completed token text
-carries `choices[0].logprobs.content[]` for just those tokens; a chunk with
-no new completed tokens carries `logprobs: null`. Because logprobs are keyed
-to raw generated tokens while `delta.content`/`delta.tool_calls` are diffs of
-the *parsed* message, the two are not aligned frame-for-frame — a logprobs
-frame may carry an empty `delta: {}`.
+requested. Streaming logprobs arrive in separate SSE frames with an empty
+`delta: {}` before the corresponding text delta; text and tool-call delta
+frames carry `logprobs: null`.
 
 **Reasoning budget** (`--reasoning-budget`/`--reasoning-budget-message`, or
 the per-request `reasoning_budget_tokens` override). `-1` (default):
@@ -335,6 +339,8 @@ the chat-template path) `grammar` (GBNF string) or `json_schema` (converted
 with `json_schema_to_grammar`). Also `logprobs` (int `0..20`, the legacy
 OpenAI form — presence enables it, the value is how many alternatives to
 report per token; `400` outside that range).
+`n` must be `1`. `echo`, `suffix`, `best_of`, `logit_bias`, and unsupported
+sampler fields return `400`.
 
 When `logprobs` is set, `choices[0].logprobs` uses the **legacy** flat
 parallel-array OpenAI shape (deliberately, not the chat nested shape —
@@ -385,6 +391,11 @@ Returns `501` unless the process was started with `--embedding`. Requires
 ids (a single pre-tokenized input), or an array of arrays of integers
 (multiple pre-tokenized inputs). Mixed-type arrays (some string items, some
 non-string/non-array items) return `400`.
+Each input must fit within the configured `-b` batch size and context window;
+invalid token IDs are rejected with `400`.
+
+Generation responses include `truncated: true` when context shift discarded
+older tokens. Streaming responses report this on their final usage frame.
 
 Response:
 
@@ -405,8 +416,6 @@ token counts across all items in the batch.
 
 ## CORS and misc headers
 
-Every response carries `Access-Control-Allow-Origin: *`,
-`Access-Control-Allow-Headers: Authorization, Content-Type`,
-`Access-Control-Allow-Methods: GET, POST, OPTIONS`, and
-`Server: onyx-engine/<version>`. `OPTIONS` on any path returns `204`.
+Browser-origin requests are rejected by default and `OPTIONS` returns `403`.
+Responses carry `Server: onyx-engine/<version>`.
 Read/write socket timeouts are 600 seconds.

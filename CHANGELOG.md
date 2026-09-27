@@ -255,8 +255,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   resolves the pin itself (`ONYX_ENGINE_LLAMA_PIN`) from the npm package's
   `package.json` version, falling back to git only when the repository's top
   level is the llama.cpp tree itself, and `unknown` otherwise. `build_info`
-  now reads `onyx-engine/0.2.0 (llama.cpp b10711-9723942ad)`, matching the
+  now reads `onyx-engine/0.3.1 (llama.cpp b10711-9723942ad)`, matching the
   shape `docs/api.md` already documented.
+
+## [0.3.0] - 2026-09-07
+
+The first 0.3 release introduced safetensors conversion and release archive
+automation. Its initial release attempt did not produce a complete set of
+platform assets; 0.3.1 completed the four-platform release.
 
 ## [0.2.0] - 2026-09-01
 

@@ -105,7 +105,7 @@ JX Runtime's adapter never assumes a capability; it probes for it:
   but exited non-zero" (the latter is treated leniently since some
   `llama-server` builds exit non-zero on `--version`). `onyx-engine
   --version` prints `onyx-engine <version>` then
-  `llama.cpp build <LLAMA_BUILD_NUMBER> (<LLAMA_COMMIT>)` and exits `0` —
+  `llama.cpp b10711-9723942ad` and exits `0` —
   a clean answer either probe style would accept.
 - `supportsJinja()`, `supportsMmproj()`, and the generic `supportsFlag(flag)`
   all run `<binary> --help` once (cached per binary) and regex-search the

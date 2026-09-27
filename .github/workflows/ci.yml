@@ -15,6 +15,9 @@
 # ever polluted.
 name: ci
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -73,7 +76,7 @@ jobs:
         if: matrix.name == 'linux'
         run: |
           missing=""
-          for t in cmake g++ make curl tar python3; do
+          for t in cmake g++ make git npm tar python3; do
             command -v "$t" > /dev/null || missing="$missing $t"
           done
           if command -v python3 > /dev/null; then
@@ -108,12 +111,12 @@ jobs:
         run: |
           rm -rf node_modules/@jxburros/llama-cpp-source
           mkdir -p node_modules/@jxburros/llama-cpp-source
-          tar -xzf packaging/dist/jxburros-llama-cpp-source-*.tgz --strip-components=1 \
+          tar -xzf "$(find packaging/dist -maxdepth 1 -name 'jxburros-llama-cpp-source-*.tgz' -print -quit)" --strip-components=1 \
               -C node_modules/@jxburros/llama-cpp-source
 
       - name: ccache (GitHub-hosted only)
         if: matrix.use-ccache-action == true
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@e42e6681d2906409c5dde4a315af6214eaa890ee # v1.2
         with:
           key: build-${{ matrix.name }}-${{ steps.pin.outputs.commit }}
 

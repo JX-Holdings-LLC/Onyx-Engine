@@ -15,10 +15,8 @@
 
 ## Fetching the llama.cpp source (`npm ci`)
 
-The build's only external input is llama.cpp's C/C++ source tree, vendored
-as the npm package `@jxburros/llama-cpp-source` (a pinned, pruned copy of
-llama.cpp — C/C++ sources, not a Node.js library) and declared as a
-dependency in `package.json`:
+The install script fetches llama.cpp's C/C++ source tree at the exact pinned
+Git commit. Git and network access are needed for a fresh install:
 
 ```bash
 npm ci   # or: npm install
@@ -36,15 +34,8 @@ If none of the three is present, the configure step fails with a clear
 message (`llama.cpp source tree not found - run: npm ci`), so this step
 cannot be skipped silently.
 
-> **`npm ci` doesn't work yet.** `@jxburros/llama-cpp-source` has not been
-> published to the npm registry, so `npm ci`/`npm install` currently fails
-> with a 404/not-found error. Until the maintainer publishes it (see
-> ["Packaging & publishing the vendor source package"](#packaging--publishing-the-vendor-source-package)
-> below), run the local fallback instead — one command, no npm registry:
->
-> ```bash
-> npm run vendor      # or, without npm:  bash scripts/vendor.sh
-> ```
+`npm ci` uses the committed lockfile and `scripts/install-vendor.js` to fetch
+and verify that commit. It does not request the unpublished npm package.
 
 ### `npm run vendor` — the local fallback
 
@@ -68,19 +59,10 @@ npm run vendor -- /path/to/llama.cpp
 
 Two details worth knowing:
 
-- **It extracts with `tar`, not `npm install <tarball>`**, so the only tools
-  it needs are bash and tar. `.github/workflows/{ci,release}.yml` do the same
-  two steps inline for the same reason (self-hosted runners need no npm), and
-  the resulting tree is byte-identical either way.
-- **It fetches the pinned commit over HTTPS, falling back to git.**
-  `make-vendor-package.sh` first tries the GitHub source archive
-  (`.../archive/<commit>.tar.gz`); if that is unreachable — some corporate
-  proxies and CI/agent sandboxes allow `git clone` but return 403 for
-  codeload archive URLs — it falls back to a depth-1 `git fetch` of the same
-  commit. The fallback lives in `make-vendor-package.sh` rather than in
-  `scripts/vendor.sh` so CI's cache-miss path, which calls the packaging
-  script directly, gets it too. Either way the commit is the same pin, so
-  the staged tree is identical.
+- **It requires Bash, Git, npm, and tar.** npm packs the staged source;
+  tar extracts it into the CMake search path.
+- **It fetches the exact Git commit.** The packaging script uses a sparse
+  checkout of the pinned commit and verifies it through Git's object hashes.
 
 ## CPU build
 
@@ -164,7 +146,7 @@ To keep the build to just what `onyx-engine` links against,
 | `LLAMA_BUILD_SERVER` | `OFF` | upstream's own `llama-server` is not built |
 | `LLAMA_BUILD_APP` | `OFF` | no llama.cpp app binary |
 | `LLAMA_BUILD_COMMON` | `ON` | the `common` library `onyx-engine` depends on is built |
-| `LLAMA_CURL` | `OFF` | no libcurl dependency pulled in |
+| `LLAMA_OPENSSL` | `OFF` | no Homebrew OpenSSL dependency pulled in |
 
 ## Install target
 
@@ -225,10 +207,10 @@ portability), `darwin-arm64` (`macos-latest`, Apple Silicon), `darwin-x64`
 generator chosen by CMake) — the job stages the same pinned vendored llama.cpp source as CI, configures with
 `-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF` (so `llama`,
 `llama-common`, `ggml`, and `mtmd` are all linked in statically and the
-result is a single self-contained binary with no `libllama`/`libggml`
-alongside it), builds the `onyx-engine` target, runs `onyx-engine --version`
-as a sanity check, then packages the binary flat — `onyx-engine` (or
-`onyx-engine.exe` on Windows) plus `LICENSE`, no subdirectory — as:
+result has no separate `libllama`/`libggml` libraries), builds the
+`onyx-engine` target, runs `onyx-engine --version` as a sanity check, then
+packages the binary flat with `LICENSE`, `LICENSE-cpp-httplib`, and
+`LICENSE-llama.cpp`, with no subdirectory, as:
 
 - `onyx-engine-<tag>-linux-x64.tar.gz`
 - `onyx-engine-<tag>-darwin-arm64.tar.gz`
@@ -247,6 +229,11 @@ digest, two spaces, then the filename — one line per archive), and
 creates or updates the GitHub Release for the tag with all four archives
 plus `checksums.txt` attached, with `generate_release_notes: true`.
 
+Release builds disable host-native CPU tuning, OpenMP, and optional OpenSSL.
+The x64 assets require an AVX2-capable CPU; the arm64 asset uses a portable
+arm64 baseline. Windows uses the static MSVC runtime. Standard operating
+system C libraries are still required.
+
 **Cutting a release:**
 
 ```bash
@@ -257,10 +244,8 @@ git push origin v0.3.1
 pushing the tag is the only step; the workflow does the rest. **JX
 Runtime's downloader pins the `v0.3.1` tag and the exact asset names above**
 (JX Runtime is moving its pin to `v0.3.1` in parallel with this release) —
-see the `[0.3.1]` entry in `CHANGELOG.md` — so the first release cut from
-this repo must be tagged `v0.3.1` and must succeed in producing all four
-archives plus `checksums.txt`, or JX Runtime's managed install will fail to
-find its asset.
+see the `[0.3.1]` entry in `CHANGELOG.md`. The `v0.3.1` release already
+contains all four archives and `checksums.txt`.
 
 ### The `release` job is all-or-nothing, on purpose
 
@@ -310,21 +295,12 @@ correctly withheld the release:
   quoting, `GetModuleFileNameW`, `python`), so the Windows leg is the
   proof that a `win32-x64` release asset can be built at all.
 
-**These fixes are not yet proven by a real release run**, but the Windows
-half is proven by CI: the `windows` leg of `ci.yml` builds the same static
-MSVC configuration `release.yml` ships and runs `--version` on the result,
-and it is green (the first Windows build of `onyx-engine.exe` ever). The
-`macos-15-intel` leg is exercised only by a release run. **`v0.3.1` must be cut
-by the maintainer** once this lands on `main`: run the `release` workflow
-via `workflow_dispatch` with tag input `v0.3.1` from `main` (JX Runtime is
-moving its pin to `v0.3.1` in parallel). `softprops/action-gh-release@v2`
-creates or updates the release for a given tag, so this creates a fresh
-`v0.3.1` release rather than touching the abandoned, asset-less `v0.3.0`
-one.
+The `v0.3.1` release now has all four platform archives and `checksums.txt`.
+The release workflow requires an existing version-matched tag when dispatched.
 
 ## Version string
 
-`PROJECT_VERSION` (from `project(onyx-engine VERSION 0.1.0 ...)`) is baked
+`PROJECT_VERSION` (from `project(onyx-engine VERSION 0.3.1 ...)`) is baked
 into the binary as the `ONYX_ENGINE_VERSION` preprocessor define, which is
 what `onyx-engine --version` and the `Server:` HTTP response header report.
 

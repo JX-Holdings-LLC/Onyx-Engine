@@ -5,13 +5,16 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cerrno>
+#include <limits>
 #include <string>
 #include <vector>
 
 static bool parse_int(const char * s, int32_t & out) {
     char * end = nullptr;
+    errno = 0;
     long v = strtol(s, &end, 10);
-    if (end == s || *end != '\0') {
+    if (end == s || *end != '\0' || errno == ERANGE || v < INT32_MIN || v > INT32_MAX) {
         fprintf(stderr, "error: invalid integer value '%s'\n", s);
         return false;
     }
@@ -39,7 +42,7 @@ void onyx_args_print_help() {
         "       --convert-dir DIR       cache directory for converted safetensors models\n"
         "                               (default: alongside the source model)\n"
         "  -a,  --alias NAME            model id reported by the API (default: file stem)\n"
-        "       --chat-template NAME    override the model's chat template with a built-in one\n"
+        "       --chat-template SOURCE  override with Jinja chat template source\n"
         "       --chat-template-file F  override the model's chat template from a file\n"
         "       --jinja                 apply the model's jinja chat template (always on)\n"
         "       --no-webui              accepted for compatibility (onyx-engine has no web UI)\n"
@@ -47,13 +50,14 @@ void onyx_args_print_help() {
         "network:\n"
         "       --host HOST             address to bind (default: 127.0.0.1)\n"
         "       --port PORT             port to listen on (default: 8080)\n"
-        "       --api-key KEY           require this bearer token on /v1 endpoints\n"
+        "       --api-key KEY           require this bearer token except on /health\n"
         "\n"
         "compute:\n"
         "  -c,  --ctx-size N            context size in tokens, 0 = model default (default: 4096)\n"
         "  -b,  --batch-size N          logical batch size (default: 2048)\n"
         "  -ub, --ubatch-size N         physical batch size (default: 512)\n"
         "  -ngl, --n-gpu-layers N       layers to offload to GPU, -1 = all (default: -1)\n"
+        "       --gpu-layers N         alias of --n-gpu-layers\n"
         "  -t,  --threads N             generation threads, -1 = auto (default: -1)\n"
         "  -tb, --threads-batch N       prompt processing threads, -1 = same as --threads\n"
         "  -np, --parallel N            concurrent request slots; requests beyond this\n"
@@ -64,7 +68,7 @@ void onyx_args_print_help() {
         // comma form reads as the old bare-toggle flag — which onyx-engine
         // rejects ("error: -fa requires a value"). The pipe form is also what
         // the error message on line ~141 and llama-server's own help use.
-        "  -fa, --flash-attn VAL        flash attention: on|off|auto (default: auto)\n"
+        "  -fa, --flash-attn VAL        flash attention: on|off|auto|1|0 (default: auto)\n"
         "       --mlock                 lock model memory in RAM\n"
         "       --no-mmap               do not memory-map the model file\n"
         "  -s,  --seed N                default RNG seed (default: random)\n"
@@ -170,6 +174,20 @@ bool onyx_args_parse(int argc, char ** argv, onyx_args & out) {
 
     if (out.model_path.empty()) {
         fprintf(stderr, "error: --model is required (see --help)\n");
+        return false;
+    }
+    if (out.port < 1 || out.port > 65535 || out.n_parallel < 1 || out.cache_reuse < 0 ||
+        out.n_batch < 1 || out.n_ubatch < 1 || out.n_ctx < 0) {
+        fprintf(stderr, "error: invalid port, parallel, cache-reuse, batch or context value\n");
+        return false;
+    }
+    if (out.pooling != "" && out.pooling != "none" && out.pooling != "mean" &&
+        out.pooling != "cls" && out.pooling != "last" && out.pooling != "rank") {
+        fprintf(stderr, "error: invalid --pooling value '%s'\n", out.pooling.c_str());
+        return false;
+    }
+    if (!out.embedding && !out.pooling.empty()) {
+        fprintf(stderr, "error: --pooling requires --embedding\n");
         return false;
     }
 

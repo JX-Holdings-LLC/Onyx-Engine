@@ -138,7 +138,7 @@ def save_safetensors(path: Path, tensors: dict) -> None:
             f.write(blob)
 
 
-def write_weights(out_dir: Path) -> None:
+def write_weights(out_dir: Path, sharded: bool = False) -> None:
     rng = np.random.default_rng(1234)
     head_dim = N_EMBD // N_HEAD
     kv_dim = N_HEAD_KV * head_dim
@@ -163,16 +163,29 @@ def write_weights(out_dir: Path) -> None:
         tensors[p + "mlp.up_proj.weight"] = w((N_FF, N_EMBD))
         tensors[p + "mlp.down_proj.weight"] = w((N_EMBD, N_FF))
 
-    save_safetensors(out_dir / "model.safetensors", tensors)
+    if sharded:
+        parts = [dict(), dict()]
+        weight_map = {}
+        names = ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]
+        for i, (name, array) in enumerate(tensors.items()):
+            parts[i % 2][name] = array
+            weight_map[name] = names[i % 2]
+        for name, part in zip(names, parts):
+            save_safetensors(out_dir / name, part)
+        (out_dir / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}, indent=2))
+    else:
+        save_safetensors(out_dir / "model.safetensors", tensors)
 
 
 def main() -> None:
-    out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / "models-test" / "tiny-hf-llama"
+    sharded = "--sharded" in sys.argv[1:]
+    args = [arg for arg in sys.argv[1:] if arg != "--sharded"]
+    out_dir = Path(args[0]) if args else REPO / "models-test" / "tiny-hf-llama"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     write_config(out_dir)
     write_tokenizer(out_dir)
-    write_weights(out_dir)
+    write_weights(out_dir, sharded)
 
     print(f"wrote tiny HF model to {out_dir}")
 

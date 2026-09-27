@@ -6,10 +6,12 @@
 #include "mtmd-helper.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <set>
 #include <sstream>
 #include <thread>
 
@@ -81,7 +83,7 @@ bool onyx_engine::load(const onyx_args & args) {
     // the batching loop needs room for one row per slot plus at least one
     // prompt token, otherwise a prefilling slot could never make progress
     cparams.n_batch   = (uint32_t) std::max({ 32, args.n_batch,  n_parallel_ + 1 });
-    cparams.n_ubatch  = (uint32_t) std::max({ 32, args.n_ubatch, n_parallel_ + 1 });
+    cparams.n_ubatch  = (uint32_t) (embedding_mode_ ? cparams.n_batch : std::max({ 32, args.n_ubatch, n_parallel_ + 1 }));
     // one llama.cpp sequence per request slot; llama.cpp divides n_ctx into
     // per-sequence budgets (kv_unified stays at its default false)
     cparams.n_seq_max = (uint32_t) n_parallel_;
@@ -108,6 +110,10 @@ bool onyx_engine::load(const onyx_args & args) {
     n_ctx_      = llama_n_ctx(ctx_);
     n_ctx_slot_ = llama_n_ctx_seq(ctx_);
     n_batch_    = (int32_t) cparams.n_batch;
+    if (cache_reuse_ > 0 && (llama_model_n_swa(model_) > 0 || !llama_memory_can_shift(llama_get_memory(ctx_)))) {
+        cache_reuse_ = 0;
+        fprintf(stderr, "warning: cache reuse is disabled for sliding-window or recurrent memory\n");
+    }
 
     if (!args.mmproj_path.empty()) {
         mtmd_context_params mparams_mtmd = mtmd_context_params_default();
@@ -145,6 +151,12 @@ bool onyx_engine::load(const onyx_args & args) {
     }
 
     std::string template_override = args.chat_template;
+    if (!template_override.empty() && template_override != "chatml" &&
+        template_override.find("{{") == std::string::npos &&
+        template_override.find("{%") == std::string::npos) {
+        load_error_ = "--chat-template expects Jinja source or 'chatml'; use --chat-template-file for a template file";
+        return false;
+    }
     if (!args.chat_template_file.empty()) {
         std::ifstream f(args.chat_template_file);
         if (!f) {
@@ -220,7 +232,8 @@ static size_t stop_holdback(const std::string & text, const std::vector<std::str
 // logprobs semantics: report the raw distribution even when a grammar or
 // other constraint picked a token that had very low raw probability.
 static onyx_token_probs compute_token_probs(llama_context * ctx, const llama_vocab * vocab,
-                                          int32_t tok_idx, llama_token token, int32_t n_probs) {
+                                          int32_t tok_idx, llama_token token, int32_t n_probs,
+                                          const std::set<llama_token> & preserved_tokens) {
     onyx_token_probs out;
 
     const int32_t n_vocab = llama_vocab_n_tokens(vocab);
@@ -241,7 +254,7 @@ static onyx_token_probs compute_token_probs(llama_context * ctx, const llama_voc
     };
 
     out.sampled.token   = token;
-    out.sampled.piece   = common_token_to_piece(ctx, token);
+    out.sampled.piece   = common_token_to_piece(ctx, token, preserved_tokens.count(token) > 0);
     out.sampled.logprob = logprob_of(token);
 
     const int32_t n_top = std::max<int32_t>(0, std::min(n_probs, n_vocab));
@@ -257,7 +270,7 @@ static onyx_token_probs compute_token_probs(llama_context * ctx, const llama_voc
         for (int32_t i = 0; i < n_top; i++) {
             onyx_prob_entry e;
             e.token   = (llama_token) idx[(size_t) i];
-            e.piece   = common_token_to_piece(ctx, e.token);
+            e.piece   = common_token_to_piece(ctx, e.token, preserved_tokens.count(e.token) > 0);
             e.logprob = logprob_of(e.token);
             out.top.push_back(std::move(e));
         }
@@ -321,6 +334,12 @@ onyx_gen_result onyx_engine::generate(const onyx_gen_params & params, const onyx
                         std::to_string(n_ctx_slot_) + " tokens)";
             return res;
         }
+        for (llama_token token : prompt) {
+            if (token < 0 || token >= llama_vocab_n_tokens(vocab_)) {
+                res.error = "prompt contains an invalid token id";
+                return res;
+            }
+        }
     }
 
     req->params.n_probs = std::clamp<int32_t>(req->params.n_probs, 0, 25);
@@ -348,7 +367,16 @@ onyx_gen_result onyx_engine::generate(const onyx_gen_params & params, const onyx
     // own request, never the engine loop
     std::unique_lock<std::mutex> lock(req->mu);
     while (true) {
-        req->cv.wait(lock, [&] { return !req->pieces.empty() || req->finished; });
+        req->cv.wait_for(lock, std::chrono::milliseconds(100), [&] { return !req->pieces.empty() || req->finished; });
+        if (cb && !req->finished && req->pieces.empty()) {
+            lock.unlock();
+            const bool keep = cb("", {});
+            lock.lock();
+            if (!keep && !req->cancelled) {
+                req->cancelled = true;
+                q_cv_.notify_all();
+            }
+        }
         while (!req->pieces.empty()) {
             onyx_gen_piece piece = std::move(req->pieces.front());
             req->pieces.pop_front();
@@ -386,6 +414,12 @@ std::vector<float> onyx_engine::embed(const std::vector<llama_token> & tokens, s
         err = "input (" + std::to_string(tokens.size()) + " tokens) exceeds the batch size (" +
               std::to_string(n_batch_) + " tokens)";
         return {};
+    }
+    for (llama_token token : tokens) {
+        if (token < 0 || token >= llama_vocab_n_tokens(vocab_)) {
+            err = "input contains an invalid token id";
+            return {};
+        }
     }
     if (tokens.size() > n_ctx_) {
         err = "input (" + std::to_string(tokens.size()) + " tokens) exceeds the context window (" +
@@ -480,13 +514,24 @@ void onyx_engine::loop() {
             }
         }
 
-        admit_queued();
-
-        build_batch(batch);
-        if (batch.n_tokens == 0) {
-            continue;
+        try {
+            admit_queued();
+            build_batch(batch);
+            if (batch.n_tokens == 0) {
+                continue;
+            }
+            decode_batch(batch);
+        } catch (const std::exception & e) {
+            fprintf(stderr, "onyx-engine: engine tick failed: %s\n", e.what());
+            llama_memory_clear(llama_get_memory(ctx_), true);
+            for (auto & slot : slots_) {
+                if (slot.state != onyx_slot::ONYX_SLOT_IDLE) {
+                    slot.cache_tokens.clear();
+                    slot.n_past = 0;
+                    finish(slot, ONYX_FINISH_STOP, std::string("engine tick failed: ") + e.what());
+                }
+            }
         }
-        decode_batch(batch);
     }
 
     llama_batch_free(batch);
@@ -527,6 +572,21 @@ bool onyx_engine::admit_queued() {
                 break;
             }
             req = queue_.front();
+        }
+        {
+            std::lock_guard<std::mutex> lock(req->mu);
+            if (req->cancelled) {
+                std::lock_guard<std::mutex> q_lock(q_mutex_);
+                queue_.pop_front();
+                req->finished = true;
+                req->result.finish = ONYX_FINISH_CANCEL;
+                if (req->smpl) {
+                    common_sampler_free(req->smpl);
+                    req->smpl = nullptr;
+                }
+                req->cv.notify_all();
+                continue;
+            }
         }
 
         // pick the idle slot whose cached tokens share the longest prefix with
@@ -594,8 +654,14 @@ bool onyx_engine::admit_queued() {
             prefix = best_lcp;
         }
         if (prefix > 0) {
-            llama_memory_seq_rm(mem, slot.seq_id, (llama_pos) prefix, -1);
-            slot.cache_tokens.resize(prefix);
+            if (!llama_memory_seq_rm(mem, slot.seq_id, (llama_pos) prefix, -1) ||
+                llama_memory_seq_pos_min(mem, slot.seq_id) > 0) {
+                llama_memory_seq_rm(mem, slot.seq_id, -1, -1);
+                slot.cache_tokens.clear();
+                prefix = 0;
+            } else {
+                slot.cache_tokens.resize(prefix);
+            }
         } else {
             llama_memory_seq_rm(mem, slot.seq_id, -1, -1);
             slot.cache_tokens.clear();
@@ -719,7 +785,11 @@ bool onyx_engine::decode_batch(llama_batch & batch) {
             const int32_t tok_idx = slot.i_batch - off;
             slot.i_batch = -1;
 
-            sample_slot(slot, tok_idx);
+            try {
+                sample_slot(slot, tok_idx);
+            } catch (const std::exception & e) {
+                finish(slot, ONYX_FINISH_STOP, std::string("generation failed: ") + e.what());
+            }
         }
 
         off += n;
@@ -854,7 +924,7 @@ void onyx_engine::sample_slot(onyx_slot & slot, int32_t tok_idx) {
         // not sampled -- all other logits are irrelevant, we already know
         // what comes next.
         tok = rb.forced[slot.rb_forced_idx++];
-        common_sampler_accept(req.smpl, tok, true);
+        common_sampler_accept(req.smpl, tok, false);
         if (slot.rb_forced_idx >= rb.forced.size()) {
             slot.rb_state = onyx_slot::RB_DONE;
         }
@@ -895,7 +965,8 @@ void onyx_engine::sample_slot(onyx_slot & slot, int32_t tok_idx) {
     onyx_token_probs probs;
     const bool have_probs = req.params.want_logprobs;
     if (have_probs) {
-        probs = compute_token_probs(ctx_, vocab_, tok_idx, tok, req.params.n_probs);
+        probs = compute_token_probs(ctx_, vocab_, tok_idx, tok, req.params.n_probs,
+                                    req.params.sampling.preserved_tokens);
     }
 
     on_sampled(slot, have_probs ? &probs : nullptr);
@@ -914,7 +985,7 @@ void onyx_engine::on_sampled(onyx_slot & slot, const onyx_token_probs * probs) {
         return;
     }
 
-    res.text += common_token_to_piece(ctx_, slot.sampled);
+    res.text += common_token_to_piece(ctx_, slot.sampled, req.params.sampling.preserved_tokens.count(slot.sampled) > 0);
     if (probs) {
         res.probs.push_back(*probs);
     }

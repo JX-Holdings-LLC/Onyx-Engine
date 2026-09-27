@@ -30,6 +30,8 @@ import json
 import re
 import struct
 import sys
+import os
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -49,7 +51,7 @@ T_UINT8, T_INT8, T_UINT16, T_INT16, T_UINT32, T_INT32, T_FLOAT32, T_BOOL, \
     T_STRING, T_ARRAY, T_UINT64, T_INT64, T_FLOAT64 = range(13)
 
 # tokenizer.ggml.token_type values (gguf-py/gguf/constants.py::TokenType).
-TOKTYPE_NORMAL, TOKTYPE_UNKNOWN, TOKTYPE_CONTROL = 1, 2, 3
+TOKTYPE_NORMAL, TOKTYPE_UNKNOWN, TOKTYPE_CONTROL, TOKTYPE_USER_DEFINED = 1, 2, 3, 4
 
 # HF Llama tensor name -> GGUF llama-arch tensor name.
 TOP_LEVEL_MAP = {
@@ -104,9 +106,15 @@ def _bf16_to_f32(raw: np.ndarray) -> np.ndarray:
 
 def load_safetensors_file(path: Path) -> dict[str, np.ndarray]:
     with open(path, "rb") as f:
-        header_len = struct.unpack("<Q", f.read(8))[0]
+        prefix = f.read(8)
+        if len(prefix) != 8:
+            raise ConvertError(f"invalid safetensors header in '{path}'")
+        header_len = struct.unpack("<Q", prefix)[0]
+        if header_len > path.stat().st_size - 8:
+            raise ConvertError(f"safetensors header exceeds file size in '{path}'")
         header = json.loads(f.read(header_len))
-        data = np.fromfile(f, dtype=np.uint8)
+        data_offset = f.tell()
+    data = np.memmap(path, dtype=np.uint8, mode="r", offset=data_offset)
 
     tensors: dict[str, np.ndarray] = {}
     for name, meta in header.items():
@@ -115,9 +123,11 @@ def load_safetensors_file(path: Path) -> dict[str, np.ndarray]:
         dtype_str = meta["dtype"]
         shape = meta["shape"]
         start, end = meta["data_offsets"]
+        if start < 0 or end < start or end > data.size:
+            raise ConvertError(f"tensor '{name}' has invalid data offsets")
         raw = data[start:end]
         if dtype_str == "BF16":
-            arr = _bf16_to_f32(raw)
+            arr = raw.view(np.dtype("<u2"))
         elif dtype_str in _ST_DTYPES:
             arr = raw.view(_ST_DTYPES[dtype_str])
         else:
@@ -125,6 +135,8 @@ def load_safetensors_file(path: Path) -> dict[str, np.ndarray]:
                 f"tensor '{name}' has unsupported safetensors dtype '{dtype_str}' "
                 "(this converter handles F32, F16, BF16 and integer/bool tensors only)"
             )
+        if arr.size != int(np.prod(shape, dtype=np.int64)):
+            raise ConvertError(f"tensor '{name}' data size does not match its shape")
         tensors[name] = arr.reshape(shape) if shape else arr
     return tensors
 
@@ -141,7 +153,12 @@ def load_all_tensors(model_dir: Path) -> dict[str, np.ndarray]:
             by_file.setdefault(fname, []).append(tname)
         tensors: dict[str, np.ndarray] = {}
         for fname, names in by_file.items():
+            name_path = Path(fname)
+            if name_path.is_absolute() or ".." in name_path.parts or name_path.name != fname:
+                raise ConvertError(f"unsafe shard path '{fname}' in {index_path.name}")
             fpath = model_dir / fname
+            if fpath.resolve().parent != model_dir.resolve():
+                raise ConvertError(f"shard path '{fname}' escapes the model directory")
             if not fpath.is_file():
                 raise ConvertError(f"shard '{fname}' listed in {index_path.name} is missing")
             shard = load_safetensors_file(fpath)
@@ -227,17 +244,17 @@ class GGUFWriter:
     def add_array_i32(self, key: str, vals) -> None:
         self.add(key, T_ARRAY, (T_INT32, list(vals)))
 
-    def add_tensor(self, name: str, arr: np.ndarray) -> None:
-        self.tensors.append((name, arr))
+    def add_tensor(self, name: str, arr: np.ndarray, outtype: str, heads: int = 0) -> None:
+        self.tensors.append((name, arr, outtype, heads))
 
     def write(self, path: Path) -> None:
         infos = []
         offset = 0
-        for name, arr in self.tensors:
+        for name, arr, outtype, heads in self.tensors:
             dims = list(arr.shape)[::-1] or [1]
-            dtype = GGML_TYPE_F32 if arr.dtype == np.float32 else GGML_TYPE_F16
-            infos.append((name, dims, dtype, arr, offset))
-            offset += _pad(arr.nbytes)
+            dtype = GGML_TYPE_F32 if outtype == "f32" else GGML_TYPE_F16
+            infos.append((name, dims, dtype, arr, outtype, heads, offset))
+            offset += _pad(arr.size * (4 if outtype == "f32" else 2))
 
         with open(path, "wb") as f:
             f.write(struct.pack("<I", GGUF_MAGIC))
@@ -250,7 +267,7 @@ class GGUFWriter:
                 f.write(struct.pack("<I", vtype))
                 f.write(_encode_scalar(vtype, value))
 
-            for name, dims, dtype, _arr, off in infos:
+            for name, dims, dtype, _arr, _outtype, _heads, off in infos:
                 f.write(_pack_str(name))
                 f.write(struct.pack("<I", len(dims)))
                 for d in dims:
@@ -263,8 +280,15 @@ class GGUFWriter:
             if pad:
                 f.write(b"\0" * pad)
 
-            for _name, _dims, _dtype, arr, _off in infos:
-                raw = np.ascontiguousarray(arr).tobytes()
+            for _name, _dims, _dtype, arr, outtype, heads, _off in infos:
+                if arr.dtype == np.dtype("<u2"):
+                    arr = _bf16_to_f32(arr)
+                if heads:
+                    if arr.shape[0] % (2 * heads):
+                        raise ConvertError("Q/K tensor dimensions are incompatible with RoPE permutation")
+                    arr = arr.reshape(heads, 2, arr.shape[0] // (2 * heads), *arr.shape[1:]).swapaxes(1, 2).reshape(arr.shape)
+                target = np.float32 if outtype == "f32" else np.float16
+                raw = np.ascontiguousarray(arr, dtype=target).tobytes()
                 f.write(raw)
                 pad = _pad(len(raw)) - len(raw)
                 if pad:
@@ -313,26 +337,32 @@ def load_tokenizer(model_dir: Path) -> dict:
     return tok
 
 
-def build_vocab(tok: dict) -> tuple[list[str], list[int], list[str]]:
+def build_vocab(tok: dict, vocab_size: int | None) -> tuple[list[str], list[int], list[str]]:
     vocab: dict[str, int] = tok["model"]["vocab"]
     merges = tok["model"].get("merges") or []
-    max_id = max(vocab.values())
-    tokens = ["" for _ in range(max_id + 1)]
+    added = tok.get("added_tokens") or []
+    max_id = max(list(vocab.values()) + [e["id"] for e in added])
+    size = vocab_size if vocab_size is not None else max_id + 1
+    if size <= max_id:
+        raise ConvertError("tokenizer token id exceeds config vocab_size")
+    tokens = [f"[PAD{i}]" for i in range(size)]
+    toktypes = [TOKTYPE_NORMAL] * size
     for text, tid in vocab.items():
         tokens[tid] = text
-    if any(t == "" for t in tokens):
-        raise ConvertError("tokenizer.json vocab has gaps in token ids")
-
-    special_ids = {}
-    for entry in tok.get("added_tokens") or []:
-        if entry.get("special"):
-            special_ids[entry["content"]] = entry["id"]
-
-    toktypes = [TOKTYPE_NORMAL] * len(tokens)
-    for content, tid in special_ids.items():
-        toktypes[tid] = TOKTYPE_UNKNOWN if content == "<unk>" else TOKTYPE_CONTROL
-
-    return tokens, toktypes, list(merges)
+    for entry in added:
+        tid, content = entry["id"], entry["content"]
+        tokens[tid] = content
+        toktypes[tid] = (TOKTYPE_UNKNOWN if content == "<unk>" else
+                         TOKTYPE_CONTROL if entry.get("special") else TOKTYPE_USER_DEFINED)
+    normalized = []
+    for merge in merges:
+        if isinstance(merge, list) and len(merge) == 2 and all(isinstance(x, str) for x in merge):
+            normalized.append(" ".join(merge))
+        elif isinstance(merge, str):
+            normalized.append(merge)
+        else:
+            raise ConvertError("unsupported tokenizer merge entry")
+    return tokens, toktypes, normalized
 
 
 def resolve_special_token_id(config: dict, key: str) -> int | None:
@@ -358,12 +388,19 @@ def gguf_tensor_name(hf_name: str) -> str | None:
 def convert(model_dir: Path, outfile: Path, outtype: str) -> None:
     config = load_config(model_dir)
     tok = load_tokenizer(model_dir)
+    tokenizer_config_path = model_dir / "tokenizer_config.json"
+    tokenizer_config = json.loads(tokenizer_config_path.read_text()) if tokenizer_config_path.is_file() else {}
+    pre_tokenizer = tok.get("pre_tokenizer")
+    if pre_tokenizer not in (None, {"type": "ByteLevel", "add_prefix_space": False}):
+        raise ConvertError("tokenizer pre_tokenizer requires a supported GGUF pre-tokenizer; use llama.cpp's converter")
 
     n_embd = config["hidden_size"]
     n_ff = config["intermediate_size"]
     n_layer = config["num_hidden_layers"]
     n_head = config["num_attention_heads"]
     n_head_kv = config.get("num_key_value_heads", n_head)
+    if not isinstance(n_head_kv, int) or n_head_kv < 1:
+        raise ConvertError("num_key_value_heads must be a positive integer")
     n_ctx = config.get("max_position_embeddings", 2048)
     rms_eps = config.get("rms_norm_eps", 1e-5)
     rope_theta = config.get("rope_theta", 10000.0)
@@ -372,7 +409,11 @@ def convert(model_dir: Path, outfile: Path, outtype: str) -> None:
 
     if n_embd % n_head != 0:
         raise ConvertError(f"hidden_size ({n_embd}) is not divisible by num_attention_heads ({n_head})")
-    rope_dim = n_embd // n_head
+    rope_dim = config.get("head_dim", n_embd // n_head)
+    if not isinstance(rope_dim, int) or rope_dim < 1:
+        raise ConvertError("head_dim must be a positive integer")
+    if config.get("rope_scaling"):
+        raise ConvertError("rope_scaling is not supported; use llama.cpp's converter")
 
     raw_tensors = load_all_tensors(model_dir)
 
@@ -394,8 +435,12 @@ def convert(model_dir: Path, outfile: Path, outtype: str) -> None:
     missing = [name for name in required if name not in mapped]
     if missing:
         raise ConvertError(f"model is missing required tensor(s): {', '.join(missing)}")
+    for i in range(n_layer):
+        key = f"blk.{i}.attn_k.weight"
+        if mapped[key].shape[0] != n_head_kv * rope_dim:
+            raise ConvertError(f"{key} output dimension conflicts with num_key_value_heads and head_dim")
 
-    tokens, toktypes, merges = build_vocab(tok)
+    tokens, toktypes, merges = build_vocab(tok, vocab_size)
     if vocab_size is not None and len(tokens) != vocab_size:
         raise ConvertError(
             f"config.json vocab_size ({vocab_size}) does not match tokenizer.json vocab size ({len(tokens)})"
@@ -427,10 +472,10 @@ def convert(model_dir: Path, outfile: Path, outtype: str) -> None:
     w.add("tokenizer.ggml.merges", T_ARRAY, (T_STRING, merges))
     if bos_id is not None:
         w.add_u32("tokenizer.ggml.bos_token_id", bos_id)
-        w.add_bool("tokenizer.ggml.add_bos_token", True)
+        w.add_bool("tokenizer.ggml.add_bos_token", bool(tokenizer_config.get("add_bos_token", True)))
     if eos_id is not None:
         w.add_u32("tokenizer.ggml.eos_token_id", eos_id)
-        w.add_bool("tokenizer.ggml.add_eos_token", False)
+        w.add_bool("tokenizer.ggml.add_eos_token", bool(tokenizer_config.get("add_eos_token", False)))
 
     to_f16 = outtype == "f16"
     for name in ["token_embd.weight", "output.weight"] + [
@@ -438,18 +483,25 @@ def convert(model_dir: Path, outfile: Path, outtype: str) -> None:
         for suffix in ["attn_q.weight", "attn_k.weight", "attn_v.weight", "attn_output.weight",
                        "ffn_gate.weight", "ffn_up.weight", "ffn_down.weight"]
     ]:
-        arr = mapped[name].astype(np.float32)
-        w.add_tensor(name, arr.astype(np.float16) if to_f16 else arr)
+        heads = n_head if name.endswith("attn_q.weight") else n_head_kv if name.endswith("attn_k.weight") else 0
+        w.add_tensor(name, mapped[name], "f16" if to_f16 else "f32", heads)
 
     for name in ["output_norm.weight"] + [
         f"blk.{i}.{suffix}" for i in range(n_layer)
         for suffix in ["attn_norm.weight", "ffn_norm.weight"]
     ]:
         # norm weights always stay F32, matching llama.cpp's own convention
-        w.add_tensor(name, mapped[name].astype(np.float32))
+        w.add_tensor(name, mapped[name], "f32")
 
     outfile.parent.mkdir(parents=True, exist_ok=True)
-    w.write(outfile)
+    fd, temp_name = tempfile.mkstemp(prefix=outfile.name + ".", suffix=".tmp", dir=outfile.parent)
+    os.close(fd)
+    try:
+        w.write(Path(temp_name))
+        os.replace(temp_name, outfile)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
 
 
 def main() -> int:
@@ -467,6 +519,9 @@ def main() -> int:
         convert(args.model, args.outfile, args.outtype)
     except ConvertError as e:
         print(f"error: {e}", file=sys.stderr)
+        return 1
+    except (KeyError, TypeError, ValueError, IndexError, struct.error) as e:
+        print(f"error: invalid model input: {e}", file=sys.stderr)
         return 1
 
     print(f"wrote {args.outfile}")

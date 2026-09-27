@@ -184,11 +184,12 @@ whatever it returns:
    `.safetensors` file whose parent directory satisfies the same; anything
    else is a startup error.
 3. **Cache lookup.** The converted file lives at
-   `<--convert-dir or model dir>/onyx-cache/<model dir name>-<path hash>-f16.gguf`
+   `<--convert-dir or model dir>/<model dir name>-<path hash>-converter-v2-f16.gguf`
+   (`onyx-cache/` is used beneath the model directory when `--convert-dir` is absent)
    (the 8-hex-digit hash of the absolute source path keeps two models that
    share a directory name from colliding under a shared `--convert-dir`). It is
-   reused as-is if it exists and is newer than every `*.safetensors` file
-   and `config.json` in the source directory (mtime comparison) — so editing
+   reused if it has valid GGUF magic, is large enough, and is newer than the
+   source weights and metadata files (mtime comparison) — so editing
    the source model (or its config) invalidates the cache automatically.
 4. **Conversion.** On a cache miss, `resolve_converter_script()` locates
    `scripts/convert-safetensors.py` — via `$ONYX_ENGINE_CONVERT_SCRIPT` first,
@@ -354,7 +355,7 @@ fetched automatically — it exists only as a manual escape hatch.
 `LLAMA_BUILD_SERVER`, and `LLAMA_BUILD_APP` are all forced `OFF` (so
 upstream's own `llama-server`, its app binary, and example binaries are
 never built), `LLAMA_BUILD_COMMON` is forced `ON` (so the `common` library
-`onyx-engine` depends on is available), and `LLAMA_CURL` is forced `OFF`.
+`onyx-engine` depends on is available), and `LLAMA_OPENSSL` is forced `OFF`.
 `LLAMA_BUILD_MTMD` is forced `ON` — upstream's escape hatch for building
 `tools/mtmd` as a standalone library directly (`add_subdirectory()`)
 without going through `tools/CMakeLists.txt` and the rest of the (still-off)

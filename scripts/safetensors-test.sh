@@ -22,10 +22,12 @@ BASE="http://127.0.0.1:$PORT"
 PASS=0
 FAIL=0
 PIDS=()
+LOG1=""
 
 cleanup() {
     # ${PIDS[@]+...}: empty-array expansion trips `set -u` on macOS bash 3.2
     for pid in ${PIDS[@]+"${PIDS[@]}"}; do kill "$pid" 2>/dev/null || true; done
+    [ -z "$LOG1" ] || rm -f "$LOG1"
 }
 trap cleanup EXIT
 
@@ -77,6 +79,10 @@ else
 fi
 check "direct conversion produced a GGUF" test -s "$DIRECT_OUT"
 check "direct conversion GGUF has magic bytes" bash -c "head -c4 '$DIRECT_OUT' | grep -qU GGUF"
+SHARDED_DIR="models-test/tiny-hf-llama-sharded"
+python3 scripts/make-tiny-hf-model.py "$SHARDED_DIR" --sharded
+check "sharded conversion succeeds" python3 scripts/convert-safetensors.py "$SHARDED_DIR" \
+    --outfile models-test/tiny-hf-llama-sharded.gguf
 
 # ---- serve it through onyx-engine, exercising src/convert.cpp's cache -------
 if [ ! -x "$BIN" ]; then

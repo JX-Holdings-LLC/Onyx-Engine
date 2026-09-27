@@ -11,10 +11,7 @@
 # Usage:
 #   packaging/make-vendor-package.sh [path-to-llama.cpp-source]
 #
-# Without an argument the pinned commit is fetched from GitHub — first as a
-# source archive over HTTPS, and if that is unreachable, as a depth-1 git
-# fetch of the exact commit (network access required for packaging only, not
-# for building onyx-engine).
+# Without an argument the pinned commit is fetched and verified with git.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -43,6 +40,8 @@ fetch_with_git() {
     mkdir -p "$dest"
     git init -q "$dest"
     git -C "$dest" remote add origin "$LLAMA_UPSTREAM"
+    git -C "$dest" sparse-checkout init --cone
+    git -C "$dest" sparse-checkout set cmake common src ggml include tools/mtmd vendor models
     git -C "$dest" fetch --depth 1 -q origin "$LLAMA_COMMIT"
     git -C "$dest" checkout -q FETCH_HEAD
     rm -rf "$dest/.git"
@@ -50,26 +49,9 @@ fetch_with_git() {
 
 if [ -z "$SRC" ]; then
     SRC="$DIST/llama.cpp-$LLAMA_COMMIT"
-    if [ ! -d "$SRC" ]; then
-        mkdir -p "$DIST"
-        echo "downloading llama.cpp @ $LLAMA_COMMIT ..."
-        # Downloaded to a file rather than piped into tar so a failed fetch
-        # reports the HTTP error instead of tar's "unexpected end of file".
-        ARCHIVE="$DIST/llama.cpp-$LLAMA_COMMIT.tar.gz"
-        if curl -fsSL -o "$ARCHIVE" "$LLAMA_UPSTREAM/archive/$LLAMA_COMMIT.tar.gz" \
-           && tar -xzf "$ARCHIVE" -C "$DIST"; then
-            rm -f "$ARCHIVE"
-        else
-            rm -f "$ARCHIVE"
-            rm -rf "$SRC"
-            echo "archive download unavailable; falling back to git fetch ..."
-            command -v git > /dev/null || {
-                echo "error: neither the archive download nor git is available" >&2
-                exit 1
-            }
-            fetch_with_git "$SRC"
-        fi
-    fi
+    mkdir -p "$DIST"
+    echo "fetching verified llama.cpp commit $LLAMA_COMMIT ..."
+    fetch_with_git "$SRC"
 fi
 [ -f "$SRC/CMakeLists.txt" ] || { echo "error: '$SRC' is not a llama.cpp source tree"; exit 1; }
 
@@ -126,7 +108,8 @@ EOF
 echo "packing ..."
 ( cd "$DIST" && npm pack ./package --silent )
 
-TARBALL=$(ls "$DIST"/jxburros-llama-cpp-source-*.tgz | tail -1)
+TARBALL="$DIST/jxburros-llama-cpp-source-$PKG_VERSION.tgz"
+[ -f "$TARBALL" ] || { echo "error: expected package $TARBALL was not created" >&2; exit 1; }
 echo
 echo "wrote  $TARBALL"
 du -sh "$STAGE" "$TARBALL" | sed 's/^/  /'
