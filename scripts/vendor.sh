@@ -17,9 +17,8 @@
 # have — nothing is downloaded in that case.
 #
 # This does the same thing as the documented manual two-liner and the
-# equivalent steps in .github/workflows/{ci,release}.yml: extraction is done
-# with `tar` rather than `npm install <tarball>` so the only tools required
-# are bash and tar, and the on-disk layout is identical either way.
+# equivalent steps in .github/workflows/{ci,release}.yml. It requires Bash,
+# Git, npm (for packaging), and tar (for extraction).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

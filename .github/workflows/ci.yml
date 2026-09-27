@@ -141,7 +141,7 @@ jobs:
       # static configuration that a release has to prove anyway.
       - name: Configure (MSVC)
         if: runner.os == 'Windows'
-        run: cmake -B build -A x64 -DBUILD_SHARED_LIBS=OFF
+        run: cmake -B build -A x64 -DBUILD_SHARED_LIBS=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
 
       - name: Build
         if: runner.os != 'Windows'

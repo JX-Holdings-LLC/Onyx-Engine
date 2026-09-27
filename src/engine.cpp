@@ -1043,7 +1043,9 @@ bool onyx_engine::context_shift(onyx_slot & slot) {
     }
 
     llama_memory_t mem = llama_get_memory(ctx_);
-    llama_memory_seq_rm (mem, slot.seq_id, n_keep, n_keep + n_discard);
+    if (!llama_memory_seq_rm(mem, slot.seq_id, n_keep, n_keep + n_discard)) {
+        return false;
+    }
     llama_memory_seq_add(mem, slot.seq_id, n_keep + n_discard, slot.n_past, -n_discard);
 
     for (size_t i = (size_t) (n_keep + n_discard); i < slot.cache_tokens.size(); i++) {

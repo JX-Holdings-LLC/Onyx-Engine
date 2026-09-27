@@ -399,6 +399,12 @@ static void apply_grammar(common_params_sampling &   sparams,
                           const common_chat_params & cp,
                           common_grammar_type        type,
                           const llama_vocab *        vocab) {
+    for (const auto & t : cp.preserved_tokens) {
+        auto ids = common_tokenize(vocab, t, /* add_special */ false, /* parse_special */ true);
+        if (ids.size() == 1) {
+            sparams.preserved_tokens.insert(ids[0]);
+        }
+    }
     if (cp.grammar.empty()) {
         return;
     }
@@ -406,12 +412,6 @@ static void apply_grammar(common_params_sampling &   sparams,
     sparams.grammar_lazy      = cp.grammar_lazy;
     sparams.generation_prompt = cp.generation_prompt;
 
-    for (const auto & t : cp.preserved_tokens) {
-        auto ids = common_tokenize(vocab, t, /* add_special */ false, /* parse_special */ true);
-        if (ids.size() == 1) {
-            sparams.preserved_tokens.insert(ids[0]);
-        }
-    }
     for (const auto & trigger : cp.grammar_triggers) {
         if (trigger.type == COMMON_GRAMMAR_TRIGGER_TYPE_WORD) {
             auto ids = common_tokenize(vocab, trigger.value, false, true);
@@ -1077,8 +1077,13 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         if (body.contains("grammar") && body.at("grammar").is_string()) {
             gp.sampling.grammar = common_grammar(COMMON_GRAMMAR_TYPE_USER, body.at("grammar").get<std::string>());
         } else if (body.contains("json_schema")) {
-            gp.sampling.grammar = common_grammar(COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT,
-                                                 json_schema_to_grammar(body.at("json_schema")));
+            try {
+                gp.sampling.grammar = common_grammar(COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT,
+                                                     json_schema_to_grammar(body.at("json_schema")));
+            } catch (const std::exception & e) {
+                send_error(res, 400, e.what(), "invalid_request_error");
+                return;
+            }
         }
 
         const bool stream = body.value<bool>("stream", false);
@@ -1250,7 +1255,9 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
             std::string err;
             const std::vector<float> emb = engine.embed(inputs[i], err);
             if (!err.empty()) {
-                send_error(res, 400, err, "invalid_request_error");
+                const bool client_error = err.rfind("input", 0) == 0;
+                send_error(res, client_error ? 400 : 500, err,
+                           client_error ? "invalid_request_error" : "server_error");
                 return;
             }
             n_prompt_total += (int64_t) inputs[i].size();

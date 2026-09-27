@@ -177,6 +177,8 @@ def load_all_tensors(model_dir: Path) -> dict[str, np.ndarray]:
             f"found {len(files)} *.safetensors files in '{model_dir}' but no "
             "model.safetensors.index.json - sharded models must ship an index file"
         )
+    if files[0].resolve().parent != model_dir.resolve():
+        raise ConvertError(f"safetensors file '{files[0].name}' escapes the model directory")
     return load_safetensors_file(files[0])
 
 
@@ -344,8 +346,12 @@ def build_vocab(tok: dict, vocab_size: int | None) -> tuple[list[str], list[int]
     added = tok.get("added_tokens") or []
     max_id = max(list(vocab.values()) + [e["id"] for e in added])
     size = vocab_size if vocab_size is not None else max_id + 1
+    if not isinstance(size, int) or size < 1 or size > 10_000_000 or min(vocab.values()) < 0:
+        raise ConvertError("tokenizer vocab size or token ids are invalid")
     if size <= max_id:
         raise ConvertError("tokenizer token id exceeds config vocab_size")
+    if any(not isinstance(e["id"], int) or e["id"] < 0 for e in added):
+        raise ConvertError("added token ids must be nonnegative integers")
     tokens = [f"[PAD{i}]" for i in range(size)]
     toktypes = [TOKTYPE_NORMAL] * size
     for text, tid in vocab.items():

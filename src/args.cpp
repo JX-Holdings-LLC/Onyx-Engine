@@ -14,7 +14,8 @@ static bool parse_int(const char * s, int32_t & out) {
     char * end = nullptr;
     errno = 0;
     long v = strtol(s, &end, 10);
-    if (end == s || *end != '\0' || errno == ERANGE || v < INT32_MIN || v > INT32_MAX) {
+    if (end == s || *end != '\0' || errno == ERANGE ||
+        v < std::numeric_limits<int32_t>::min() || v > std::numeric_limits<int32_t>::max()) {
         fprintf(stderr, "error: invalid integer value '%s'\n", s);
         return false;
     }

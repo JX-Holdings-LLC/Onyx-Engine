@@ -157,7 +157,8 @@ cmake --install build --prefix /usr/local
 Installs the `onyx-engine` binary to `<prefix>/bin` (the only `install()`
 rule in `CMakeLists.txt` is `RUNTIME DESTINATION bin`). There is no
 `install` rule for headers, libraries, or config files — `onyx-engine` is
-shipped as a single self-contained binary.
+shipped without separate llama.cpp libraries. Standard OS libraries are
+still required.
 
 ## Test scripts
 

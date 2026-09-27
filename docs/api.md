@@ -55,7 +55,7 @@ Model and build metadata. No request body.
 ```json
 {
   "model_alias": "my-model",
-  "chat_template": "<jinja source or empty string>",
+  "chat_template": "<resolved Jinja source>",
   "build_info": "onyx-engine/0.3.1 (llama.cpp b10711-9723942ad)",
   "n_ctx": 4096,
   "n_ctx_total": 4096,

@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Fresh installs fetch and verify the pinned llama.cpp Git commit without an
+  unpublished npm dependency; release archives include third-party notices.
+- Reject unsafe request inputs, preserve control tokens, cancel disconnected
+  requests, and avoid recurrent/SWA cache reuse and embedding micro-batch
+  crashes.
+- Safetensors conversion validates shard paths, streams tensor data, applies
+  Q/K RoPE permutation, and publishes cache files atomically.
+- CI/release workflows use narrower permissions, pinned third-party actions,
+  validated release tags, and portable CPU/runtime settings.
+
 - **`npm run build` no longer runs out of memory.** It ran
   `cmake --build build --target onyx-engine -j` with no job count, which GNU
   make treats as unlimited: on a 4-CPU / 16 GB machine it started ~170

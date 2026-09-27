@@ -137,7 +137,7 @@ There is no dependency on an unpublished npm registry package. CMake accepts
 an explicit `-DONYX_ENGINE_LLAMA_DIR` override for offline builds. The
 maintainer package workflow is optional for distributing a pruned source archive.
 
-To stage an existing source checkout instead:
+To stage an existing checkout at the pinned commit instead:
 
 ```bash
 npm run vendor                        # or: bash scripts/vendor.sh

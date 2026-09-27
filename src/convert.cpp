@@ -53,8 +53,7 @@ static bool has_safetensors_file(const fs::path & dir) {
     return false;
 }
 
-// every converter input that affects the output, for cache-freshness
-// comparisons: the weights plus every config/tokenizer file it reads
+// Files whose changes conservatively invalidate the conversion cache.
 static std::vector<fs::path> safetensors_source_files(const fs::path & dir) {
     std::vector<fs::path> out;
     std::error_code ec;
@@ -273,7 +272,7 @@ std::string onyx_resolve_model(const onyx_args & args, std::string & err) {
         return "";
     }
 
-    // cache location: <convert_dir or model dir>/onyx-cache/<dirname>-<pathhash>-f16.gguf
+    // cache location: <convert_dir or model dir>/[onyx-cache/]...
     // The path hash keeps two different models that share a directory name
     // from colliding under a shared --convert-dir.
     fs::path cache_dir = args.convert_dir.empty() ? (model_dir / "onyx-cache") : fs::path(args.convert_dir);

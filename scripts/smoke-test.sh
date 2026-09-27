@@ -51,6 +51,11 @@ json_has() { # url-args... jq-ish python expression reading parsed json as d
     curl -sf "$@" | python3 -c "import json,sys; d=json.load(sys.stdin); assert $expr, d"
 }
 
+http_status() { # expected-status curl-args...
+    local expected="$1"; shift
+    [ "$(curl -s -o /dev/null -w '%{http_code}' "$@")" = "$expected" ]
+}
+
 [ -x "$BIN" ] || { echo "error: binary '$BIN' not found (build first)"; exit 1; }
 [ -f "$MODEL" ]  || python3 scripts/make-tiny-model.py "$MODEL"
 [ -f "$MMPROJ" ] || python3 scripts/make-tiny-mmproj.py "$MMPROJ"
@@ -118,6 +123,11 @@ check "POST /apply-template" \
 check "POST /v1/completions" \
     json_has 'd["usage"]["completion_tokens"] == 8 and d["model"] == "tiny-test"' \
     -X POST "$BASE/v1/completions" -d '{"prompt":"Once upon a time","max_tokens":8}'
+check "invalid token id returns 400" http_status 400 -X POST "$BASE/v1/completions" \
+    -d '{"prompt":[999999999],"max_tokens":1}'
+check "browser origin is rejected" http_status 403 -H 'Origin: https://example.com' "$BASE/health"
+check "multiple choices are rejected" http_status 400 -X POST "$BASE/v1/completions" \
+    -d '{"prompt":"hello","n":2}'
 check "POST /v1/chat/completions" \
     json_has 'd["choices"][0]["message"]["role"] == "assistant" and d["choices"][0]["finish_reason"] == "length"' \
     -X POST "$BASE/v1/chat/completions" -d '{"messages":[{"role":"user","content":"Hi"}],"max_tokens":8}'
@@ -142,6 +152,8 @@ echo "== embeddings instance"
 check "POST /v1/embeddings" \
     json_has 'len(d["data"]) == 2 and len(d["data"][0]["embedding"]) == 64 and d["usage"]["prompt_tokens"] > 0' \
     -X POST "$EMB_BASE/v1/embeddings" -d '{"input":["hello world","goodbye"]}'
+check "mixed embedding token array returns 400" http_status 400 -X POST "$EMB_BASE/v1/embeddings" \
+    -d '{"input":[5,"a"]}'
 check "generation rejected in embedding mode (501)" bash -c "
     code=\$(curl -s -o /dev/null -w '%{http_code}' -X POST '$EMB_BASE/v1/chat/completions' -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}')
     [ \"\$code\" = 501 ]"

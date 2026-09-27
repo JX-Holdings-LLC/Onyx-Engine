@@ -52,6 +52,15 @@ if [ -z "$SRC" ]; then
     mkdir -p "$DIST"
     echo "fetching verified llama.cpp commit $LLAMA_COMMIT ..."
     fetch_with_git "$SRC"
+else
+    actual=$(git -C "$SRC" rev-parse HEAD 2>/dev/null) || {
+        echo "error: supplied llama.cpp source must be a Git checkout" >&2
+        exit 1
+    }
+    [ "$actual" = "$LLAMA_COMMIT" ] || {
+        echo "error: supplied llama.cpp source is $actual, expected $LLAMA_COMMIT" >&2
+        exit 1
+    }
 fi
 [ -f "$SRC/CMakeLists.txt" ] || { echo "error: '$SRC' is not a llama.cpp source tree"; exit 1; }
 
