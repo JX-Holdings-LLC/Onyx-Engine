@@ -95,7 +95,7 @@ jobs:
 
       - name: Cache vendored llama.cpp source package
         id: vendor-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: packaging/dist
           key: vendor-${{ steps.pin.outputs.commit }}-${{ hashFiles('packaging/make-vendor-package.sh') }}
