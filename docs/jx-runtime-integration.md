@@ -240,7 +240,7 @@ JX Runtime ships a `onyxengine` adapter alongside its `llamacpp` one:
   `--reasoning-budget` are all passed on the same terms as to `llama-server`,
   since v2 implements all of them. It does *not* pass `--no-webui`: the
   `onyxengine` adapter strips that flag from the shared launch arguments,
-  because older builds reject it and v0.4 accepts it only as a no-op (see
+  because older builds reject it and v0.4.0 accepts it only as a no-op (see
   `src/args.h`/`src/args.cpp`), so there is no build on which passing it
   buys anything. Accepting it keeps a hand-configured launch that reuses
   `llama-server` arguments from failing at argument parsing.

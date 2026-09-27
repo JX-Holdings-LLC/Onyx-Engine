@@ -238,14 +238,14 @@ system C libraries are still required.
 **Cutting a release:**
 
 ```bash
-git tag v0.4
-git push origin v0.4
+git tag v0.4.0
+git push origin v0.4.0
 ```
 
 pushing the tag is the only step; the workflow does the rest. **JX
-Runtime's downloader should pin the `v0.4` tag and the exact asset names
-above** for this release. Once published, the `v0.4` release should contain all
-four archives and `checksums.txt`.
+Runtime's downloader should pin the `v0.4.0` tag and the exact asset names
+above** for this release. Once published, the `v0.4.0` release should contain
+all four archives and `checksums.txt`.
 
 ### The `release` job is all-or-nothing, on purpose
 
@@ -295,12 +295,13 @@ correctly withheld the release:
   quoting, `GetModuleFileNameW`, `python`), so the Windows leg is the
   proof that a `win32-x64` release asset can be built at all.
 
-The `v0.4` release should ship all four platform archives and `checksums.txt`.
+The `v0.4.0` release should ship all four platform archives and
+`checksums.txt`.
 The release workflow requires an existing version-matched tag when dispatched.
 
 ## Version string
 
-`PROJECT_VERSION` (from `project(onyx-engine VERSION 0.4 ...)`) is baked
+`PROJECT_VERSION` (from `project(onyx-engine VERSION 0.4.0 ...)`) is baked
 into the binary as the `ONYX_ENGINE_VERSION` preprocessor define, which is
 what `onyx-engine --version` and the `Server:` HTTP response header report.
 

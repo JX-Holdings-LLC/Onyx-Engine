@@ -1,6 +1,6 @@
 {
   "name": "@jxburros/onyx-engine",
-  "version": "0.4",
+  "version": "0.4.0",
   "private": true,
   "description": "Onyx Engine - OpenAI-compatible model-serving binary for JX Runtime.",
   "license": "MIT",
