@@ -91,7 +91,8 @@ blob path passed via `-m`. `onyx-engine`'s `--alias` does exactly this: it
 sets `onyx_engine::alias_`, which is what `/v1/models`, `/v1/chat/completions`,
 `/v1/completions`, and `/v1/embeddings` all report as `model`/`id`. If
 `--alias` is not passed, `onyx-engine` derives one from the model filename
-(stripping directory and `.gguf` extension) — an adapter integration should
+(stripping directories, trailing slashes, and `.gguf`/`.safetensors`; a
+safetensors directory uses its directory name) — an adapter integration should
 always pass `--alias` explicitly rather than rely on that derivation, to
 guarantee its own model id is what comes back.
 
@@ -105,7 +106,7 @@ JX Runtime's adapter never assumes a capability; it probes for it:
   but exited non-zero" (the latter is treated leniently since some
   `llama-server` builds exit non-zero on `--version`). `onyx-engine
   --version` prints `onyx-engine <version>` then
-  `llama.cpp build <LLAMA_BUILD_NUMBER> (<LLAMA_COMMIT>)` and exits `0` —
+  `llama.cpp b10711-9723942ad` and exits `0` —
   a clean answer either probe style would accept.
 - `supportsJinja()`, `supportsMmproj()`, and the generic `supportsFlag(flag)`
   all run `<binary> --help` once (cached per binary) and regex-search the
@@ -239,7 +240,7 @@ JX Runtime ships a `onyxengine` adapter alongside its `llamacpp` one:
   `--reasoning-budget` are all passed on the same terms as to `llama-server`,
   since v2 implements all of them. It does *not* pass `--no-webui`: the
   `onyxengine` adapter strips that flag from the shared launch arguments,
-  because v0.2.0 rejects it and v0.3.0 only accepts it as a no-op (see
+  because older builds reject it and v0.3.1 accepts it only as a no-op (see
   `src/args.h`/`src/args.cpp`), so there is no build on which passing it
   buys anything. Accepting it keeps a hand-configured launch that reuses
   `llama-server` arguments from failing at argument parsing.

@@ -34,16 +34,26 @@ trap cleanup EXIT
 
 check() { # name condition-command...
     local name="$1"; shift
-    if "$@" > /dev/null 2>&1; then
+    local output
+    if output=$("$@" 2>&1); then
         echo "ok   - $name"; PASS=$((PASS + 1))
     else
         echo "FAIL - $name"; FAIL=$((FAIL + 1))
+        [ -z "$output" ] || printf '%s\n' "$output"
+        for log in models-test/onyx-*.log; do
+            [ -f "$log" ] && { echo "== $log"; tail -30 "$log"; }
+        done
     fi
 }
 
 json_has() { # url-args... jq-ish python expression reading parsed json as d
     local expr="$1"; shift
     curl -sf "$@" | python3 -c "import json,sys; d=json.load(sys.stdin); assert $expr, d"
+}
+
+http_status() { # expected-status curl-args...
+    local expected="$1"; shift
+    [ "$(curl -s -o /dev/null -w '%{http_code}' "$@")" = "$expected" ]
 }
 
 [ -x "$BIN" ] || { echo "error: binary '$BIN' not found (build first)"; exit 1; }
@@ -59,16 +69,16 @@ check "--help lists --mmproj" bash -c "'$BIN' --help | grep -q -- --mmproj"
 check "--help lists --no-webui" bash -c "'$BIN' --help | grep -q -- --no-webui"
 
 echo "== starting generation instance on :$PORT"
-"$BIN" -m "$MODEL" --port "$PORT" -c 512 --alias tiny-test > /dev/null 2>&1 &
+"$BIN" -m "$MODEL" --port "$PORT" -c 512 --alias tiny-test > models-test/onyx-generation.log 2>&1 &
 PIDS+=($!)
 echo "== starting embedding instance on :$EMB_PORT"
-"$BIN" -m "$MODEL" --port "$EMB_PORT" --embedding --pooling mean > /dev/null 2>&1 &
+"$BIN" -m "$MODEL" --port "$EMB_PORT" --embedding --pooling mean > models-test/onyx-embedding.log 2>&1 &
 PIDS+=($!)
 echo "== starting 2-slot context-shift instance on :$NP_PORT"
-"$BIN" -m "$MODEL" --port "$NP_PORT" -c 512 -np 2 --context-shift --alias tiny-np2 > /dev/null 2>&1 &
+"$BIN" -m "$MODEL" --port "$NP_PORT" -c 512 -np 2 --context-shift --alias tiny-np2 > models-test/onyx-parallel.log 2>&1 &
 PIDS+=($!)
 echo "== starting multimodal instance on :$MM_PORT"
-"$BIN" -m "$MODEL" --port "$MM_PORT" -c 512 --mmproj "$MMPROJ" --alias tiny-mm > /dev/null 2>&1 &
+"$BIN" -m "$MODEL" --port "$MM_PORT" -c 512 --mmproj "$MMPROJ" --alias tiny-mm > models-test/onyx-multimodal.log 2>&1 &
 PIDS+=($!)
 
 # a deepseek-style template whose generation prompt itself ends inside the
@@ -79,7 +89,7 @@ RB_TEMPLATE="$(mktemp)"
 printf '{%% for m in messages %%}{{ m["role"] }}: {{ m["content"] }}\n{%% endfor %%}{%% if add_generation_prompt %%}assistant:<think>{%% endif %%}' > "$RB_TEMPLATE"
 echo "== starting reasoning-budget instance on :$RB_PORT"
 "$BIN" -m "$MODEL" --port "$RB_PORT" -c 512 --alias tiny-rb \
-    --chat-template-file "$RB_TEMPLATE" --reasoning-budget-message " [cut]" > /dev/null 2>&1 &
+    --chat-template-file "$RB_TEMPLATE" --reasoning-budget-message " [cut]" > models-test/onyx-reasoning.log 2>&1 &
 PIDS+=($!)
 
 for i in $(seq 1 100); do
@@ -88,6 +98,13 @@ for i in $(seq 1 100); do
         && curl -sf "$RB_BASE/health" > /dev/null 2>&1 && break
     sleep 0.2
 done
+if ! curl -sf "$BASE/health" > /dev/null || ! curl -sf "$EMB_BASE/health" > /dev/null ||
+   ! curl -sf "$NP_BASE/health" > /dev/null || ! curl -sf "$MM_BASE/health" > /dev/null ||
+   ! curl -sf "$RB_BASE/health" > /dev/null; then
+    echo "error: one or more test servers did not become ready" >&2
+    for log in models-test/onyx-*.log; do [ -f "$log" ] && { echo "== $log"; tail -50 "$log"; }; done
+    exit 1
+fi
 
 echo "== endpoints"
 check "GET /health" curl -sf "$BASE/health"
@@ -106,6 +123,11 @@ check "POST /apply-template" \
 check "POST /v1/completions" \
     json_has 'd["usage"]["completion_tokens"] == 8 and d["model"] == "tiny-test"' \
     -X POST "$BASE/v1/completions" -d '{"prompt":"Once upon a time","max_tokens":8}'
+check "invalid token id returns 400" http_status 400 -X POST "$BASE/v1/completions" \
+    -d '{"prompt":[999999999],"max_tokens":1}'
+check "browser origin is rejected" http_status 403 -H 'Origin: https://example.com' "$BASE/health"
+check "multiple choices are rejected" http_status 400 -X POST "$BASE/v1/completions" \
+    -d '{"prompt":"hello","n":2}'
 check "POST /v1/chat/completions" \
     json_has 'd["choices"][0]["message"]["role"] == "assistant" and d["choices"][0]["finish_reason"] == "length"' \
     -X POST "$BASE/v1/chat/completions" -d '{"messages":[{"role":"user","content":"Hi"}],"max_tokens":8}'
@@ -121,15 +143,17 @@ check "KV prefix reuse reports cache_n" bash -c "
 
 echo "== streaming"
 STREAM=$(curl -sfN -X POST "$BASE/v1/chat/completions" -d '{"messages":[{"role":"user","content":"Hi"}],"max_tokens":5,"stream":true}')
-check "SSE data frames"     bash -c "grep -q '^data: {' <<< '$STREAM'"
-check "SSE [DONE] frame"    bash -c "grep -q '^data: \[DONE\]' <<< '$STREAM'"
-check "SSE final usage"     bash -c "grep -q '\"usage\"' <<< '$STREAM'"
-check "SSE finish_reason"   bash -c "grep -q '\"finish_reason\":\"length\"' <<< '$STREAM'"
+check "SSE data frames"     grep -q '^data: {' <<< "$STREAM"
+check "SSE [DONE] frame"    grep -q '^data: \[DONE\]' <<< "$STREAM"
+check "SSE final usage"     grep -q '"usage"' <<< "$STREAM"
+check "SSE finish_reason"   grep -q '"finish_reason":"length"' <<< "$STREAM"
 
 echo "== embeddings instance"
 check "POST /v1/embeddings" \
     json_has 'len(d["data"]) == 2 and len(d["data"][0]["embedding"]) == 64 and d["usage"]["prompt_tokens"] > 0' \
     -X POST "$EMB_BASE/v1/embeddings" -d '{"input":["hello world","goodbye"]}'
+check "mixed embedding token array returns 400" http_status 400 -X POST "$EMB_BASE/v1/embeddings" \
+    -d '{"input":[5,"a"]}'
 check "generation rejected in embedding mode (501)" bash -c "
     code=\$(curl -s -o /dev/null -w '%{http_code}' -X POST '$EMB_BASE/v1/chat/completions' -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}')
     [ \"\$code\" = 501 ]"

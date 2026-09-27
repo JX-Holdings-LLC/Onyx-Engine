@@ -2,8 +2,8 @@
 
 Onyx Engine is a single-model, OpenAI-compatible model-serving binary built on
 [llama.cpp](https://github.com/ggml-org/llama.cpp) (vendored as a pinned
-source tree, currently `v0.3.0-90-g9723942ad`, distributed as the npm package
-`@jxburros/llama-cpp-source`). One `onyx-engine` process loads one model
+source tree, currently commit `9723942ad`, fetched by the install script).
+One `onyx-engine` process loads one model
 (GGUF, or a safetensors model converted to GGUF on first load) and serves
 it over HTTP on `127.0.0.1:<port>`.
 
@@ -88,7 +88,8 @@ mapping this is built against.
 - The safetensors converter only handles the standard Hugging Face
   `LlamaForCausalLM` layout (optionally sharded via
   `model.safetensors.index.json`) with a byte-level BPE `tokenizer.json`.
-  Anything else — another architecture, a SentencePiece
+  Tokenizer pre-processing layouts and RoPE scaling it cannot represent are
+  rejected. Anything else — another architecture, a SentencePiece
   `tokenizer.model`, exotic dtypes — is refused with a clear error rather
   than silently mishandled.
 
@@ -99,7 +100,7 @@ See [Roadmap](#roadmap) for what remains genuinely out of scope.
 ```bash
 git clone <this-repo>
 cd Onyx-Engine
-npm run vendor   # fetch the pinned llama.cpp source (see note below)
+npm ci           # fetch the verified llama.cpp commit with Git
 
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target onyx-engine -j "$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
@@ -120,51 +121,31 @@ curl http://127.0.0.1:8080/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
-> **`npm ci` doesn't work yet.** `@jxburros/llama-cpp-source` has not been
-> published to the npm registry, so `npm ci`/`npm install` currently fails.
-> `npm run vendor` (above) is the supported fallback until it is published:
-> it stages the pinned llama.cpp source locally and installs it into
-> `node_modules/@jxburros/llama-cpp-source`, exactly where `npm ci` would put
-> it and where `CMakeLists.txt` looks. Once the package is published, `npm
-> ci` replaces it and nothing else changes. See
-> [Vendored source via npm](#vendored-source-via-npm) below and
-> [`docs/building.md`](docs/building.md#npm-run-vendor--the-local-fallback).
+`npm ci` uses the lockfile and the postinstall script to fetch the exact
+llama.cpp Git commit into `node_modules/@jxburros/llama-cpp-source`.
+Git and network access are required for the first install. For an existing
+source checkout, `npm run vendor -- /path/to/llama.cpp` remains available.
 
 For acceleration builds (CUDA, Vulkan, Metal, ROCm, BLAS) see
 [`docs/building.md`](docs/building.md).
 
-## Vendored source via npm
+## Vendored source
 
-Onyx Engine's only external build input is llama.cpp's C/C++ source tree,
-distributed as the npm package `@jxburros/llama-cpp-source` — a pinned,
-pruned copy of llama.cpp (not a Node.js library). Using the npm registry as
-that channel, rather than a git submodule, means the build has exactly one
-trusted external source to fetch from and verify, instead of two (git +
-npm). `npm ci` installs it into `node_modules`, and `CMakeLists.txt` picks it
-up from there automatically. See
-["What llama.cpp's own build is told to skip"](docs/building.md#what-llamacpps-own-build-is-told-to-skip)
-and the [architecture doc](docs/architecture.md#build-layering) for the full
-source-resolution order (npm package → `-DONYX_ENGINE_LLAMA_DIR` override →
-manually placed `vendor/llama.cpp`).
+The install script fetches and verifies the commit pinned in
+`packaging/make-vendor-package.sh` directly from the llama.cpp Git repository.
+There is no dependency on an unpublished npm registry package. CMake accepts
+an explicit `-DONYX_ENGINE_LLAMA_DIR` override for offline builds. The
+maintainer package workflow is optional for distributing a pruned source archive.
 
-**Status: not yet published.** `@jxburros/llama-cpp-source` is not on the
-npm registry today, so a fresh clone's `npm ci` fails until the maintainer
-runs the `publish-vendor` GitHub Actions workflow (Actions → `publish-vendor`
-→ Run workflow, `dry_run` first) — see
-[`docs/building.md`](docs/building.md#publishing-githubworkflowspublish-vendoryml)
-for one-time setup (an `NPM_TOKEN` repo secret, or npm Trusted Publishing)
-and when a new publish is needed. Until then, one command does the whole
-fallback:
+To stage an existing checkout at the pinned commit instead:
 
 ```bash
 npm run vendor                        # or: bash scripts/vendor.sh
 npm run vendor -- /path/to/llama.cpp  # reuse a checkout you already have
 ```
 
-`scripts/vendor.sh` stages the pinned vendor tarball and extracts it into
-`node_modules/@jxburros/llama-cpp-source`. It needs only bash and tar, and
-it fetches the pinned commit over HTTPS with a depth-1 `git fetch` fallback
-for networks that block GitHub's archive URLs.
+`scripts/vendor.sh` stages a tarball and extracts it into
+`node_modules/@jxburros/llama-cpp-source`. It needs Bash, Git, npm and tar.
 
 See [`docs/building.md`](docs/building.md#packaging--publishing-the-vendor-source-package)
 for the full packaging/publishing workflow.
@@ -177,7 +158,8 @@ on every `v*` tag push, for `linux-x64`, `darwin-arm64`, `darwin-x64`, and
 `win32-x64`. Each release attaches:
 
 - `onyx-engine-<tag>-<platformKey>.tar.gz` (`.zip` for `win32-x64`) — the
-  binary (`onyx-engine`/`onyx-engine.exe`) plus `LICENSE`, flat at the top
+  binary (`onyx-engine`/`onyx-engine.exe`) plus `LICENSE`,
+  `LICENSE-cpp-httplib`, and `LICENSE-llama.cpp`, flat at the top
   level of the archive
 - `checksums.txt` — `sha256sum`-style lines for every archive in the release
 
@@ -187,19 +169,8 @@ what JX Runtime's managed downloader uses to pick the right asset. See
 ["Release binaries"](docs/building.md#release-binaries) in `docs/building.md`
 for how a release is built and cut.
 
-> **No release assets are published yet — `v0.3.1` must be cut from `main`.**
-> The first `v0.3.0` release run failed on two of four platforms (a Visual
-> Studio generator pinned by name that `windows-latest` no longer ships, and
-> the retired `macos-13` runner label), and because the `release` job
-> requires every platform to succeed, it created the `v0.3.0` GitHub Release
-> with **zero assets**. `jx-runtime backend install --engine onyx`
-> consequently cannot work today, on any platform. Both causes are fixed in
-> `.github/workflows/release.yml`, but the fix is unproven until a real run
-> exercises it. **Maintainer action:** once these changes are on `main`, run
-> the `release` workflow via `workflow_dispatch` with tag input `v0.3.1`
-> (JX Runtime is moving its pin to `v0.3.1` in parallel) — the abandoned,
-> asset-less `v0.3.0` release is left as-is. See
-> ["The first v0.3.0 attempt, and what changed"](docs/building.md#the-first-v030-attempt-and-what-changed).
+The `v0.3.1` release has archives for all four supported platforms and
+`checksums.txt`. The next release will include the packaging changes above.
 
 ## Endpoints
 
@@ -229,7 +200,7 @@ and the SSE frame format, is in [`docs/api.md`](docs/api.md).
 | `--mmproj PATH` | — | multimodal projector GGUF (enables image, and audio if the projector supports it) |
 | `--convert-dir DIR` | alongside the source model | cache directory for converted safetensors models |
 | `-a, --alias NAME` | file stem | model id reported by the API |
-| `--chat-template NAME` | — | override with a built-in template |
+| `--chat-template SOURCE` | — | override with Jinja template source |
 | `--chat-template-file F` | — | override with a template read from a file |
 | `--jinja` | on | accepted for compatibility; jinja is always used |
 | `--no-webui` | off | accepted for compatibility; onyx-engine has no web UI |
@@ -239,15 +210,15 @@ and the SSE frame format, is in [`docs/api.md`](docs/api.md).
 | `-c, --ctx-size N` | `4096` | context size in tokens (`0` = model default) |
 | `-b, --batch-size N` | `2048` | logical batch size |
 | `-ub, --ubatch-size N` | `512` | physical batch size |
-| `-ngl, --n-gpu-layers N` | `-1` | layers to offload to GPU (`-1` = all) |
+| `-ngl, --n-gpu-layers N`, `--gpu-layers N` | `-1` | layers to offload to GPU (`-1` = all) |
 | `-t, --threads N` | `-1` | generation threads (`-1` = auto) |
 | `-tb, --threads-batch N` | — | prompt-processing threads (default: same as `--threads`) |
 | `-np, --parallel N` | `1` | concurrent request slots; splits the context N ways |
-| `-fa, --flash-attn VAL` | `auto` | `on`, `off`, or `auto` |
+| `-fa, --flash-attn VAL` | `auto` | `on`, `off`, `auto`, `1`, or `0` |
 | `--mlock` | off | lock model memory in RAM |
 | `--no-mmap` | off | do not memory-map the model file |
 | `-s, --seed N` | random | default RNG seed |
-| `--embedding` / `--embeddings` | off | enable `/v1/embeddings` (pooled) |
+| `--embedding` / `--embeddings` | off | enable `/v1/embeddings` (pooled); forces one slot, disables context shift, and sets physical batch size to logical batch size |
 | `--pooling TYPE` | model default | `none`, `mean`, `cls`, `last`, `rank` |
 | `--cache-reuse N` | `1` | min prefix tokens to reuse from KV cache (`0` disables) |
 | `--context-shift` / `--no-context-shift` | off | drop oldest tokens instead of stopping when a slot's context fills |

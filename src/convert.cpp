@@ -3,12 +3,14 @@
 #include "args.h"
 
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #ifdef _WIN32
@@ -21,6 +23,7 @@
 #  include <windows.h>
 #else
 #  include <sys/wait.h>
+#  include <unistd.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -51,8 +54,7 @@ static bool has_safetensors_file(const fs::path & dir) {
     return false;
 }
 
-// every converter input that affects the output, for cache-freshness
-// comparisons: the weights plus every config/tokenizer file it reads
+// Files whose changes conservatively invalidate the conversion cache.
 static std::vector<fs::path> safetensors_source_files(const fs::path & dir) {
     std::vector<fs::path> out;
     std::error_code ec;
@@ -271,7 +273,7 @@ std::string onyx_resolve_model(const onyx_args & args, std::string & err) {
         return "";
     }
 
-    // cache location: <convert_dir or model dir>/onyx-cache/<dirname>-<pathhash>-f16.gguf
+    // cache location: <convert_dir or model dir>/[onyx-cache/]...
     // The path hash keeps two different models that share a directory name
     // from colliding under a shared --convert-dir.
     fs::path cache_dir = args.convert_dir.empty() ? (model_dir / "onyx-cache") : fs::path(args.convert_dir);
@@ -286,12 +288,17 @@ std::string onyx_resolve_model(const onyx_args & args, std::string & err) {
     }
     char hash_hex[17];
     snprintf(hash_hex, sizeof(hash_hex), "%016llx", (unsigned long long) h);
-    fs::path cache_path = cache_dir / (dirname + "-" + std::string(hash_hex, 8) + "-f16.gguf");
+    fs::path cache_path = cache_dir / (dirname + "-" + std::string(hash_hex, 8) + "-converter-v2-f16.gguf");
+    const std::string script = resolve_converter_script(err);
+    if (script.empty()) {
+        return "";
+    }
 
     // reuse a fresh cached conversion if one exists
     if (fs::exists(cache_path, ec)) {
         auto cache_time = fs::last_write_time(cache_path, ec);
-        bool fresh = !ec;
+        bool fresh = !ec && fs::file_size(cache_path, ec) >= 32 && !ec && has_gguf_magic(cache_path);
+        if (fresh && fs::last_write_time(script, ec) > cache_time) fresh = false;
         if (fresh) {
             for (const auto & src : safetensors_source_files(model_dir)) {
                 auto src_time = fs::last_write_time(src, ec);
@@ -307,15 +314,19 @@ std::string onyx_resolve_model(const onyx_args & args, std::string & err) {
         }
     }
 
-    const std::string script = resolve_converter_script(err);
-    if (script.empty()) {
+    fs::create_directories(cache_dir, ec);
+    if (ec) {
+        err = "cannot create conversion cache directory '" + cache_dir.string() + "': " + ec.message();
         return "";
     }
-
-    fs::create_directories(cache_dir, ec);
     fs::path tmp_path = cache_path;
-    tmp_path += ".tmp";
-    fs::remove(tmp_path, ec);
+#ifdef _WIN32
+    const auto process_id = GetCurrentProcessId();
+#else
+    const auto process_id = getpid();
+#endif
+    tmp_path += "." + std::to_string(process_id) + "." +
+                std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".tmp";
 
     fprintf(stderr, "onyx-engine: converting safetensors model '%s' to GGUF ...\n", model_dir.string().c_str());
 
@@ -332,20 +343,45 @@ std::string onyx_resolve_model(const onyx_args & args, std::string & err) {
                 err += "  " + l + "\n";
             }
         }
-        err += "hint: conversion requires python3 with numpy installed";
+        for (const auto & line : tail) {
+            if (line.find("No module named 'numpy'") != std::string::npos || line.find("python3: not found") != std::string::npos) {
+                err += "hint: conversion requires python3 with numpy installed";
+                break;
+            }
+        }
         return "";
     }
 
+    ec.clear();
+#ifdef _WIN32
+    if (!MoveFileExW(tmp_path.c_str(), cache_path.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        ec = std::error_code((int) GetLastError(), std::system_category());
+    }
+#else
     fs::rename(tmp_path, cache_path, ec);
+#endif
     if (ec) {
-        // fall back to copy+remove, e.g. across filesystems
-        ec.clear();
-        fs::copy_file(tmp_path, cache_path, fs::copy_options::overwrite_existing, ec);
-        if (ec) {
-            err = "failed to move converted GGUF into place: " + ec.message();
-            return "";
+        std::error_code verify_ec;
+        bool other_fresh = fs::exists(cache_path, verify_ec) && !verify_ec &&
+                           fs::file_size(cache_path, verify_ec) >= 32 && !verify_ec && has_gguf_magic(cache_path);
+        if (other_fresh) {
+            const auto cache_time = fs::last_write_time(cache_path, verify_ec);
+            const auto script_time = fs::last_write_time(script, verify_ec);
+            other_fresh = !verify_ec && script_time <= cache_time;
+            for (const auto & src : safetensors_source_files(model_dir)) {
+                const auto src_time = fs::last_write_time(src, verify_ec);
+                if (verify_ec || src_time > cache_time) other_fresh = false;
+            }
         }
+        if (other_fresh) {
+            // Another process finished an equivalent conversion first.
+            fs::remove(tmp_path, ec);
+            return cache_path.string();
+        }
+        err = "failed to atomically move converted GGUF into place: " + ec.message();
         fs::remove(tmp_path, ec);
+        return "";
     }
 
     fprintf(stderr, "onyx-engine: conversion complete, cached at '%s'\n", cache_path.string().c_str());

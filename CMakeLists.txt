@@ -8,6 +8,7 @@ project(onyx-engine
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+option(BUILD_SHARED_LIBS "Build shared dependencies" OFF)
 
 if (NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
@@ -23,28 +24,16 @@ option(ONYX_ENGINE_METAL  "Build with Metal support"  OFF)
 option(ONYX_ENGINE_HIP    "Build with ROCm/HIP support" OFF)
 option(ONYX_ENGINE_BLAS   "Build with BLAS support"   OFF)
 
-if (ONYX_ENGINE_CUDA)
-    set(GGML_CUDA ON CACHE BOOL "" FORCE)
-endif()
-if (ONYX_ENGINE_VULKAN)
-    set(GGML_VULKAN ON CACHE BOOL "" FORCE)
-endif()
-if (ONYX_ENGINE_METAL)
-    set(GGML_METAL ON CACHE BOOL "" FORCE)
-endif()
-if (ONYX_ENGINE_HIP)
-    set(GGML_HIP ON CACHE BOOL "" FORCE)
-endif()
-if (ONYX_ENGINE_BLAS)
-    set(GGML_BLAS ON CACHE BOOL "" FORCE)
-endif()
+set(GGML_CUDA ${ONYX_ENGINE_CUDA} CACHE BOOL "" FORCE)
+set(GGML_VULKAN ${ONYX_ENGINE_VULKAN} CACHE BOOL "" FORCE)
+set(GGML_METAL ${ONYX_ENGINE_METAL} CACHE BOOL "" FORCE)
+set(GGML_HIP ${ONYX_ENGINE_HIP} CACHE BOOL "" FORCE)
+set(GGML_BLAS ${ONYX_ENGINE_BLAS} CACHE BOOL "" FORCE)
 
 # ---------------------------------------------------------------------------
 # Vendored llama.cpp — only the libraries, none of its tools/examples.
 #
-# The source tree comes from the npm registry (@jxburros/llama-cpp-source,
-# installed by `npm ci` into node_modules) so the build's only external input
-# is an npm package. Resolution order:
+# `npm ci` fetches the pinned Git commit into node_modules. Resolution order:
 #   1. -DONYX_ENGINE_LLAMA_DIR=<path>          explicit override
 #   2. node_modules/@jxburros/llama-cpp-source   (canonical: npm ci)
 #   3. vendor/llama.cpp                      manually placed source tree
@@ -55,7 +44,7 @@ set(LLAMA_BUILD_TOOLS    OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_APP      OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_COMMON   ON  CACHE BOOL "" FORCE)
-set(LLAMA_CURL           OFF CACHE BOOL "" FORCE)
+set(LLAMA_OPENSSL        OFF CACHE BOOL "" FORCE)
 
 # Multimodal projector support (--mmproj). LLAMA_BUILD_MTMD is upstream's
 # escape hatch for building tools/mtmd as a standalone library without the
@@ -93,51 +82,39 @@ message(STATUS "onyx-engine: using llama.cpp source at ${ONYX_LLAMA_SRC}")
 # so git walks UP and reports *onyx-engine's* commit and commit count, which
 # then surfaced in `--version` and /props labelled as llama.cpp build info.
 #
-# The npm package records the real pin in its own package.json (written by
-# packaging/make-vendor-package.sh), so read it from there. For a git
-# checkout (-DONYX_ENGINE_LLAMA_DIR or vendor/llama.cpp) ask git, but only
-# after confirming the repository's top level IS that tree - never a parent's.
+# Read the source pin from the packaging script, then check the installed
+# source stamp or package metadata before compiling it.
 # ---------------------------------------------------------------------------
-set(ONYX_LLAMA_PIN "unknown")
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/packaging/make-vendor-package.sh ONYX_VENDOR_SCRIPT)
+if (NOT ONYX_VENDOR_SCRIPT MATCHES "LLAMA_COMMIT=\"([0-9a-f]+)\"")
+    message(FATAL_ERROR "cannot read the pinned llama.cpp commit")
+endif()
+set(ONYX_EXPECTED_LLAMA_COMMIT "${CMAKE_MATCH_1}")
+string(LENGTH "${ONYX_EXPECTED_LLAMA_COMMIT}" ONYX_COMMIT_LENGTH)
+if (NOT ONYX_COMMIT_LENGTH EQUAL 40)
+    message(FATAL_ERROR "llama.cpp commit pin must be 40 hex characters")
+endif()
+if (NOT ONYX_VENDOR_SCRIPT MATCHES "-b([0-9]+)\\.g")
+    message(FATAL_ERROR "cannot read the pinned llama.cpp build number")
+endif()
+string(SUBSTRING "${ONYX_EXPECTED_LLAMA_COMMIT}" 0 9 ONYX_LLAMA_SHORT)
+set(ONYX_LLAMA_PIN "b${CMAKE_MATCH_1}-${ONYX_LLAMA_SHORT}")
 
-if (EXISTS ${ONYX_LLAMA_SRC}/package.json)
+if (EXISTS ${ONYX_LLAMA_SRC}/.onyx-source-commit)
+    file(READ ${ONYX_LLAMA_SRC}/.onyx-source-commit ONYX_INSTALLED_COMMIT)
+elseif (EXISTS ${ONYX_LLAMA_SRC}/package.json)
     file(READ ${ONYX_LLAMA_SRC}/package.json ONYX_LLAMA_PKG_JSON)
-    # e.g. "version": "0.3.0-b10711.g9723942ad"  ->  b10711-9723942ad
-    if (ONYX_LLAMA_PKG_JSON MATCHES "\"version\"[ \t]*:[ \t]*\"[^\"]*-b([0-9]+)\\.g([0-9a-fA-F]+)\"")
-        set(ONYX_LLAMA_PIN "b${CMAKE_MATCH_1}-${CMAKE_MATCH_2}")
+    if (ONYX_LLAMA_PKG_JSON MATCHES "\"llamaCppCommit\"[ \t]*:[ \t]*\"([0-9a-f]+)\"")
+        set(ONYX_INSTALLED_COMMIT "${CMAKE_MATCH_1}")
     endif()
 endif()
-
-if (ONYX_LLAMA_PIN STREQUAL "unknown")
-    find_package(Git QUIET)
-    if (GIT_EXECUTABLE)
-        execute_process(
-            COMMAND ${GIT_EXECUTABLE} rev-parse --show-toplevel
-            WORKING_DIRECTORY ${ONYX_LLAMA_SRC}
-            OUTPUT_VARIABLE ONYX_GIT_TOPLEVEL
-            OUTPUT_STRIP_TRAILING_WHITESPACE
-            RESULT_VARIABLE ONYX_GIT_RES
-            ERROR_QUIET
-        )
-        if (ONYX_GIT_RES EQUAL 0)
-            get_filename_component(ONYX_GIT_TOPLEVEL "${ONYX_GIT_TOPLEVEL}" REALPATH)
-            get_filename_component(ONYX_LLAMA_SRC_REAL "${ONYX_LLAMA_SRC}" REALPATH)
-            # only trust git when the repo's root is the llama.cpp tree itself
-            if (ONYX_GIT_TOPLEVEL STREQUAL ONYX_LLAMA_SRC_REAL)
-                execute_process(COMMAND ${GIT_EXECUTABLE} rev-list --count HEAD
-                    WORKING_DIRECTORY ${ONYX_LLAMA_SRC}
-                    OUTPUT_VARIABLE ONYX_GIT_COUNT OUTPUT_STRIP_TRAILING_WHITESPACE
-                    RESULT_VARIABLE ONYX_GIT_RES_A ERROR_QUIET)
-                execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --short=9 HEAD
-                    WORKING_DIRECTORY ${ONYX_LLAMA_SRC}
-                    OUTPUT_VARIABLE ONYX_GIT_HASH OUTPUT_STRIP_TRAILING_WHITESPACE
-                    RESULT_VARIABLE ONYX_GIT_RES_B ERROR_QUIET)
-                if (ONYX_GIT_RES_A EQUAL 0 AND ONYX_GIT_RES_B EQUAL 0)
-                    set(ONYX_LLAMA_PIN "b${ONYX_GIT_COUNT}-${ONYX_GIT_HASH}")
-                endif()
-            endif()
-        endif()
+if (DEFINED ONYX_INSTALLED_COMMIT)
+    string(STRIP "${ONYX_INSTALLED_COMMIT}" ONYX_INSTALLED_COMMIT)
+    if (NOT ONYX_INSTALLED_COMMIT STREQUAL ONYX_EXPECTED_LLAMA_COMMIT)
+        message(FATAL_ERROR "installed llama.cpp source does not match the pinned commit; run npm ci")
     endif()
+elseif (ONYX_LLAMA_SRC STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@jxburros/llama-cpp-source")
+    message(FATAL_ERROR "installed llama.cpp source has no verifiable commit stamp; run npm ci")
 endif()
 
 message(STATUS "onyx-engine: llama.cpp pin ${ONYX_LLAMA_PIN}")
@@ -204,6 +181,7 @@ add_executable(onyx-engine
 target_compile_definitions(onyx-engine PRIVATE
     ONYX_ENGINE_VERSION="${PROJECT_VERSION}"
     ONYX_ENGINE_LLAMA_PIN="${ONYX_LLAMA_PIN}"
+    $<$<CONFIG:Debug>:ONYX_ENGINE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}">
 )
 
 target_include_directories(onyx-engine PRIVATE

@@ -13,6 +13,7 @@
 #include <cinttypes>
 #include <cstdio>
 #include <ctime>
+#include <initializer_list>
 #include <random>
 #include <string>
 #include <vector>
@@ -22,7 +23,7 @@
 // ---------------------------------------------------------------------------
 
 static std::string gen_request_id(const char * prefix) {
-    static std::mt19937_64 rng{std::random_device{}()};
+    thread_local std::mt19937_64 rng{std::random_device{}()};
     char buf[64];
     snprintf(buf, sizeof(buf), "%s-%016" PRIx64, prefix, (uint64_t) rng());
     return buf;
@@ -37,6 +38,45 @@ static void send_error(httplib::Response & res, int status, const std::string & 
     body["error"]  = err;
     res.status = status;
     res.set_content(body.dump(), "application/json; charset=utf-8");
+}
+
+static void send_generation_error(httplib::Response & res, const std::string & message) {
+    const bool client_error = message.rfind("prompt (", 0) == 0 ||
+        message.rfind("prompt contains", 0) == 0 ||
+        message.rfind("failed to initialize sampler", 0) == 0;
+    send_error(res, client_error ? 400 : 500, message,
+               client_error ? "invalid_request_error" : "server_error");
+}
+
+static bool reject_unsupported_fields(const common_json & body, httplib::Response & res,
+                                      std::initializer_list<const char *> fields) {
+    for (const char * field : fields) {
+        if (body.contains(field)) {
+            send_error(res, 400, std::string("unsupported field: ") + field, "invalid_request_error");
+            return true;
+        }
+    }
+    if (body.contains("n") && body.at("n").get<int32_t>() != 1) {
+        send_error(res, 400, "only n=1 is supported", "invalid_request_error");
+        return true;
+    }
+    return false;
+}
+
+static bool validate_stream_sampler(const onyx_engine & engine, onyx_gen_params params,
+                                    httplib::Response & res) {
+    try {
+        common_sampler * sampler = common_sampler_init(engine.model(), params.sampling);
+        if (!sampler) {
+            send_error(res, 400, "invalid sampling grammar", "invalid_request_error");
+            return false;
+        }
+        common_sampler_free(sampler);
+        return true;
+    } catch (const std::exception & e) {
+        send_error(res, 400, e.what(), "invalid_request_error");
+        return false;
+    }
 }
 
 static std::string finish_reason_str(const onyx_gen_result & r, bool has_tool_calls) {
@@ -359,6 +399,12 @@ static void apply_grammar(common_params_sampling &   sparams,
                           const common_chat_params & cp,
                           common_grammar_type        type,
                           const llama_vocab *        vocab) {
+    for (const auto & t : cp.preserved_tokens) {
+        auto ids = common_tokenize(vocab, t, /* add_special */ false, /* parse_special */ true);
+        if (ids.size() == 1) {
+            sparams.preserved_tokens.insert(ids[0]);
+        }
+    }
     if (cp.grammar.empty()) {
         return;
     }
@@ -366,12 +412,6 @@ static void apply_grammar(common_params_sampling &   sparams,
     sparams.grammar_lazy      = cp.grammar_lazy;
     sparams.generation_prompt = cp.generation_prompt;
 
-    for (const auto & t : cp.preserved_tokens) {
-        auto ids = common_tokenize(vocab, t, /* add_special */ false, /* parse_special */ true);
-        if (ids.size() == 1) {
-            sparams.preserved_tokens.insert(ids[0]);
-        }
-    }
     for (const auto & trigger : cp.grammar_triggers) {
         if (trigger.type == COMMON_GRAMMAR_TRIGGER_TYPE_WORD) {
             auto ids = common_tokenize(vocab, trigger.value, false, true);
@@ -446,6 +486,22 @@ static common_chat_templates_inputs parse_chat_inputs(const common_json & body) 
     }
     if (body.contains("tool_choice") && body.at("tool_choice").is_string()) {
         inputs.tool_choice = common_chat_tool_choice_parse_oaicompat(body.at("tool_choice").get<std::string>());
+    } else if (body.contains("tool_choice") && body.at("tool_choice").is_object()) {
+        const auto & choice = body.at("tool_choice");
+        if (choice.value<std::string>("type", "") != "function" || !choice.contains("function") ||
+            !choice.at("function").is_object() || !choice.at("function").contains("name")) {
+            throw std::invalid_argument("tool_choice must name a function");
+        }
+        const std::string name = choice.at("function").at("name").get<std::string>();
+        std::vector<common_chat_tool> selected;
+        for (const auto & tool : inputs.tools) {
+            if (tool.name == name) selected.push_back(tool);
+        }
+        if (selected.empty()) throw std::invalid_argument("tool_choice names an unknown function: " + name);
+        inputs.tools = std::move(selected);
+        inputs.tool_choice = COMMON_CHAT_TOOL_CHOICE_REQUIRED;
+    } else if (body.contains("tool_choice") && !body.at("tool_choice").is_null()) {
+        throw std::invalid_argument("tool_choice must be a string or function object");
     }
     if (body.contains("parallel_tool_calls")) {
         inputs.parallel_tool_calls = body.at("parallel_tool_calls").get<bool>();
@@ -532,19 +588,21 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
 
     svr.set_default_headers({
         {"Server", "onyx-engine/" ONYX_ENGINE_VERSION},
-        {"Access-Control-Allow-Origin", "*"},
-        {"Access-Control-Allow-Headers", "Authorization, Content-Type"},
-        {"Access-Control-Allow-Methods", "GET, POST, OPTIONS"},
     });
 
     svr.Options(".*", [](const httplib::Request &, httplib::Response & res) {
-        res.status = 204;
+        res.status = 403;
     });
 
     // bearer auth on everything except /health
-    if (!args.api_key.empty()) {
+    {
         const std::string expected = "Bearer " + args.api_key;
-        svr.set_pre_routing_handler([expected](const httplib::Request & req, httplib::Response & res) {
+        svr.set_pre_routing_handler([expected, &args](const httplib::Request & req, httplib::Response & res) {
+            if (req.has_header("Origin")) {
+                send_error(res, 403, "browser-origin requests are disabled", "invalid_request_error");
+                return httplib::Server::HandlerResponse::Handled;
+            }
+            if (args.api_key.empty()) return httplib::Server::HandlerResponse::Unhandled;
             if (req.path == "/health" || req.method == "OPTIONS") {
                 return httplib::Server::HandlerResponse::Unhandled;
             }
@@ -560,6 +618,12 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         std::string msg = "internal error";
         try {
             if (ep) std::rethrow_exception(ep);
+        } catch (const common_json_error & e) {
+            send_error(res, 400, e.what(), "invalid_request_error");
+            return;
+        } catch (const std::invalid_argument & e) {
+            send_error(res, 400, e.what(), "invalid_request_error");
+            return;
         } catch (const std::exception & e) {
             msg = e.what();
         } catch (...) {
@@ -646,6 +710,11 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         }
         common_json out = common_json::object();
         out["tokens"] = toks;
+        if (body.value<bool>("with_pieces", false)) {
+            common_json pieces = common_json::array();
+            for (llama_token t : tokens) pieces.push_back(common_token_to_piece(engine.vocab(), t, true));
+            out["pieces"] = pieces;
+        }
         res.set_content(out.dump(), "application/json; charset=utf-8");
     });
 
@@ -655,7 +724,12 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         if (body.contains("tokens") && body.at("tokens").is_array()) {
             const common_json & arr = body.at("tokens");
             for (size_t i = 0; i < arr.size(); i++) {
-                tokens.push_back(arr[i].get<int32_t>());
+                const auto t = arr[i].get<int32_t>();
+                if (t < 0 || t >= llama_vocab_n_tokens(engine.vocab())) {
+                    send_error(res, 400, "invalid token id", "invalid_request_error");
+                    return;
+                }
+                tokens.push_back(t);
             }
         }
         common_json out = common_json::object();
@@ -669,17 +743,24 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
             send_error(res, 400, "missing 'messages'", "invalid_request_error");
             return;
         }
-        const auto inputs = parse_chat_inputs(body);
-        const auto cp     = common_chat_templates_apply(engine.chat_templates(), inputs);
-        common_json out = common_json::object();
-        out["prompt"] = cp.prompt;
-        res.set_content(out.dump(), "application/json; charset=utf-8");
+        try {
+            const auto inputs = parse_chat_inputs(body);
+            const auto cp     = common_chat_templates_apply(engine.chat_templates(), inputs);
+            common_json out = common_json::object();
+            out["prompt"] = cp.prompt;
+            res.set_content(out.dump(), "application/json; charset=utf-8");
+        } catch (const std::exception & e) {
+            send_error(res, 400, e.what(), "invalid_request_error");
+        }
     });
 
     // ---- chat completions ------------------------------------------------
 
     svr.Post("/v1/chat/completions", [&](const httplib::Request & req, httplib::Response & res) {
         common_json body = common_json::parse(req.body);
+        if (reject_unsupported_fields(body, res, {"logit_bias", "typical_p", "mirostat", "mirostat_tau",
+            "mirostat_eta", "dynatemp_range", "dynatemp_exponent", "dry_multiplier", "dry_base",
+            "dry_allowed_length", "dry_penalty_last_n", "xtc_probability", "xtc_threshold"})) return;
         if (!body.contains("messages") || !body.at("messages").is_array()) {
             send_error(res, 400, "missing or invalid 'messages'", "invalid_request_error");
             return;
@@ -702,6 +783,8 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         const bool stream = body.value<bool>("stream", false);
 
         // logprobs (v2): logprobs:true + top_logprobs:N (OpenAI chat shape).
+        const bool include_usage = !body.contains("stream_options") ||
+            body.at("stream_options").value<bool>("include_usage", true);
         // top_logprobs without logprobs=true is a hard error, matching
         // llama.cpp's own oaicompat parsing.
         const bool logprobs_requested = body.value<bool>("logprobs", false);
@@ -753,6 +836,16 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
             !inputs.json_schema.empty() ? COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT
                                         : COMMON_GRAMMAR_TYPE_TOOL_CALLS;
         apply_grammar(gp.sampling, cp, gtype, engine.vocab());
+        if (gp.reasoning.enabled && gp.reasoning.budget >= 0 &&
+            !gp.sampling.grammar.empty() && !gp.sampling.grammar_lazy) {
+            send_error(res, 400, "reasoning budget cannot force tokens through a non-lazy grammar",
+                       "invalid_request_error");
+            return;
+        }
+        if (gp.media.empty() && gp.prompt_tokens.size() >= engine.n_ctx_slot()) {
+            send_error(res, 400, "prompt does not fit in the context window", "invalid_request_error");
+            return;
+        }
 
         common_chat_parser_params parser_params(cp);
         parser_params.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
@@ -764,9 +857,11 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         const std::time_t created    = std::time(nullptr);
 
         if (!stream) {
-            onyx_gen_result r = engine.generate(gp, nullptr);
+            onyx_gen_result r = engine.generate(gp, [&req](const std::string &, const std::vector<onyx_token_probs> &) {
+                return !req.is_connection_closed();
+            });
             if (!r.error.empty()) {
-                send_error(res, 500, r.error, "server_error");
+                send_generation_error(res, r.error);
                 return;
             }
 
@@ -799,6 +894,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
             out["choices"] = choices;
             out["usage"]   = usage_json(r);
             out["timings"] = timings_json(r);
+            out["truncated"] = r.truncated;
             res.set_content(out.dump_safe(), "application/json; charset=utf-8");
             return;
         }
@@ -810,7 +906,8 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         st->created       = created;
         st->parser_params = parser_params;
 
-        res.set_chunked_content_provider("text/event-stream", [&engine, gp, st](size_t offset, httplib::DataSink & sink) {
+        if (!validate_stream_sampler(engine, gp, res)) return;
+        res.set_chunked_content_provider("text/event-stream", [&engine, gp, st, include_usage](size_t offset, httplib::DataSink & sink) {
             if (offset > 0) {
                 // single-shot provider: everything is written on the first call
                 return false;
@@ -870,6 +967,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
                 common_json e   = common_json::object();
                 e["message"] = r.error;
                 e["type"]    = "server_error";
+                e["code"]    = 500;
                 err["error"] = e;
                 sse_write(sink, err);
                 sink.done();
@@ -914,7 +1012,8 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
             usage_chunk["choices"] = common_json::array();
             usage_chunk["usage"]   = usage_json(r);
             usage_chunk["timings"] = timings_json(r);
-            sse_write(sink, usage_chunk);
+            usage_chunk["truncated"] = r.truncated;
+            if (include_usage) sse_write(sink, usage_chunk);
 
             const char done_frame[] = "data: [DONE]\n\n";
             sink.write(done_frame, sizeof(done_frame) - 1);
@@ -927,6 +1026,10 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
 
     svr.Post("/v1/completions", [&](const httplib::Request & req, httplib::Response & res) {
         const common_json body = common_json::parse(req.body);
+        if (reject_unsupported_fields(body, res, {"logit_bias", "echo", "suffix", "best_of",
+            "typical_p", "mirostat", "mirostat_tau", "mirostat_eta", "dynatemp_range",
+            "dynatemp_exponent", "dry_multiplier", "dry_base", "dry_allowed_length",
+            "dry_penalty_last_n", "xtc_probability", "xtc_threshold"})) return;
         if (engine.embedding_mode()) {
             send_error(res, 501, "this instance serves embeddings only (started with --embedding)", "not_supported_error");
             return;
@@ -942,7 +1045,12 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
             gp.prompt_tokens = engine.tokenize(prompt.get<std::string>(), /* add_special */ true, /* parse_special */ true);
         } else if (prompt.is_array()) {
             for (size_t i = 0; i < prompt.size(); i++) {
-                gp.prompt_tokens.push_back(prompt[i].get<int32_t>());
+                const auto t = prompt[i].get<int32_t>();
+                if (t < 0 || t >= llama_vocab_n_tokens(engine.vocab())) {
+                    send_error(res, 400, "invalid token id", "invalid_request_error");
+                    return;
+                }
+                gp.prompt_tokens.push_back(t);
             }
         } else {
             send_error(res, 400, "'prompt' must be a string or an array of token ids", "invalid_request_error");
@@ -969,11 +1077,22 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         if (body.contains("grammar") && body.at("grammar").is_string()) {
             gp.sampling.grammar = common_grammar(COMMON_GRAMMAR_TYPE_USER, body.at("grammar").get<std::string>());
         } else if (body.contains("json_schema")) {
-            gp.sampling.grammar = common_grammar(COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT,
-                                                 json_schema_to_grammar(body.at("json_schema")));
+            try {
+                gp.sampling.grammar = common_grammar(COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT,
+                                                     json_schema_to_grammar(body.at("json_schema")));
+            } catch (const std::exception & e) {
+                send_error(res, 400, e.what(), "invalid_request_error");
+                return;
+            }
         }
 
         const bool stream = body.value<bool>("stream", false);
+        const bool include_usage = !body.contains("stream_options") ||
+            body.at("stream_options").value<bool>("include_usage", true);
+        if (gp.prompt_tokens.size() >= engine.n_ctx_slot()) {
+            send_error(res, 400, "prompt does not fit in the context window", "invalid_request_error");
+            return;
+        }
         const std::string request_id = gen_request_id("cmpl");
         const std::time_t created    = std::time(nullptr);
         const std::string model      = engine.alias();
@@ -1002,9 +1121,11 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         };
 
         if (!stream) {
-            onyx_gen_result r = engine.generate(gp, nullptr);
+            onyx_gen_result r = engine.generate(gp, [&req](const std::string &, const std::vector<onyx_token_probs> &) {
+                return !req.is_connection_closed();
+            });
             if (!r.error.empty()) {
-                send_error(res, 500, r.error, "server_error");
+                send_generation_error(res, r.error);
                 return;
             }
             common_json out = make_cmpl_payload(r.text, finish_reason_str(r, false).c_str(),
@@ -1014,11 +1135,13 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
                                                 }() : common_json(nullptr));
             out["usage"]   = usage_json(r);
             out["timings"] = timings_json(r);
+            out["truncated"] = r.truncated;
             res.set_content(out.dump_safe(), "application/json; charset=utf-8");
             return;
         }
 
-        res.set_chunked_content_provider("text/event-stream", [&engine, gp, make_cmpl_payload](size_t offset, httplib::DataSink & sink) {
+        if (!validate_stream_sampler(engine, gp, res)) return;
+        res.set_chunked_content_provider("text/event-stream", [&engine, gp, make_cmpl_payload, include_usage](size_t offset, httplib::DataSink & sink) {
             if (offset > 0) {
                 return false;
             }
@@ -1040,6 +1163,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
                 common_json e   = common_json::object();
                 e["message"] = r.error;
                 e["type"]    = "server_error";
+                e["code"]    = 500;
                 err["error"] = e;
                 sse_write(sink, err);
                 sink.done();
@@ -1050,8 +1174,9 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
             }
 
             common_json final_chunk = make_cmpl_payload("", finish_reason_str(r, false).c_str());
-            final_chunk["usage"]   = usage_json(r);
+            if (include_usage) final_chunk["usage"] = usage_json(r);
             final_chunk["timings"] = timings_json(r);
+            final_chunk["truncated"] = r.truncated;
             sse_write(sink, final_chunk);
 
             const char done_frame[] = "data: [DONE]\n\n";
@@ -1065,6 +1190,14 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
 
     svr.Post("/v1/embeddings", [&](const httplib::Request & req, httplib::Response & res) {
         const common_json body = common_json::parse(req.body);
+        if (body.contains("dimensions")) {
+            send_error(res, 400, "dimensions is not supported", "invalid_request_error");
+            return;
+        }
+        if (body.contains("encoding_format") && body.at("encoding_format").get<std::string>() != "float") {
+            send_error(res, 400, "only float encoding_format is supported", "invalid_request_error");
+            return;
+        }
         if (!engine.embedding_mode()) {
             send_error(res, 501, "embeddings are disabled; start onyx-engine with --embedding", "not_supported_error");
             return;
@@ -1082,7 +1215,12 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         } else if (input.is_array() && input.size() > 0 && input[(size_t) 0].is_number_integer()) {
             std::vector<llama_token> toks;
             for (size_t i = 0; i < input.size(); i++) {
-                toks.push_back(input[i].get<int32_t>());
+                const auto t = input[i].get<int32_t>();
+                if (t < 0 || t >= llama_vocab_n_tokens(engine.vocab())) {
+                    send_error(res, 400, "invalid token id", "invalid_request_error");
+                    return;
+                }
+                toks.push_back(t);
             }
             inputs.push_back(std::move(toks));
         } else if (input.is_array()) {
@@ -1093,7 +1231,12 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
                 } else if (item.is_array()) {
                     std::vector<llama_token> toks;
                     for (size_t k = 0; k < item.size(); k++) {
-                        toks.push_back(item[k].get<int32_t>());
+                        const auto t = item[k].get<int32_t>();
+                        if (t < 0 || t >= llama_vocab_n_tokens(engine.vocab())) {
+                            send_error(res, 400, "invalid token id", "invalid_request_error");
+                            return;
+                        }
+                        toks.push_back(t);
                     }
                     inputs.push_back(std::move(toks));
                 } else {
@@ -1112,7 +1255,9 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
             std::string err;
             const std::vector<float> emb = engine.embed(inputs[i], err);
             if (!err.empty()) {
-                send_error(res, 500, err, "server_error");
+                const bool client_error = err.rfind("input", 0) == 0;
+                send_error(res, client_error ? 400 : 500, err,
+                           client_error ? "invalid_request_error" : "server_error");
                 return;
             }
             n_prompt_total += (int64_t) inputs[i].size();

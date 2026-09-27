@@ -184,11 +184,12 @@ whatever it returns:
    `.safetensors` file whose parent directory satisfies the same; anything
    else is a startup error.
 3. **Cache lookup.** The converted file lives at
-   `<--convert-dir or model dir>/onyx-cache/<model dir name>-<path hash>-f16.gguf`
+   `<--convert-dir or model dir>/<model dir name>-<path hash>-converter-v2-f16.gguf`
+   (`onyx-cache/` is used beneath the model directory when `--convert-dir` is absent)
    (the 8-hex-digit hash of the absolute source path keeps two models that
    share a directory name from colliding under a shared `--convert-dir`). It is
-   reused as-is if it exists and is newer than every `*.safetensors` file
-   and `config.json` in the source directory (mtime comparison) — so editing
+   reused if it has valid GGUF magic, is large enough, and is newer than the
+   source weights and metadata files (mtime comparison) — so editing
    the source model (or its config) invalidates the cache automatically.
 4. **Conversion.** On a cache miss, `resolve_converter_script()` locates
    `scripts/convert-safetensors.py` — via `$ONYX_ENGINE_CONVERT_SCRIPT` first,
@@ -196,9 +197,8 @@ whatever it returns:
    `../../scripts/`), then (debug builds only) `ONYX_ENGINE_SOURCE_DIR` — and
    runs `python3 <script> <model_dir> --outfile <tmp> --outtype f16` via
    `popen`, streaming its combined output to stderr and keeping the last 20
-   lines for the error message on failure. A successful run is renamed
-   (falling back to copy+remove across filesystems) into place at the cache
-   path.
+   lines for the error message on failure. A successful run is atomically
+   renamed into place from a unique temporary file in the cache directory.
 5. **The converter itself** (`scripts/convert-safetensors.py`) is
    deliberately narrow: only the standard Hugging Face `LlamaForCausalLM`
    layout (`architectures`/`model_type` checked against
@@ -341,20 +341,20 @@ ggml                  (<llama src>'s tensor/compute library; CPU by
 configure time, in this order:
 
 1. `-DONYX_ENGINE_LLAMA_DIR=<path>` — explicit override
-2. `node_modules/@jxburros/llama-cpp-source` — the npm package installed
-   by `npm ci` (canonical path; see [`building.md`](building.md))
+2. `node_modules/@jxburros/llama-cpp-source` — the Git source fetched by
+   `npm ci` (canonical path; see [`building.md`](building.md))
 3. `vendor/llama.cpp` — a manually placed source tree (gitignored, fallback
    only)
 
-The build's only external input is the npm package: unlike the git submodule
-this replaced, nothing under `vendor/` is tracked by this repository or
-fetched automatically — it exists only as a manual escape hatch.
+The build's external source is an exact llama.cpp Git commit. Nothing under
+`vendor/` is tracked by this repository or fetched automatically — it exists
+only as a manual escape hatch.
 `CMakeLists.txt` builds only the llama.cpp libraries it needs:
 `LLAMA_BUILD_TESTS`, `LLAMA_BUILD_EXAMPLES`, `LLAMA_BUILD_TOOLS`,
 `LLAMA_BUILD_SERVER`, and `LLAMA_BUILD_APP` are all forced `OFF` (so
 upstream's own `llama-server`, its app binary, and example binaries are
 never built), `LLAMA_BUILD_COMMON` is forced `ON` (so the `common` library
-`onyx-engine` depends on is available), and `LLAMA_CURL` is forced `OFF`.
+`onyx-engine` depends on is available), and `LLAMA_OPENSSL` is forced `OFF`.
 `LLAMA_BUILD_MTMD` is forced `ON` — upstream's escape hatch for building
 `tools/mtmd` as a standalone library directly (`add_subdirectory()`)
 without going through `tools/CMakeLists.txt` and the rest of the (still-off)
@@ -394,15 +394,6 @@ reporting onyx-engine's own commit and commit count as llama.cpp build info
 (before this was fixed, a build at onyx-engine commit `c0394c2` reported
 `b20-c0394c2`).
 
-`CMakeLists.txt` resolves the pin itself into `ONYX_ENGINE_LLAMA_PIN`: from the
-npm package's `package.json` version (`0.3.0-b10711.g9723942ad` →
-`b10711-9723942ad`), which `packaging/make-vendor-package.sh` writes from the
-pinned commit; or, for a git checkout supplied via `-DONYX_ENGINE_LLAMA_DIR` or
-`vendor/llama.cpp`, from git — but only after confirming that the repository's
-top level *is* that tree, so a parent repository can never be mistaken for it.
-Failing both, the pin is `unknown`.
-
-The git fallback reports whatever git reports, so a shallow checkout gives a
-low build number (`b1-9723942ad` for a `--depth 1` clone) with the correct
-commit hash. CI builds through the npm package, so the number there is the
-real one.
+`CMakeLists.txt` derives `ONYX_ENGINE_LLAMA_PIN` from the single commit pin in
+`packaging/make-vendor-package.sh` and checks the installed source stamp or
+package metadata before compiling the node_modules tree.

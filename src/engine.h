@@ -48,7 +48,7 @@ using onyx_media_buffer = std::vector<unsigned char>;
 // the top-N alternatives at that position.
 struct onyx_prob_entry {
     llama_token token   = 0;
-    std::string piece;      // common_token_to_piece(token), special=true
+    std::string piece;      // control tokens render only when preserved by the chat template
     float       logprob = 0.0f;
 };
 

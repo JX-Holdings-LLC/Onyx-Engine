@@ -17,9 +17,8 @@
 # have — nothing is downloaded in that case.
 #
 # This does the same thing as the documented manual two-liner and the
-# equivalent steps in .github/workflows/{ci,release}.yml: extraction is done
-# with `tar` rather than `npm install <tarball>` so the only tools required
-# are bash and tar, and the on-disk layout is identical either way.
+# equivalent steps in .github/workflows/{ci,release}.yml. It requires Bash,
+# Git, npm (for packaging), and tar (for extraction).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -28,7 +27,9 @@ DEST="node_modules/@jxburros/llama-cpp-source"
 
 bash packaging/make-vendor-package.sh "$@"
 
-TARBALL=$(ls packaging/dist/jxburros-llama-cpp-source-*.tgz | tail -1)
+PKG_VERSION=$(node -p "require('./packaging/dist/package/package.json').version")
+TARBALL="packaging/dist/jxburros-llama-cpp-source-$PKG_VERSION.tgz"
+[ -f "$TARBALL" ] || { echo "error: expected package $TARBALL was not created" >&2; exit 1; }
 
 echo "installing $TARBALL -> $DEST ..."
 rm -rf "$DEST"
