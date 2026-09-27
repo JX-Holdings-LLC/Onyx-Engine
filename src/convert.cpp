@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #ifdef _WIN32
@@ -351,9 +352,29 @@ std::string onyx_resolve_model(const onyx_args & args, std::string & err) {
         return "";
     }
 
+    ec.clear();
+#ifdef _WIN32
+    if (!MoveFileExW(tmp_path.c_str(), cache_path.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        ec = std::error_code((int) GetLastError(), std::system_category());
+    }
+#else
     fs::rename(tmp_path, cache_path, ec);
+#endif
     if (ec) {
-        if (fs::exists(cache_path) && fs::file_size(cache_path) >= 32 && has_gguf_magic(cache_path)) {
+        std::error_code verify_ec;
+        bool other_fresh = fs::exists(cache_path, verify_ec) && !verify_ec &&
+                           fs::file_size(cache_path, verify_ec) >= 32 && !verify_ec && has_gguf_magic(cache_path);
+        if (other_fresh) {
+            const auto cache_time = fs::last_write_time(cache_path, verify_ec);
+            const auto script_time = fs::last_write_time(script, verify_ec);
+            other_fresh = !verify_ec && script_time <= cache_time;
+            for (const auto & src : safetensors_source_files(model_dir)) {
+                const auto src_time = fs::last_write_time(src, verify_ec);
+                if (verify_ec || src_time > cache_time) other_fresh = false;
+            }
+        }
+        if (other_fresh) {
             // Another process finished an equivalent conversion first.
             fs::remove(tmp_path, ec);
             return cache_path.string();
