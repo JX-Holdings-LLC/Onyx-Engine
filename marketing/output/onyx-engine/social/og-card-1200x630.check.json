@@ -1,0 +1,46 @@
+{
+  "issues": [
+    {
+      "check": "coverage",
+      "severity": "warning",
+      "action": "informational",
+      "layer": null,
+      "message": "'bd-grid' is inside a repeated group; geometry checks cover its base instance. Visually inspect the repeated instances."
+    },
+    {
+      "check": "bounds",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "'bd-glow' bleeds off the canvas edge (marked as an intentional crop)"
+    },
+    {
+      "check": "safe_area",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "'bd-glow' extends outside the safe area (intentional crop or bleed)"
+    },
+    {
+      "check": "safe_area",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "'bd-grid' extends outside the safe area (intentional crop or bleed)"
+    },
+    {
+      "check": "safe_area",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "'bd-grid-row' extends outside the safe area (intentional crop or bleed)"
+    },
+    {
+      "check": "legibility",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "6 text layers are under 10 px tall at 600 px wide (the smallest, 'code-code', is 7.0 px); only matters if this is shown as a thumbnail (thumbnail_width: null turns the test off)"
+    }
+  ]
+}

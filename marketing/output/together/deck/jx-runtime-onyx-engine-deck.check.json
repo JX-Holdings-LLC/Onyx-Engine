@@ -1,0 +1,81 @@
+{
+  "issues": [
+    {
+      "check": "bounds",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "'bd-glow' bleeds off the canvas edge (marked as an intentional crop)"
+    },
+    {
+      "check": "bounds",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "'bd-glow2' bleeds off the canvas edge (marked as an intentional crop)"
+    },
+    {
+      "check": "min_font",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "'ar-d-jx-k' on page 'arch' is 12.7 px at 1280 px screen width (below 14 px); use at least 21 px on this canvas"
+    },
+    {
+      "check": "min_font",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "'ar-d-ox0-s' on page 'arch' is 10.7 px at 1280 px screen width (below 14 px); use at least 21 px on this canvas"
+    },
+    {
+      "check": "min_font",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "'ar-d-ox1-s' on page 'arch' is 10.7 px at 1280 px screen width (below 14 px); use at least 21 px on this canvas"
+    },
+    {
+      "check": "min_font",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "'ar-d-ox2-s' on page 'arch' is 10.7 px at 1280 px screen width (below 14 px); use at least 21 px on this canvas"
+    },
+    {
+      "check": "min_font",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "'ar-d-lab1' on page 'arch' is 10.7 px at 1280 px screen width (below 14 px); use at least 21 px on this canvas"
+    },
+    {
+      "check": "min_font",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "'ar-d-lab2' on page 'arch' is 10.7 px at 1280 px screen width (below 14 px); use at least 21 px on this canvas"
+    },
+    {
+      "check": "title_position",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "The title on page 'title' sits at x 1322 where the other titles sit at 140"
+    },
+    {
+      "check": "title_position",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "The title on page 'title' sits at y 382 where the other titles sit at 200"
+    },
+    {
+      "check": "fonts",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "1 embedded file(s), 69,416 bytes, are not used by the current design (fonts registered but unused: space-grotesk-500); the rest are kept so undo can restore them. Compacting (vixl_history action='compact', CLI vixl compact) drops them together with the undo history."
+    }
+  ]
+}

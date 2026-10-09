@@ -1,0 +1,25 @@
+{
+  "issues": [
+    {
+      "check": "coverage",
+      "severity": "warning",
+      "action": "informational",
+      "layer": null,
+      "message": "'bd-grid' is inside a repeated group; geometry checks cover its base instance. Visually inspect the repeated instances."
+    },
+    {
+      "check": "bounds",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "'bd-glow' bleeds off the canvas edge (marked as an intentional crop)"
+    },
+    {
+      "check": "fonts",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "2 embedded file(s), 181,564 bytes, are not used by the current design (fonts registered but unused: jetbrains-mono-500, space-grotesk-400); the rest are kept so undo can restore them. Compacting (vixl_history action='compact', CLI vixl compact) drops them together with the undo history."
+    }
+  ]
+}

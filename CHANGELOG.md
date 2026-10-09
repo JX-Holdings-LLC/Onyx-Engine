@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `marketing/`: marketing kits made with Vixl 0.23.0. `marketing/build.py` builds an Onyx Engine kit
+  and a joint JX Runtime + Onyx Engine kit into `marketing/output/`: logos (PNG/SVG), social images,
+  feed posts, carousels, pitch decks (PDF, PPTX, HTML), product sheets, an architecture diagram, a
+  tabloid CMYK poster, a sticker sheet and motion teasers (MP4/GIF), each with its editable `.vixl`
+  master. The same script lives in JX Runtime's `marketing/` folder. No engine code changed.
+
 ### Fixed
 
 - Fresh installs fetch and verify the pinned llama.cpp Git commit without an

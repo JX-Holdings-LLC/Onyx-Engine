@@ -1,0 +1,109 @@
+{
+  "issues": [
+    {
+      "check": "bounds",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "'bd-glow' bleeds off the canvas edge (marked as an intentional crop)"
+    },
+    {
+      "check": "bounds",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "'bd-glow2' bleeds off the canvas edge (marked as an intentional crop)"
+    },
+    {
+      "check": "overlap",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "'arch-jl4' and 'arch-jl4-t' overlap by 563 px (96.2% of the smaller layer)"
+    },
+    {
+      "check": "overlap",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "'arch-ox0' and 'arch-ox0-t' overlap by 424 px (97.7% of the smaller layer)"
+    },
+    {
+      "check": "overlap",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "'arch-ox0' and 'arch-ox0-s' overlap by 223 px (81.4% of the smaller layer)"
+    },
+    {
+      "check": "overlap",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "'arch-ox1' and 'arch-ox1-t' overlap by 424 px (97.7% of the smaller layer)"
+    },
+    {
+      "check": "overlap",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "'arch-ox1' and 'arch-ox1-s' overlap by 228 px (81.7% of the smaller layer)"
+    },
+    {
+      "check": "overlap",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "'arch-ox2' and 'arch-ox2-t' overlap by 424 px (97.7% of the smaller layer)"
+    },
+    {
+      "check": "overlap",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "'arch-ox2' and 'arch-ox2-s' overlap by 261 px (72.7% of the smaller layer)"
+    },
+    {
+      "check": "safe_area",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "'bd-glow' extends outside the safe area (intentional crop or bleed)"
+    },
+    {
+      "check": "safe_area",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "'bd-glow2' extends outside the safe area (intentional crop or bleed)"
+    },
+    {
+      "check": "safe_area",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "'bd-lines' extends outside the safe area (intentional crop or bleed)"
+    },
+    {
+      "check": "safe_area",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "'bd-lines-set' extends outside the safe area (intentional crop or bleed)"
+    },
+    {
+      "check": "legibility",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "17 text layers are under 10 px tall at 640 px wide (the smallest, 'arch-ox0-s', is 4.5 px); only matters if this is shown as a thumbnail (thumbnail_width: null turns the test off)"
+    },
+    {
+      "check": "fonts",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "2 embedded file(s), 138,776 bytes, are not used by the current design (fonts registered but unused: space-grotesk-400, space-grotesk-500); the rest are kept so undo can restore them. Compacting (vixl_history action='compact', CLI vixl compact) drops them together with the undo history."
+    }
+  ]
+}

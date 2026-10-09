@@ -1,0 +1,60 @@
+{
+  "issues": [
+    {
+      "check": "coverage",
+      "severity": "warning",
+      "action": "informational",
+      "layer": null,
+      "message": "'bd-grid' is inside a repeated group; geometry checks cover its base instance. Visually inspect the repeated instances."
+    },
+    {
+      "check": "bounds",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "'bd-glow' bleeds off the canvas edge (marked as an intentional crop)"
+    },
+    {
+      "check": "coverage",
+      "severity": "warning",
+      "action": "informational",
+      "layer": null,
+      "message": "'m-grid' is inside a repeated group; geometry checks cover its base instance. Visually inspect the repeated instances."
+    },
+    {
+      "check": "overlap",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "'m-num' and 'fe-f-card5' overlap by 70 px (61.4% of the smaller layer)"
+    },
+    {
+      "check": "overlap",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "'fe-f-card4' and 'fe-f-t4' overlap by 5015 px (87.3% of the smaller layer)"
+    },
+    {
+      "check": "title_position",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "The title on page 'title' sits at y 380 where the other titles sit at 180"
+    },
+    {
+      "check": "title_position",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "The title on page 'numbers' sits at y 403 where the other titles sit at 170"
+    },
+    {
+      "check": "notes",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "1 of 8 pages have no speaker notes (hardware)"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "issues": [
+    {
+      "check": "fonts",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "4 embedded file(s), 320,288 bytes, are not used by the current design (fonts registered but unused: jetbrains-mono-500, space-grotesk-400, space-grotesk-500, space-grotesk-700); the rest are kept so undo can restore them. Compacting (vixl_history action='compact', CLI vixl compact) drops them together with the undo history."
+    }
+  ]
+}

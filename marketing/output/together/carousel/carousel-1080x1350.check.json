@@ -1,0 +1,32 @@
+{
+  "issues": [
+    {
+      "check": "bounds",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "'c-glow' bleeds off the canvas edge (marked as an intentional crop)"
+    },
+    {
+      "check": "bounds",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "'c-glow2' bleeds off the canvas edge (marked as an intentional crop)"
+    },
+    {
+      "check": "min_font",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "'c-kicker' on page 'cover' is 11.0 px at 540 px phone width (below 12 px); use at least 24 px on this canvas"
+    },
+    {
+      "check": "fonts",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "2 embedded file(s), 138,776 bytes, are not used by the current design (fonts registered but unused: space-grotesk-400, space-grotesk-500); the rest are kept so undo can restore them. Compacting (vixl_history action='compact', CLI vixl compact) drops them together with the undo history."
+    }
+  ]
+}

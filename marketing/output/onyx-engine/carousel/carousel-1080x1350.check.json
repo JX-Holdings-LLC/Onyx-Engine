@@ -1,0 +1,46 @@
+{
+  "issues": [
+    {
+      "check": "coverage",
+      "severity": "warning",
+      "action": "informational",
+      "layer": null,
+      "message": "'m-grid' is inside a repeated group; geometry checks cover its base instance. Visually inspect the repeated instances."
+    },
+    {
+      "check": "bounds",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "'c-glow' bleeds off the canvas edge (marked as an intentional crop)"
+    },
+    {
+      "check": "min_font",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "'c-kicker' on page 'cover' is 11.0 px at 540 px phone width (below 12 px); use at least 24 px on this canvas"
+    },
+    {
+      "check": "bounds",
+      "severity": "info",
+      "action": "informational",
+      "layer": null,
+      "message": "'s-glow' bleeds off the canvas edge (marked as an intentional crop)"
+    },
+    {
+      "check": "min_font",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "'s-code-title' on page 'start' is 10.0 px at 540 px phone width (below 12 px); use at least 24 px on this canvas"
+    },
+    {
+      "check": "title_position",
+      "severity": "warning",
+      "action": "review",
+      "layer": null,
+      "message": "The title on page 'numbers' sits at y 501 where the other titles sit at 220"
+    }
+  ]
+}
