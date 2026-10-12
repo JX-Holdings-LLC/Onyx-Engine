@@ -16,11 +16,13 @@ EMB_PORT=$((PORT + 1))
 NP_PORT=$((PORT + 2))
 MM_PORT=$((PORT + 3))
 RB_PORT=$((PORT + 4))
+RK_PORT=$((PORT + 5))
 BASE="http://127.0.0.1:$PORT"
 EMB_BASE="http://127.0.0.1:$EMB_PORT"
 NP_BASE="http://127.0.0.1:$NP_PORT"
 MM_BASE="http://127.0.0.1:$MM_PORT"
 RB_BASE="http://127.0.0.1:$RB_PORT"
+RK_BASE="http://127.0.0.1:$RK_PORT"
 
 PASS=0
 FAIL=0
@@ -74,6 +76,9 @@ PIDS+=($!)
 echo "== starting embedding instance on :$EMB_PORT"
 "$BIN" -m "$MODEL" --port "$EMB_PORT" --embedding --pooling mean > models-test/onyx-embedding.log 2>&1 &
 PIDS+=($!)
+echo "== starting rank-pooling embedding instance on :$RK_PORT"
+"$BIN" -m "$MODEL" --port "$RK_PORT" --embedding --pooling rank > models-test/onyx-rank.log 2>&1 &
+PIDS+=($!)
 echo "== starting 2-slot context-shift instance on :$NP_PORT"
 "$BIN" -m "$MODEL" --port "$NP_PORT" -c 512 -np 2 --context-shift --alias tiny-np2 > models-test/onyx-parallel.log 2>&1 &
 PIDS+=($!)
@@ -95,12 +100,12 @@ PIDS+=($!)
 for i in $(seq 1 100); do
     curl -sf "$BASE/health" > /dev/null 2>&1 && curl -sf "$EMB_BASE/health" > /dev/null 2>&1 \
         && curl -sf "$NP_BASE/health" > /dev/null 2>&1 && curl -sf "$MM_BASE/health" > /dev/null 2>&1 \
-        && curl -sf "$RB_BASE/health" > /dev/null 2>&1 && break
+        && curl -sf "$RB_BASE/health" > /dev/null 2>&1 && curl -sf "$RK_BASE/health" > /dev/null 2>&1 && break
     sleep 0.2
 done
 if ! curl -sf "$BASE/health" > /dev/null || ! curl -sf "$EMB_BASE/health" > /dev/null ||
    ! curl -sf "$NP_BASE/health" > /dev/null || ! curl -sf "$MM_BASE/health" > /dev/null ||
-   ! curl -sf "$RB_BASE/health" > /dev/null; then
+   ! curl -sf "$RB_BASE/health" > /dev/null || ! curl -sf "$RK_BASE/health" > /dev/null; then
     echo "error: one or more test servers did not become ready" >&2
     for log in models-test/onyx-*.log; do [ -f "$log" ] && { echo "== $log"; tail -50 "$log"; }; done
     exit 1
@@ -160,6 +165,15 @@ check "generation rejected in embedding mode (501)" bash -c "
 check "embeddings rejected in generation mode (501)" bash -c "
     code=\$(curl -s -o /dev/null -w '%{http_code}' -X POST '$BASE/v1/embeddings' -d '{\"input\":\"x\"}')
     [ \"\$code\" = 501 ]"
+
+echo "== rank-pooling instance"
+# The tiny llama model has no classifier head and no labels, so n_cls_out is
+# llama.cpp's default 1 and the "score" is the first pooled hidden value. One
+# raw (unnormalized) value per input; an L2-normalized single value would be
+# exactly +/-1.
+check "POST /v1/embeddings with --pooling rank returns one raw score per input" \
+    json_has 'len(d["data"]) == 2 and all(len(e["embedding"]) == 1 and abs(abs(e["embedding"][0]) - 1.0) > 1e-6 for e in d["data"])' \
+    -X POST "$RK_BASE/v1/embeddings" -d '{"input":["hello world","goodbye"]}'
 
 echo "== parallel slots (-np 2) instance"
 # /props n_ctx is PER-SLOT, matching llama-server (its get_res_props reports

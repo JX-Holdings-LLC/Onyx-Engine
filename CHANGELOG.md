@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- `/v1/embeddings` under `--pooling rank` no longer reads `n_embd` floats
+  past llama.cpp's per-sequence buffer, which holds only `n_cls_out` rank
+  scores, and no longer L2-normalizes them; it now returns the raw score(s).
+  The smoke test covers it with a rank-pooling instance.
 - Fresh installs fetch and verify the pinned llama.cpp Git commit without an
   unpublished npm dependency; release archives include third-party notices.
 - Reject unsafe request inputs, preserve control tokens, cancel disconnected
