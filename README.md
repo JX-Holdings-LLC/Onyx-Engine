@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo/svg/logo-on-dark.svg">
+    <img alt="Onyx Engine" src="assets/logo/svg/logo-on-light.svg" width="420">
+  </picture>
+</p>
+
 # Onyx Engine
 
 Onyx Engine is a single-model, OpenAI-compatible model-serving binary built on
@@ -249,6 +256,12 @@ v2 that probe for `--mmproj`, `--context-shift`, `--reasoning-budget`, and
   are accepted, since onyx-engine performs no I/O on a request's behalf
 - Safetensors architectures other than HF `LlamaForCausalLM`, and tokenizers
   other than a byte-level BPE `tokenizer.json` (e.g. SentencePiece)
+
+## Brand
+
+Logos, the app icon, a favicon and a GitHub social preview are in
+[`assets/logo/`](assets/logo/), with colours and usage in
+[`docs/brand.md`](docs/brand.md).
 
 ## License
 
