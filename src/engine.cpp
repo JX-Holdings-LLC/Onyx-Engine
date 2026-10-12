@@ -443,7 +443,17 @@ std::vector<float> onyx_engine::embed(const std::vector<llama_token> & tokens, s
         return {};
     }
 
-    const int32_t dim = llama_model_n_embd_out(model_) > 0 ? llama_model_n_embd_out(model_) : n_embd();
+    // Rank pooling (rerankers) yields n_cls_out classifier scores per sequence,
+    // not an n_embd vector: reading n_embd floats would run past llama.cpp's
+    // per-sequence buffer, and L2 normalization would destroy the score.
+    const bool rank = llama_pooling_type(ctx_) == LLAMA_POOLING_TYPE_RANK;
+
+    int32_t dim = 0;
+    if (rank) {
+        dim = llama_model_n_cls_out(model_) > 0 ? (int32_t) llama_model_n_cls_out(model_) : 1;
+    } else {
+        dim = llama_model_n_embd_out(model_) > 0 ? llama_model_n_embd_out(model_) : n_embd();
+    }
 
     const float * data = nullptr;
     if (llama_pooling_type(ctx_) != LLAMA_POOLING_TYPE_NONE) {
@@ -458,6 +468,10 @@ std::vector<float> onyx_engine::embed(const std::vector<llama_token> & tokens, s
     }
 
     std::vector<float> out(data, data + dim);
+    if (rank) {
+        // raw relevance score(s), unnormalized, as llama-server's /rerank reports them
+        return out;
+    }
 
     // L2 normalize (matches llama-server's OpenAI-compatible behavior)
     double sum = 0.0;

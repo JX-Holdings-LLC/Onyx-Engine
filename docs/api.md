@@ -410,7 +410,12 @@ Response:
 }
 ```
 
-Embeddings are L2-normalized. `usage.completion_tokens` is not reported
+Embeddings are L2-normalized, except under `--pooling rank` (rerankers):
+there each item's `embedding` holds the model's raw, unnormalized
+classifier score(s), one value per classifier output (`n_cls_out`; usually
+1, the relevance score), instead of an `n_embd`-length vector. For a
+reranker, pass the query/document pair as the input in the format the model
+expects. `usage.completion_tokens` is not reported
 (embeddings have none); `prompt_tokens`/`total_tokens` are the summed input
 token counts across all items in the batch.
 

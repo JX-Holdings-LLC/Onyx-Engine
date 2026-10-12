@@ -35,7 +35,8 @@ mapping this is built against.
 - Jinja chat templates (via llama.cpp's `common` library), with tool-call
   parsing and streamed tool-call deltas in chat completions
 - Structured output via GBNF grammar, `json_schema`, or `response_format`
-- Embeddings via `--embedding` mode (pooled, L2-normalized)
+- Embeddings via `--embedding` mode (pooled, L2-normalized; raw rank scores
+  under `--pooling rank`)
 - **Parallel request slots + continuous batching** (`--parallel`/`-np`): a
   single engine thread packs one shared `llama_batch` per tick across all
   slots, so up to `-np N` requests generate concurrently instead of queuing
