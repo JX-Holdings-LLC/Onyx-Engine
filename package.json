@@ -2,6 +2,7 @@
   "name": "@jxburros/onyx-engine",
   "version": "0.4.0",
   "private": true,
+  "vendor": ["llama.cpp"],
   "description": "Onyx Engine - OpenAI-compatible model-serving binary for JX Runtime.",
   "license": "MIT",
   "scripts": {

@@ -140,7 +140,7 @@ For acceleration builds (CUDA, Vulkan, Metal, ROCm, BLAS) see
 ## Vendored source
 
 The install script fetches and verifies the commit pinned in
-`packaging/make-vendor-package.sh` directly from the llama.cpp Git repository.
+`packaging/vendor/llama.cpp.conf` directly from the llama.cpp Git repository.
 There is no dependency on an unpublished npm registry package. CMake accepts
 an explicit `-DONYX_ENGINE_LLAMA_DIR` override for offline builds. The
 maintainer package workflow is optional for distributing a pruned source archive.

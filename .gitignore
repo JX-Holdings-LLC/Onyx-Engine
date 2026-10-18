@@ -8,7 +8,7 @@ compile_commands.json
 .idea/
 node_modules/
 packaging/dist/
-vendor/
+/vendor/
 models-test/
 .ci-venv/
 .venv/
