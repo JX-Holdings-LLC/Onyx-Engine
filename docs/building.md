@@ -181,7 +181,7 @@ be installed, since CI always has network access and runs it for real.
 `.github/workflows/ci.yml` runs on every push to `main`, every pull request,
 and on demand (`workflow_dispatch`), on `ubuntu-latest`, `macos-latest`, and
 `windows-latest`: it reads the pinned commit straight out of
-`packaging/make-vendor-package.sh`, stages (and caches, keyed on that pin)
+`packaging/vendor/llama.cpp.conf`, stages (and caches, keyed on that pin)
 the vendor package, installs it, and builds. There is no separate
 model-download step — the test scripts generate everything they need
 themselves.
@@ -307,64 +307,102 @@ what `onyx-engine --version` and the `Server:` HTTP response header report.
 
 ## Packaging & publishing the vendor source package
 
-This section is for maintainers upgrading or publishing the vendored
-llama.cpp source, not for people building `onyx-engine`. Consumers just run
-`npm ci` (or, today, `npm run vendor`).
+This section is for maintainers upgrading or publishing a vendored source
+tree, not for people building `onyx-engine`. Consumers just run `npm ci`.
 
-`packaging/make-vendor-package.sh` builds `@jxburros/llama-cpp-source`
-from a pinned llama.cpp commit:
+### Vendor specs
+
+What gets vendored is described by a **spec**, one file per upstream in
+`packaging/vendor/`:
+
+| Spec              | Package                      | Used by                                   |
+| ----------------- | ---------------------------- | ----------------------------------------- |
+| `llama.cpp.conf`  | `@jxburros/llama-cpp-source` | onyx-engine                               |
+| `ggml.conf`       | `@jxburros/ggml-source`      | the BackTrack audio apps (standalone ggml) |
+
+Each spec is a list of `KEY="value"` lines: the upstream repository, the
+full 40-hex commit, upstream's own version (and build number, for
+llama.cpp), the npm package name, the directories a fresh fetch checks out,
+the paths pruned from the staged tree, the paths copied back after pruning,
+and the paths an installed tree must contain. Four readers parse it —
+`packaging/make-vendor-package.sh` and `scripts/vendor.sh` (sourced as Bash
+through `packaging/vendor/lib.sh`), `scripts/install-vendor.js`, and
+`CMakeLists.txt` — so it stays one value per line, no expansions.
+
+The scripts themselves carry nothing specific to llama.cpp, so another
+repository reuses `packaging/make-vendor-package.sh`,
+`packaging/vendor/lib.sh`, `scripts/vendor.sh` and `scripts/install-vendor.js`
+unchanged, adding its own spec and listing it in its `package.json`'s
+`"vendor"` array (`["llama.cpp"]` here, `["ggml"]` in BackTrack).
+
+**The ggml pin follows the llama.cpp pin.** `ggml.conf` pins the ggml
+revision the llama.cpp pin last synced (recorded upstream in llama.cpp's
+`scripts/sync-ggml.last`), so a ggml fix or a new GPU backend reaches
+onyx-engine and the audio apps together. After moving the llama.cpp pin,
+run:
 
 ```bash
-packaging/make-vendor-package.sh [path-to-llama.cpp-checkout]
+scripts/check-ggml-pin.sh                 # checks packaging/vendor/ggml.conf
+scripts/check-ggml-pin.sh ../BackTrack/packaging/vendor/ggml.conf
 ```
 
-- **Pin.** The commit, package version, and llama.cpp's own CMake project
-  version are hardcoded at the top of the script (currently commit
-  `9723942adc518b43c4b95dc4dce6906903eb5e09`, tag `b10711`, package version
-  `0.3.0-b10711.g9723942ad`).
-- **Source.** With an argument, it stages from that local llama.cpp
-  checkout. Without one, it downloads the pinned commit's tarball from
-  GitHub into `packaging/dist/`, and if that download is unavailable
-  (proxies that block codeload archive URLs but allow git) it falls back to a
-  depth-1 `git fetch` of the same commit into the same directory — this is
-  the only point in the whole workflow that needs network access, and it's
-  only needed for packaging, never for building `onyx-engine` itself.
-- **Pruning.** It stages a copy of the source tree with `docs/`, `tests/`,
-  `examples/`, `benches/`, `media/`, `pocs/`, `ci/`, `app/`, `conversion/`,
-  `requirements/`/`requirements.txt`, and `.git*`/`.devops` removed, plus all
-  of `models/` except `ggml-vocab-llama-spm.gguf` (the vocab file
-  `scripts/make-tiny-model.py` reads to build its smoke-test model), plus
-  everything under `tools/` except `tools/mtmd` — `onyx-engine` builds exactly
-  one thing out of `tools/` (the `mtmd` library, via `LLAMA_BUILD_MTMD=ON`,
-  which `add_subdirectory()`s `tools/mtmd` directly), so `tools/server`,
-  `tools/cli`, `tools/quantize`, and the rest of upstream's CLI tools are
-  dropped. `tools/mtmd`'s own `CMakeLists.txt` links `vendor::hash`,
-  `vendor::miniaudio`, `vendor::stb`, and `vendor::sheredom`, all of which
-  live under `vendor/` and are kept. This pruning shrinks the published
-  tarball from roughly 9.85 MB to 7.28 MB.
+It prints `ok`, or the ggml commit to move to and exits 1.
+
+### Building a package
+
+```bash
+packaging/make-vendor-package.sh [--spec NAME|FILE] [path-to-upstream-checkout]
+```
+
+- **Spec.** `--spec` names a file in `packaging/vendor/` (`llama.cpp`, the
+  default, or `ggml`) or gives a path to one.
+- **Pin.** For llama.cpp: commit `9723942adc518b43c4b95dc4dce6906903eb5e09`,
+  build `b10711`, package version `0.3.0-b10711.g9723942ad`. For ggml:
+  commit `36da57138425487184aa1da2eee2cde155909c6f`, package version
+  `0.22.0.g36da57138`. The version is always
+  `<upstream version>[-b<build>].g<9-char commit>`.
+- **Source.** With a path, it stages from that local checkout (which must
+  be at the pinned commit). Without one, it does a depth-1 `git fetch` of
+  the pinned commit, sparse to the spec's directories, into
+  `packaging/dist/<spec>/` — the only step that needs network access.
+- **Pruning.** For llama.cpp: `docs/`, `tests/`, `examples/`, `benches/`,
+  `media/`, `pocs/`, `ci/`, `app/`, `conversion/`,
+  `requirements/`/`requirements.txt` and `.github`/`.devops` are removed, and
+  so are all of `models/` except `ggml-vocab-llama-spm.gguf` (the vocab file
+  `scripts/make-tiny-model.py` reads) and everything under `tools/` except
+  `tools/mtmd` — `onyx-engine` builds exactly one thing out of `tools/`, the
+  `mtmd` library (via `LLAMA_BUILD_MTMD=ON`, which `add_subdirectory()`s
+  `tools/mtmd` directly); its `CMakeLists.txt` links `vendor::hash`,
+  `vendor::miniaudio`, `vendor::stb` and `vendor::sheredom`, all under
+  `vendor/` and kept. For ggml: everything but `cmake/`, `include/`, `src/`
+  and the top-level files.
 - **`.gitignore` stripping.** `npm pack` honors any `.gitignore` files it
-  finds unless a `.npmignore` is present, and llama.cpp's own `.gitignore`
-  would silently drop files the package needs (e.g. `*.gguf`). The script
-  deletes every `.gitignore` in the staged tree and writes a minimal
-  `.npmignore` instead, so nothing is dropped that the pruning step
-  intentionally kept.
-- **Package metadata.** It writes the staged tree's `package.json`
-  (name, version, description, license, `homepage`, `repository`, plus
-  `llamaCppCommit`/`llamaCppUpstream` fields recording provenance), then
-  runs `npm pack` to produce `packaging/dist/jxburros-llama-cpp-source-<version>.tgz`.
+  finds unless a `.npmignore` is present, and upstream's `.gitignore` would
+  silently drop files the package needs (e.g. `*.gguf`). The script deletes
+  every `.gitignore` in the staged tree and writes a minimal `.npmignore`.
+- **Package metadata.** The staged tree gets a `.vendor-source-commit`
+  stamp and a `package.json` (name, version, description, license,
+  `homepage`, `repository`, plus `vendorName`/`vendorCommit`/`vendorUpstream`
+  recording provenance), then `npm pack` produces
+  `packaging/dist/<spec>/<package>-<version>.tgz`.
+
+`scripts/vendor.sh [--spec NAME] [path]` runs the same build and extracts the
+tarball into `node_modules/<package>`; `--install-only` skips the build and
+installs a tarball already in `packaging/dist/<spec>/` (CI restores it from
+its cache).
 
 ### Publishing (`.github/workflows/publish-vendor.yml`)
 
 Publishing is automated: `.github/workflows/publish-vendor.yml`,
-`workflow_dispatch`-only with a `dry_run` boolean input (default `true`),
-reads the pin the same way `ci.yml` does, runs
-`packaging/make-vendor-package.sh` to build the tarball, checks `npm view
-@jxburros/llama-cpp-source@<version>` and skips with a notice if that exact
+`workflow_dispatch`-only with a `spec` choice (`llama.cpp` or `ggml`) and a
+`dry_run` boolean input (default `true`), runs
+`packaging/make-vendor-package.sh --spec <spec>` to build the tarball,
+checks `npm view <package>@<version>` and skips with a notice if that exact
 version is already on the registry (so re-dispatching after a successful
 publish is a no-op, not an error), and otherwise runs
 
 ```bash
-npm publish packaging/dist/jxburros-llama-cpp-source-*.tgz --access public --provenance
+npm publish packaging/dist/<spec>/<package>-<version>.tgz --access public --provenance
 ```
 
 (with `--dry-run` appended when `dry_run` is `true`).
@@ -382,21 +420,19 @@ npm publish packaging/dist/jxburros-llama-cpp-source-*.tgz --access public --pro
    OIDC identity the workflow already requests (`permissions: id-token:
    write`, needed for `--provenance` regardless) instead of a stored
    secret.
-2. If `@jxburros` isn't available to you, rename it — it appears in exactly
-   two places: the `PKG_NAME` variable in
-   `packaging/make-vendor-package.sh`, and the path in
-   `scripts/install-vendor.js` if the scope changes.
+2. If `@jxburros` isn't available to you, rename it: it is the `PKG_NAME`
+   line of each spec in `packaging/vendor/`, and the
+   `node_modules/@jxburros/llama-cpp-source` path `CMakeLists.txt` and the
+   workflows look in.
 
 **To run it:** Actions → `publish-vendor` → Run workflow. Run it once with
 `dry_run` left `true` (checked into the input default) to exercise the
 whole path — build, version check, `npm publish --dry-run` — without
 actually publishing, then run it again with `dry_run` set to `false`.
 
-**When to run it again:** only when the llama.cpp pin in
-`packaging/make-vendor-package.sh` changes (a new commit means a new
-package version, per the `PKG_VERSION` format above), not on every push —
-the version-check step makes an accidental extra dispatch harmless either
-way.
+**When to run it again:** only when a pin in `packaging/vendor/` changes (a
+new commit means a new package version), not on every push — the
+version-check step makes an accidental extra dispatch harmless either way.
 
 Publishing this optional package is no longer required for a clean build.
 `npm ci` fetches and verifies the pinned Git commit directly, and the

@@ -395,5 +395,5 @@ reporting onyx-engine's own commit and commit count as llama.cpp build info
 `b20-c0394c2`).
 
 `CMakeLists.txt` derives `ONYX_ENGINE_LLAMA_PIN` from the single commit pin in
-`packaging/make-vendor-package.sh` and checks the installed source stamp or
+`packaging/vendor/llama.cpp.conf` and checks the installed source stamp or
 package metadata before compiling the node_modules tree.

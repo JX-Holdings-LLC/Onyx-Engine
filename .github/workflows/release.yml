@@ -88,7 +88,7 @@ jobs:
       - name: Read llama.cpp pin
         id: pin
         run: |
-          commit=$(sed -n 's/^LLAMA_COMMIT="\(.*\)"/\1/p' packaging/make-vendor-package.sh)
+          commit=$(sed -n 's/^VENDOR_COMMIT="\(.*\)"/\1/p' packaging/vendor/llama.cpp.conf)
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
       - name: Cache vendored llama.cpp source package
@@ -96,19 +96,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: packaging/dist
-          key: vendor-${{ steps.pin.outputs.commit }}-${{ hashFiles('packaging/make-vendor-package.sh') }}
+          key: vendor-${{ steps.pin.outputs.commit }}-${{ hashFiles('packaging/make-vendor-package.sh', 'packaging/vendor/lib.sh', 'packaging/vendor/llama.cpp.conf') }}
 
       - name: Stage vendor package (downloads the pinned commit)
         if: steps.vendor-cache.outputs.cache-hit != 'true'
         run: bash packaging/make-vendor-package.sh
 
       - name: Install vendor package
-        run: |
-          rm -rf node_modules/@jxburros/llama-cpp-source
-          mkdir -p node_modules/@jxburros/llama-cpp-source
-          version=$(node -p "require('./packaging/dist/package/package.json').version")
-          tar -xzf "packaging/dist/jxburros-llama-cpp-source-$version.tgz" --strip-components=1 \
-              -C node_modules/@jxburros/llama-cpp-source
+        run: bash scripts/vendor.sh --install-only
 
       - name: Configure (Release, static)
         if: runner.os != 'Windows'

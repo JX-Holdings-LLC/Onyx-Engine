@@ -82,11 +82,11 @@ message(STATUS "onyx-engine: using llama.cpp source at ${ONYX_LLAMA_SRC}")
 # so git walks UP and reports *onyx-engine's* commit and commit count, which
 # then surfaced in `--version` and /props labelled as llama.cpp build info.
 #
-# Read the source pin from the packaging script, then check the installed
-# source stamp or package metadata before compiling it.
+# Read the source pin from the vendor spec, then check the installed source
+# stamp or package metadata before compiling it.
 # ---------------------------------------------------------------------------
-file(READ ${CMAKE_CURRENT_SOURCE_DIR}/packaging/make-vendor-package.sh ONYX_VENDOR_SCRIPT)
-if (NOT ONYX_VENDOR_SCRIPT MATCHES "LLAMA_COMMIT=\"([0-9a-f]+)\"")
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/packaging/vendor/llama.cpp.conf ONYX_VENDOR_SPEC)
+if (NOT ONYX_VENDOR_SPEC MATCHES "VENDOR_COMMIT=\"([0-9a-f]+)\"")
     message(FATAL_ERROR "cannot read the pinned llama.cpp commit")
 endif()
 set(ONYX_EXPECTED_LLAMA_COMMIT "${CMAKE_MATCH_1}")
@@ -94,18 +94,24 @@ string(LENGTH "${ONYX_EXPECTED_LLAMA_COMMIT}" ONYX_COMMIT_LENGTH)
 if (NOT ONYX_COMMIT_LENGTH EQUAL 40)
     message(FATAL_ERROR "llama.cpp commit pin must be 40 hex characters")
 endif()
-if (NOT ONYX_VENDOR_SCRIPT MATCHES "-b([0-9]+)\\.g")
+if (NOT ONYX_VENDOR_SPEC MATCHES "VENDOR_BUILD=\"([0-9]+)\"")
     message(FATAL_ERROR "cannot read the pinned llama.cpp build number")
 endif()
 string(SUBSTRING "${ONYX_EXPECTED_LLAMA_COMMIT}" 0 9 ONYX_LLAMA_SHORT)
 set(ONYX_LLAMA_PIN "b${CMAKE_MATCH_1}-${ONYX_LLAMA_SHORT}")
 
-if (EXISTS ${ONYX_LLAMA_SRC}/.onyx-source-commit)
-    file(READ ${ONYX_LLAMA_SRC}/.onyx-source-commit ONYX_INSTALLED_COMMIT)
-elseif (EXISTS ${ONYX_LLAMA_SRC}/package.json)
+# .vendor-source-commit is written by scripts/install-vendor.js and shipped
+# in the vendor package; .onyx-source-commit and llamaCppCommit are the
+# names older installs used.
+foreach(stamp .vendor-source-commit .onyx-source-commit)
+    if (NOT DEFINED ONYX_INSTALLED_COMMIT AND EXISTS ${ONYX_LLAMA_SRC}/${stamp})
+        file(READ ${ONYX_LLAMA_SRC}/${stamp} ONYX_INSTALLED_COMMIT)
+    endif()
+endforeach()
+if (NOT DEFINED ONYX_INSTALLED_COMMIT AND EXISTS ${ONYX_LLAMA_SRC}/package.json)
     file(READ ${ONYX_LLAMA_SRC}/package.json ONYX_LLAMA_PKG_JSON)
-    if (ONYX_LLAMA_PKG_JSON MATCHES "\"llamaCppCommit\"[ \t]*:[ \t]*\"([0-9a-f]+)\"")
-        set(ONYX_INSTALLED_COMMIT "${CMAKE_MATCH_1}")
+    if (ONYX_LLAMA_PKG_JSON MATCHES "\"(vendorCommit|llamaCppCommit)\"[ \t]*:[ \t]*\"([0-9a-f]+)\"")
+        set(ONYX_INSTALLED_COMMIT "${CMAKE_MATCH_2}")
     endif()
 endif()
 if (DEFINED ONYX_INSTALLED_COMMIT)

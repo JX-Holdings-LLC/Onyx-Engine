@@ -1,39 +1,67 @@
-// Fetch the exact upstream commit without depending on an unpublished npm package.
+// Fetch each pinned vendor source tree (packaging/vendor/<name>.conf) at its
+// exact upstream commit without depending on an unpublished npm package.
+// Which specs to install comes from package.json's "vendor" array
+// (default ["llama.cpp"]); pass spec names as arguments to override.
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
 const root = path.resolve(__dirname, '..');
-const pinFile = fs.readFileSync(path.join(root, 'packaging', 'make-vendor-package.sh'), 'utf8');
-const match = pinFile.match(/^LLAMA_COMMIT="([0-9a-f]{40})"/m);
-if (!match) throw new Error('llama.cpp commit pin is missing');
-const commit = match[1];
-const destination = path.join(root, 'node_modules', '@jxburros', 'llama-cpp-source');
-const stamp = path.join(destination, '.onyx-source-commit');
-if (fs.existsSync(stamp) && fs.readFileSync(stamp, 'utf8').trim() === commit &&
-    fs.existsSync(path.join(destination, 'CMakeLists.txt')) &&
-    fs.existsSync(path.join(destination, 'gguf-py', 'gguf'))) {
-  console.log(`llama.cpp ${commit} is already installed`);
-  process.exit(0);
+const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const specs = process.argv.length > 2 ? process.argv.slice(2) : (pkg.vendor ?? ['llama.cpp']);
+
+function readSpec(name) {
+  const file = path.join(root, 'packaging', 'vendor', `${name}.conf`);
+  const text = fs.readFileSync(file, 'utf8');
+  const get = (key, required = true) => {
+    const m = text.match(new RegExp(`^${key}="([^"]*)"`, 'm'));
+    if (!m && required) throw new Error(`${file}: ${key} is missing`);
+    return m ? m[1] : '';
+  };
+  const spec = {
+    name: get('VENDOR_NAME'),
+    upstream: get('VENDOR_UPSTREAM'),
+    commit: get('VENDOR_COMMIT'),
+    pkgName: get('PKG_NAME'),
+    sparse: get('VENDOR_SPARSE', false).split(/\s+/).filter(Boolean),
+    required: get('VENDOR_REQUIRED', false).split(/\s+/).filter(Boolean),
+  };
+  if (!/^[0-9a-f]{40}$/.test(spec.commit)) throw new Error(`${file}: VENDOR_COMMIT must be 40 hex characters`);
+  return spec;
 }
 
-fs.rmSync(destination, { recursive: true, force: true });
-fs.mkdirSync(destination, { recursive: true });
-function git(...args) {
-  execFileSync('git', args, { cwd: destination, stdio: 'inherit' });
-}
-try {
-  git('init', '-q');
-  git('remote', 'add', 'origin', 'https://github.com/ggml-org/llama.cpp.git');
-  git('sparse-checkout', 'init', '--cone');
-  git('sparse-checkout', 'set', 'cmake', 'common', 'src', 'ggml', 'gguf-py', 'include', 'tools/mtmd', 'vendor', 'models');
-  git('fetch', '--depth', '1', 'origin', commit);
-  git('checkout', '-q', 'FETCH_HEAD');
-  const actual = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: destination, encoding: 'utf8' }).trim();
-  if (actual !== commit) throw new Error(`unexpected llama.cpp commit ${actual}`);
-  fs.rmSync(path.join(destination, '.git'), { recursive: true, force: true });
-  fs.writeFileSync(stamp, `${commit}\n`);
-} catch (error) {
+function install(spec) {
+  const destination = path.join(root, 'node_modules', ...spec.pkgName.split('/'));
+  const stamp = path.join(destination, '.vendor-source-commit');
+  if (fs.existsSync(stamp) && fs.readFileSync(stamp, 'utf8').trim() === spec.commit &&
+      spec.required.every((p) => fs.existsSync(path.join(destination, p)))) {
+    console.log(`${spec.name} ${spec.commit} is already installed`);
+    return;
+  }
+
   fs.rmSync(destination, { recursive: true, force: true });
-  throw error;
+  fs.mkdirSync(destination, { recursive: true });
+  const git = (...args) => execFileSync('git', args, { cwd: destination, stdio: 'inherit' });
+  try {
+    git('init', '-q');
+    git('remote', 'add', 'origin', spec.upstream);
+    if (spec.sparse.length) {
+      git('sparse-checkout', 'init', '--cone');
+      git('sparse-checkout', 'set', ...spec.sparse);
+    }
+    git('fetch', '--depth', '1', 'origin', spec.commit);
+    git('checkout', '-q', 'FETCH_HEAD');
+    const actual = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: destination, encoding: 'utf8' }).trim();
+    if (actual !== spec.commit) throw new Error(`unexpected ${spec.name} commit ${actual}`);
+    fs.rmSync(path.join(destination, '.git'), { recursive: true, force: true });
+    for (const p of spec.required) {
+      if (!fs.existsSync(path.join(destination, p))) throw new Error(`${spec.name} checkout is missing ${p}`);
+    }
+    fs.writeFileSync(stamp, `${spec.commit}\n`);
+  } catch (error) {
+    fs.rmSync(destination, { recursive: true, force: true });
+    throw error;
+  }
 }
+
+for (const name of specs) install(readSpec(name));
