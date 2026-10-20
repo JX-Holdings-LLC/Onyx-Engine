@@ -273,3 +273,11 @@ copyright the ggml/llama.cpp authors — see its `LICENSE` file under
 [`third_party/cpp-httplib`](third_party/cpp-httplib) is a verbatim copy of
 [cpp-httplib](https://github.com/yhirose/cpp-httplib) v0.54.1 (MIT, copyright
 Yuji Hirose); its `LICENSE` and provenance notes are in that directory.
+
+## Unified release procedure
+
+`release.json` is the authoritative release manifest. Keep configured embedded versions synchronized and advance affected apps (patch by default) before merging changes into main. The first adoption establishes a baseline; later PRs must pass **Release version validation**.
+
+Use **Actions → Release → Run workflow** from **main**, choose stable or preview, and leave **dry_run** enabled first. Only apps ahead of their published version in their own namespace are selected. Build/test/sign all required packages before publishing. Tag pushes and merges no longer publish migrated apps automatically. After inspecting the dry run, dispatch with dry_run disabled and satisfy configured approvals. Published versions are never overwritten; use a new version for a correction.
+
+See [.release/README.md](.release/README.md) for this repository's inventory, credentials, compatibility, and validation limits. Shared implementation: [JX Holdings release infrastructure](https://github.com/JX-Holdings-LLC/release-infrastructure).

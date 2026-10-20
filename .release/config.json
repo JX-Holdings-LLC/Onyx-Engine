@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "bumpPolicy": "every-main-change",
+  "apps": {
+    "onyx-engine": {
+      "tagPrefix": "v",
+      "paths": [
+        "src/**",
+        "CMakeLists.txt",
+        "scripts/**",
+        "package.json",
+        "package-lock.json",
+        "packaging/**",
+        "third_party/**"
+      ],
+      "versionFiles": [
+        {
+          "path": "package.json",
+          "format": "json",
+          "key": "version"
+        },
+        {
+          "path": "package-lock.json",
+          "format": "json",
+          "key": "version"
+        },
+        {
+          "path": "package-lock.json",
+          "format": "json",
+          "key": "packages..version"
+        }
+      ],
+      "notes": ".release/notes/{app}/{version}.md",
+      "assets": [
+        "onyx-engine-v{version}-darwin-arm64.tar.gz",
+        "onyx-engine-v{version}-darwin-x64.tar.gz",
+        "onyx-engine-v{version}-linux-x64.tar.gz",
+        "onyx-engine-v{version}-win32-x64.zip"
+      ],
+      "security": "standard",
+      "checksumFile": "checksums.txt",
+      "legacyLatest": true
+    },
+    "vendor-llama-cpp": {
+      "tagPrefix": "vendor-llama-cpp-v",
+      "paths": [
+        "packaging/vendor/llama.cpp.conf",
+        "packaging/vendor/lib.sh",
+        "packaging/make-vendor-package.sh"
+      ],
+      "versionFiles": [
+        {
+          "path": "packaging/vendor/llama.cpp.conf",
+          "format": "text",
+          "pattern": "^RELEASE_PACKAGE_VERSION=\"(?<version>[^\\r\\n\"]+)\"$"
+        }
+      ],
+      "notes": ".release/notes/{app}/{version}.md",
+      "assets": [
+        "jxburros-llama-cpp-source-{version}.tgz"
+      ],
+      "security": "standard",
+      "checksumFile": "SHA256SUMS.txt"
+    },
+    "vendor-ggml": {
+      "tagPrefix": "vendor-ggml-v",
+      "paths": [
+        "packaging/vendor/ggml.conf",
+        "packaging/vendor/lib.sh",
+        "packaging/make-vendor-package.sh"
+      ],
+      "versionFiles": [
+        {
+          "path": "packaging/vendor/ggml.conf",
+          "format": "text",
+          "pattern": "^RELEASE_PACKAGE_VERSION=\"(?<version>[^\\r\\n\"]+)\"$"
+        }
+      ],
+      "notes": ".release/notes/{app}/{version}.md",
+      "assets": [
+        "jxburros-ggml-source-{version}.tgz"
+      ],
+      "security": "standard",
+      "checksumFile": "SHA256SUMS.txt"
+    }
+  }
+}
