@@ -1,7 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/.release/version.cmake")
+
 project(onyx-engine
-    VERSION 0.4.0
+    VERSION ${APP_RELEASE_VERSION_CORE}
     DESCRIPTION "Onyx Engine - local model serving binary for JX Runtime"
     LANGUAGES C CXX
 )
@@ -185,7 +187,7 @@ add_executable(onyx-engine
 )
 
 target_compile_definitions(onyx-engine PRIVATE
-    ONYX_ENGINE_VERSION="${PROJECT_VERSION}"
+    ONYX_ENGINE_VERSION="${APP_RELEASE_VERSION}"
     ONYX_ENGINE_LLAMA_PIN="${ONYX_LLAMA_PIN}"
     $<$<CONFIG:Debug>:ONYX_ENGINE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}">
 )
