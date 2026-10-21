@@ -13,6 +13,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- Research reports in `reports/` with their notes in `research_notes/`:
+  improvement opportunities for Onyx Engine, and a staged plan for
+  replacing llama.cpp's `common/` library with Onyx code on `llama.h`.
+  Documentation only; released as 0.4.1 to satisfy the every-main-change
+  version policy.
+
 - **Reusable vendoring.** What gets vendored is now a spec in
   `packaging/vendor/` (`llama.cpp.conf`, and `ggml.conf` for standalone
   ggml), and `packaging/make-vendor-package.sh`, `scripts/vendor.sh` and
