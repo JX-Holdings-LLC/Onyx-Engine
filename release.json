@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "apps": {
+    "onyx-engine": {
+      "title": "Onyx Engine",
+      "version": "0.4.0"
+    },
+    "vendor-llama-cpp": {
+      "title": "@jxburros/llama-cpp-source",
+      "version": "0.3.0-b10711.g9723942ad"
+    },
+    "vendor-ggml": {
+      "title": "@jxburros/ggml-source",
+      "version": "0.22.0-g36da57138"
+    }
+  }
+}

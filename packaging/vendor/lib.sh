@@ -10,6 +10,7 @@ load_vendor_spec() {
         *) file="packaging/vendor/$spec.conf" ;;
     esac
     [ -f "$file" ] || { echo "error: vendor spec '$spec' not found ($file)" >&2; return 1; }
+    RELEASE_PACKAGE_VERSION=""
     VENDOR_NAME="" VENDOR_UPSTREAM="" VENDOR_COMMIT="" VENDOR_UPSTREAM_VERSION=""
     VENDOR_BUILD="" PKG_NAME="" PKG_REPOSITORY="" VENDOR_SPARSE="" VENDOR_PRUNE="" VENDOR_KEEP="" VENDOR_REQUIRED=""
     # shellcheck disable=SC1090
@@ -24,7 +25,7 @@ load_vendor_spec() {
     # The repository that packages it (package.json "repository").
     PKG_REPOSITORY="${PKG_REPOSITORY:-https://github.com/JX-Holdings-LLC/Onyx-Engine}"
     # <upstream version>[-b<build>].g<short commit>, e.g. 0.3.0-b10711.g9723942ad
-    PKG_VERSION="$VENDOR_UPSTREAM_VERSION${VENDOR_BUILD:+-b$VENDOR_BUILD}.g${VENDOR_COMMIT:0:9}"
+    PKG_VERSION="${RELEASE_PACKAGE_VERSION:-$VENDOR_UPSTREAM_VERSION${VENDOR_BUILD:+-b$VENDOR_BUILD}.g${VENDOR_COMMIT:0:9}}"
     # npm pack's file name: scope '@' dropped, '/' becomes '-'.
     local base="${PKG_NAME#@}"
     VENDOR_DIST="packaging/dist/$VENDOR_NAME"
