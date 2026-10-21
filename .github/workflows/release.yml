@@ -1,58 +1,55 @@
-# onyx-engine release: build a self-contained static binary for each
-# supported platform and attach it to a GitHub Release for the pushed tag.
-#
-# Triggers: a `v*` tag push, or manual dispatch with a `tag` input (for
-# re-running a release without pushing a new tag). Each platform builds a
-# statically linked (-DBUILD_SHARED_LIBS=OFF) Release binary from the same
-# pinned vendored llama.cpp source CI uses, packages it flat (binary +
-# LICENSE, no subdirectory) as
-# `onyx-engine-<tag>-<platformKey>.tar.gz`/`.zip`, where `<platformKey>` is
-# exactly `linux-x64`, `darwin-arm64`, `darwin-x64`, or `win32-x64` — these
-# match Node's `${process.platform}-${process.arch}`, which is how JX
-# Runtime's managed downloader picks the right asset. A final `release` job
-# collects every archive, writes `checksums.txt`, and creates/updates the
-# GitHub Release for the tag.
-name: release
-
-on:
-  push:
-    tags:
-      - "v*"
+name: Release
+'on':
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Tag to build and release (e.g. v0.3.0)"
-        required: true
-
+      channel:
+        description: Release channel
+        type: choice
+        options:
+        - stable
+        - preview
+        default: stable
+      dry_run:
+        description: Build and verify without publishing
+        type: boolean
+        default: true
+      app:
+        description: Optional app ID; empty selects every advanced app
+        type: string
+        default: ''
 permissions:
   contents: read
-
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
 jobs:
+  plan:
+    uses: JX-Holdings-LLC/release-infrastructure/.github/workflows/plan.yml@181636b602317ba703c3f4bf12775c34560f4efb
+    with:
+      toolkit-ref: 181636b602317ba703c3f4bf12775c34560f4efb
+      channel: ${{ inputs.channel }}
+      app: ${{ inputs.app }}
   build:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform-key: linux-x64
-            runs-on: ubuntu-22.04
-            archive-ext: tar.gz
-            bin-name: onyx-engine
-          - platform-key: darwin-arm64
-            runs-on: macos-latest
-            archive-ext: tar.gz
-            bin-name: onyx-engine
-          # GitHub retired the `macos-13` label; jobs targeting it queue
-          # forever and are eventually cancelled (which is exactly what
-          # stalled the first v0.3.0 release run). `macos-15-intel` is
-          # GitHub's supported x86_64 macOS image.
-          - platform-key: darwin-x64
-            runs-on: macos-15-intel
-            archive-ext: tar.gz
-            bin-name: onyx-engine
-          - platform-key: win32-x64
-            runs-on: windows-latest
-            archive-ext: zip
-            bin-name: onyx-engine.exe
+        - platform-key: linux-x64
+          runs-on: ubuntu-22.04
+          archive-ext: tar.gz
+          bin-name: onyx-engine
+        - platform-key: darwin-arm64
+          runs-on: macos-latest
+          archive-ext: tar.gz
+          bin-name: onyx-engine
+        - platform-key: darwin-x64
+          runs-on: macos-15-intel
+          archive-ext: tar.gz
+          bin-name: onyx-engine
+        - platform-key: win32-x64
+          runs-on: windows-latest
+          archive-ext: zip
+          bin-name: onyx-engine.exe
     name: build (${{ matrix.platform-key }})
     runs-on: ${{ matrix.runs-on }}
     timeout-minutes: 90
@@ -60,216 +57,355 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
-          fetch-depth: 0
-
-      - name: Resolve tag
-        id: tag
-        env:
-          DISPATCH_TAG: ${{ inputs.tag }}
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="$DISPATCH_TAG"
-          else
-            tag="${GITHUB_REF#refs/tags/}"
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ needs.plan.outputs.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Resolve tag
+      id: tag
+      run: |
+        echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+        echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+      shell: bash
+    - name: Read llama.cpp pin
+      id: pin
+      run: |
+        commit=$(sed -n 's/^VENDOR_COMMIT="\(.*\)"/\1/p' packaging/vendor/llama.cpp.conf)
+        echo "commit=$commit" >> "$GITHUB_OUTPUT"
+    - name: Cache vendored llama.cpp source package
+      id: vendor-cache
+      uses: actions/cache@v4
+      with:
+        path: packaging/dist
+        key: vendor-${{ steps.pin.outputs.commit }}-${{ hashFiles('packaging/make-vendor-package.sh', 'packaging/vendor/lib.sh',
+          'packaging/vendor/llama.cpp.conf') }}
+    - name: Stage vendor package (downloads the pinned commit)
+      if: steps.vendor-cache.outputs.cache-hit != 'true'
+      run: bash packaging/make-vendor-package.sh
+    - name: Install vendor package
+      run: bash scripts/vendor.sh --install-only
+    - name: Configure (Release, static)
+      if: runner.os != 'Windows'
+      run: |
+        cpu_flags=()
+        if [ "${{ matrix.platform-key }}" = linux-x64 ] || [ "${{ matrix.platform-key }}" = darwin-x64 ]; then
+          cpu_flags=(-DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON)
+        fi
+        cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+          -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF "${cpu_flags[@]}"
+    - name: Configure (Release, static, MSVC)
+      if: runner.os == 'Windows'
+      run: cmake -B build -A x64 -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_AVX=ON -DGGML_AVX2=ON
+        -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+    - name: Build
+      if: runner.os != 'Windows'
+      run: cmake --build build --target onyx-engine --config Release -j "$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+    - name: Build (MSVC)
+      if: runner.os == 'Windows'
+      run: cmake --build build --target onyx-engine --config Release
+    - name: Locate binary
+      id: locate
+      run: |
+        if [ "${{ runner.os }}" = "Windows" ]; then
+          candidates="build/Release/onyx-engine.exe build/onyx-engine.exe"
+        else
+          candidates="build/onyx-engine build/Release/onyx-engine"
+        fi
+        for cand in $candidates; do
+          if [ -f "$cand" ]; then
+            echo "path=$cand" >> "$GITHUB_OUTPUT"
+            echo "found $cand"
+            exit 0
           fi
-          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::invalid release tag"; exit 1; }
-          git rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null || { echo "::error::release tag does not exist"; exit 1; }
-          version=$(sed -n '/^project(onyx-engine$/,/^)/s/^[[:space:]]*VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
-          [ "${tag#v}" = "$version" ] || { echo "::error::tag and project version differ"; exit 1; }
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-
-      # Same vendor-source staging as ci.yml: stage the pinned llama.cpp
-      # source package, then extract it into node_modules/@jxburros/llama-cpp-source
-      # (bash shell throughout, including on Windows, via the job-level
-      # `defaults.run.shell: bash` above).
-      - name: Read llama.cpp pin
-        id: pin
-        run: |
-          commit=$(sed -n 's/^VENDOR_COMMIT="\(.*\)"/\1/p' packaging/vendor/llama.cpp.conf)
-          echo "commit=$commit" >> "$GITHUB_OUTPUT"
-
-      - name: Cache vendored llama.cpp source package
-        id: vendor-cache
-        uses: actions/cache@v4
-        with:
-          path: packaging/dist
-          key: vendor-${{ steps.pin.outputs.commit }}-${{ hashFiles('packaging/make-vendor-package.sh', 'packaging/vendor/lib.sh', 'packaging/vendor/llama.cpp.conf') }}
-
-      - name: Stage vendor package (downloads the pinned commit)
-        if: steps.vendor-cache.outputs.cache-hit != 'true'
-        run: bash packaging/make-vendor-package.sh
-
-      - name: Install vendor package
-        run: bash scripts/vendor.sh --install-only
-
-      - name: Configure (Release, static)
-        if: runner.os != 'Windows'
-        run: |
-          cpu_flags=()
-          if [ "${{ matrix.platform-key }}" = linux-x64 ] || [ "${{ matrix.platform-key }}" = darwin-x64 ]; then
-            cpu_flags=(-DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON)
+        done
+        echo "::error::onyx-engine binary not found in any of: $candidates"
+        exit 1
+    - name: Sanity check (--version)
+      run: '''${{ steps.locate.outputs.path }}'' --version'
+    - name: Check release dynamic dependencies
+      if: runner.os != 'Windows'
+      run: |
+        if [ "${{ runner.os }}" = Linux ]; then
+          ldd '${{ steps.locate.outputs.path }}' | tee dependencies.txt
+          if grep -Ei 'libgomp|libssl|libcrypto|not found' dependencies.txt; then
+            echo "::error::unexpected release dependency"; exit 1
           fi
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
-            -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF "${cpu_flags[@]}"
-
-      # MSVC: let CMake select the Visual Studio generator itself (the
-      # newest installed) and only pin the architecture with `-A x64`.
-      # Hardcoding `-G "Visual Studio 17 2022"` is what broke the first
-      # v0.3.0 release run: `windows-latest` had moved on and configure
-      # failed with "Generator Visual Studio 17 2022 could not find any
-      # instance of Visual Studio". A version-pinned generator has to be
-      # updated every time the runner image rolls; the default never does.
-      # Configuration is chosen at build time (--config Release) rather than
-      # via CMAKE_BUILD_TYPE, which multi-config generators ignore.
-      - name: Configure (Release, static, MSVC)
-        if: runner.os == 'Windows'
-        run: cmake -B build -A x64 -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
-
-      - name: Build
-        if: runner.os != 'Windows'
-        run: cmake --build build --target onyx-engine --config Release -j "$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
-
-      - name: Build (MSVC)
-        if: runner.os == 'Windows'
-        run: cmake --build build --target onyx-engine --config Release
-
-      # The Windows generator is no longer pinned, so the output layout is
-      # not known ahead of time: a multi-config generator (any Visual Studio
-      # one) puts the binary in build/Release/, a single-config one (Ninja,
-      # Makefiles) puts it in build/. Probe both and fail loudly rather than
-      # emitting an empty path that only shows up as a confusing error two
-      # steps later.
-      - name: Locate binary
-        id: locate
-        run: |
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            candidates="build/Release/onyx-engine.exe build/onyx-engine.exe"
-          else
-            candidates="build/onyx-engine build/Release/onyx-engine"
+        else
+          otool -L '${{ steps.locate.outputs.path }}' | tee dependencies.txt
+          if grep -Ei '/opt/homebrew|/usr/local|libgomp|libssl|libcrypto' dependencies.txt; then
+            echo "::error::unexpected release dependency"; exit 1
           fi
-          for cand in $candidates; do
-            if [ -f "$cand" ]; then
-              echo "path=$cand" >> "$GITHUB_OUTPUT"
-              echo "found $cand"
-              exit 0
-            fi
-          done
-          echo "::error::onyx-engine binary not found in any of: $candidates"
-          exit 1
-
-      - name: Sanity check (--version)
-        run: "'${{ steps.locate.outputs.path }}' --version"
-
-      - name: Check release dynamic dependencies
-        if: runner.os != 'Windows'
-        run: |
-          if [ "${{ runner.os }}" = Linux ]; then
-            ldd '${{ steps.locate.outputs.path }}' | tee dependencies.txt
-            if grep -Ei 'libgomp|libssl|libcrypto|not found' dependencies.txt; then
-              echo "::error::unexpected release dependency"; exit 1
-            fi
-          else
-            otool -L '${{ steps.locate.outputs.path }}' | tee dependencies.txt
-            if grep -Ei '/opt/homebrew|/usr/local|libgomp|libssl|libcrypto' dependencies.txt; then
-              echo "::error::unexpected release dependency"; exit 1
-            fi
-          fi
-
-      - name: Package (tar.gz)
-        if: matrix.archive-ext == 'tar.gz'
-        run: |
-          stage=$(mktemp -d)
-          cp "${{ steps.locate.outputs.path }}" "$stage/${{ matrix.bin-name }}"
-          cp LICENSE "$stage/LICENSE"
-          cp third_party/cpp-httplib/LICENSE "$stage/LICENSE-cpp-httplib"
-          cp node_modules/@jxburros/llama-cpp-source/LICENSE "$stage/LICENSE-llama.cpp"
-          chmod +x "$stage/${{ matrix.bin-name }}"
-          tar -czf "onyx-engine-${{ steps.tag.outputs.tag }}-${{ matrix.platform-key }}.tar.gz" \
-              -C "$stage" "${{ matrix.bin-name }}" LICENSE LICENSE-cpp-httplib LICENSE-llama.cpp
-
-      - name: Package (zip)
-        if: matrix.archive-ext == 'zip'
-        run: |
-          stage=$(mktemp -d)
-          cp "${{ steps.locate.outputs.path }}" "$stage/${{ matrix.bin-name }}"
-          cp LICENSE "$stage/LICENSE"
-          cp third_party/cpp-httplib/LICENSE "$stage/LICENSE-cpp-httplib"
-          cp node_modules/@jxburros/llama-cpp-source/LICENSE "$stage/LICENSE-llama.cpp"
-          (cd "$stage" && 7z a -tzip "$OLDPWD/onyx-engine-${{ steps.tag.outputs.tag }}-${{ matrix.platform-key }}.zip" \
-              "${{ matrix.bin-name }}" LICENSE LICENSE-cpp-httplib LICENSE-llama.cpp)
-
-      - name: Upload archive
-        uses: actions/upload-artifact@v4
-        with:
-          name: onyx-engine-${{ matrix.platform-key }}
-          path: onyx-engine-${{ steps.tag.outputs.tag }}-${{ matrix.platform-key }}.${{ matrix.archive-ext }}
-          if-no-files-found: error
-
-  # All-or-nothing on purpose. `needs: build` with no `if: always()` means a
-  # single failing platform blocks the whole release, and that is the
-  # behavior we want: JX Runtime pins one release tag and derives each
-  # asset's name from `${process.platform}-${process.arch}`
-  # (`onyx-engine-<tag>-<platformKey>.<ext>`), so a partial release would
-  # install cleanly on the platforms that built and fail with a bare 404 on
-  # the ones that did not — a per-machine breakage that looks like a network
-  # problem, from a release that GitHub reports as green. Failing the whole
-  # release instead makes the gap visible to the maintainer, who can fix the
-  # platform and re-run with `workflow_dispatch` against the same tag (the
-  # release is created/updated idempotently, so a re-run is safe).
-  #
-  # Note that `fail-fast: false` on the build matrix is complementary, not
-  # contradictory: it lets every platform report its own result in one run
-  # so a broken release shows all the breakage at once, rather than only the
-  # first failure.
+        fi
+    - name: Package (tar.gz)
+      if: matrix.archive-ext == 'tar.gz'
+      run: |
+        stage=$(mktemp -d)
+        cp "${{ steps.locate.outputs.path }}" "$stage/${{ matrix.bin-name }}"
+        cp LICENSE "$stage/LICENSE"
+        cp third_party/cpp-httplib/LICENSE "$stage/LICENSE-cpp-httplib"
+        cp node_modules/@jxburros/llama-cpp-source/LICENSE "$stage/LICENSE-llama.cpp"
+        chmod +x "$stage/${{ matrix.bin-name }}"
+        tar -czf "onyx-engine-${{ steps.tag.outputs.tag }}-${{ matrix.platform-key }}.tar.gz" \
+            -C "$stage" "${{ matrix.bin-name }}" LICENSE LICENSE-cpp-httplib LICENSE-llama.cpp
+    - name: Package (zip)
+      if: matrix.archive-ext == 'zip'
+      run: |
+        stage=$(mktemp -d)
+        cp "${{ steps.locate.outputs.path }}" "$stage/${{ matrix.bin-name }}"
+        cp LICENSE "$stage/LICENSE"
+        cp third_party/cpp-httplib/LICENSE "$stage/LICENSE-cpp-httplib"
+        cp node_modules/@jxburros/llama-cpp-source/LICENSE "$stage/LICENSE-llama.cpp"
+        (cd "$stage" && 7z a -tzip "$OLDPWD/onyx-engine-${{ steps.tag.outputs.tag }}-${{ matrix.platform-key }}.zip" \
+            "${{ matrix.bin-name }}" LICENSE LICENSE-cpp-httplib LICENSE-llama.cpp)
+    - name: Upload archive
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: onyx-engine-${{ matrix.platform-key }}
+        path: onyx-engine-${{ steps.tag.outputs.tag }}-${{ matrix.platform-key }}.${{ matrix.archive-ext }}
+        if-no-files-found: error
+    needs:
+    - plan
+    if: needs.plan.outputs.selected == 'true' && fromJSON(needs.plan.outputs.apps)['onyx-engine'].selected
+    env:
+      RELEASE_TAG: ${{ fromJSON(needs.plan.outputs.apps)['onyx-engine'].tag }}
+      RELEASE_VERSION: ${{ fromJSON(needs.plan.outputs.apps)['onyx-engine'].version }}
+      RELEASE_SOURCE_SHA: ${{ needs.plan.outputs.sha }}
+    permissions:
+      contents: read
   release:
     name: publish release
-    needs: build
+    needs:
+    - plan
+    - build
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
-          fetch-depth: 0
-
-      - name: Resolve tag
-        id: tag
-        env:
-          DISPATCH_TAG: ${{ inputs.tag }}
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="$DISPATCH_TAG"
-          else
-            tag="${GITHUB_REF#refs/tags/}"
-          fi
-          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::invalid release tag"; exit 1; }
-          git rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null || { echo "::error::release tag does not exist"; exit 1; }
-          version=$(sed -n '/^project(onyx-engine$/,/^)/s/^[[:space:]]*VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
-          [ "${tag#v}" = "$version" ] || { echo "::error::tag and project version differ"; exit 1; }
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-
-      - name: Download all archives
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          pattern: onyx-engine-*
-          merge-multiple: true
-
-      - name: Checksums
-        run: |
-          cd dist
-          sha256sum onyx-engine-* > checksums.txt
-          cat checksums.txt
-
-      - name: Create/update GitHub Release
-        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
-        with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          generate_release_notes: true
-          files: |
-            dist/onyx-engine-*
-            dist/checksums.txt
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ needs.plan.outputs.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Resolve tag
+      id: tag
+      run: |
+        echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+        echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+      shell: bash
+    - name: Download all archives
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        path: dist
+        pattern: onyx-engine-*
+        merge-multiple: true
+    - name: Checksums
+      run: |
+        cd dist
+        sha256sum onyx-engine-* > checksums.txt
+        cat checksums.txt
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        repository: JX-Holdings-LLC/release-infrastructure
+        ref: 181636b602317ba703c3f4bf12775c34560f4efb
+        path: .toolkit
+        persist-credentials: false
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      with:
+        node-version: 24
+    - name: Stage the complete configured release inventory
+      shell: bash
+      env:
+        RELEASE_APP: onyx-engine
+      run: node .toolkit/src/release.mjs stage --app "$RELEASE_APP" --from dist --bundle unified-bundle --sha "$RELEASE_SOURCE_SHA"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: bundle-onyx-engine
+        path: unified-bundle
+        if-no-files-found: error
+    if: needs.plan.outputs.selected == 'true' && fromJSON(needs.plan.outputs.apps)['onyx-engine'].selected
+    env:
+      RELEASE_TAG: ${{ fromJSON(needs.plan.outputs.apps)['onyx-engine'].tag }}
+      RELEASE_VERSION: ${{ fromJSON(needs.plan.outputs.apps)['onyx-engine'].version }}
+      RELEASE_SOURCE_SHA: ${{ needs.plan.outputs.sha }}
+  publish-onyx-engine:
+    needs:
+    - plan
+    - release
+    if: needs.plan.outputs.selected == 'true' && fromJSON(needs.plan.outputs.apps)['onyx-engine'].selected
+    uses: JX-Holdings-LLC/release-infrastructure/.github/workflows/finish.yml@181636b602317ba703c3f4bf12775c34560f4efb
+    permissions:
+      contents: write
+    with:
+      toolkit-ref: 181636b602317ba703c3f4bf12775c34560f4efb
+      source-sha: ${{ needs.plan.outputs.sha }}
+      app: onyx-engine
+      security: standard
+      artifact: bundle-onyx-engine
+      dry-run: ${{ inputs.dry_run }}
+  build-vendor-llama-cpp:
+    runs-on: ubuntu-latest
+    needs:
+    - plan
+    if: needs.plan.outputs.selected == 'true' && fromJSON(needs.plan.outputs.apps)['vendor-llama-cpp'].selected
+    env:
+      RELEASE_SOURCE_SHA: ${{ needs.plan.outputs.sha }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ needs.plan.outputs.sha }}
+        persist-credentials: false
+        fetch-depth: 0
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      with:
+        node-version: 24
+    - run: bash packaging/make-vendor-package.sh --spec llama.cpp
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        repository: JX-Holdings-LLC/release-infrastructure
+        ref: 181636b602317ba703c3f4bf12775c34560f4efb
+        path: .toolkit
+        persist-credentials: false
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      with:
+        node-version: 24
+    - name: Stage the complete configured release inventory
+      shell: bash
+      env:
+        RELEASE_APP: vendor-llama-cpp
+      run: node .toolkit/src/release.mjs stage --app "$RELEASE_APP" --from packaging/dist/llama.cpp --bundle unified-bundle
+        --sha "$RELEASE_SOURCE_SHA"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: bundle-vendor-llama-cpp
+        path: unified-bundle
+        if-no-files-found: error
+  registry-vendor-llama-cpp:
+    runs-on: ubuntu-latest
+    needs:
+    - plan
+    - build-vendor-llama-cpp
+    if: needs.plan.outputs.selected == 'true' && fromJSON(needs.plan.outputs.apps)['vendor-llama-cpp'].selected
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      with:
+        node-version: 24
+        registry-url: https://registry.npmjs.org
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: bundle-vendor-llama-cpp
+        path: package-output
+    - name: Publish the verified source package
+      shell: bash
+      env:
+        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        DRY_RUN: ${{ inputs.dry_run }}
+        PACKAGE_NAME: '@jxburros/llama-cpp-source'
+        PACKAGE_VERSION: ${{ fromJSON(needs.plan.outputs.apps)['vendor-llama-cpp'].version }}
+      run: |
+        file=$(find package-output -name '*.tgz' -print -quit)
+        if [ "$DRY_RUN" = true ]; then npm publish "$file" --ignore-scripts --access public --dry-run; exit 0; fi
+        if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version >/dev/null 2>&1; then echo 'Package already exists; refusing an ambiguous overwrite/retry.'; exit 1; fi
+        npm publish "$file" --ignore-scripts --access public --provenance --tag next
+  publish-vendor-llama-cpp:
+    needs:
+    - plan
+    - build-vendor-llama-cpp
+    - registry-vendor-llama-cpp
+    if: needs.plan.outputs.selected == 'true' && fromJSON(needs.plan.outputs.apps)['vendor-llama-cpp'].selected
+    uses: JX-Holdings-LLC/release-infrastructure/.github/workflows/finish.yml@181636b602317ba703c3f4bf12775c34560f4efb
+    permissions:
+      contents: write
+    with:
+      toolkit-ref: 181636b602317ba703c3f4bf12775c34560f4efb
+      source-sha: ${{ needs.plan.outputs.sha }}
+      app: vendor-llama-cpp
+      security: standard
+      artifact: bundle-vendor-llama-cpp
+      dry-run: ${{ inputs.dry_run }}
+  build-vendor-ggml:
+    runs-on: ubuntu-latest
+    needs:
+    - plan
+    if: needs.plan.outputs.selected == 'true' && fromJSON(needs.plan.outputs.apps)['vendor-ggml'].selected
+    env:
+      RELEASE_SOURCE_SHA: ${{ needs.plan.outputs.sha }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ needs.plan.outputs.sha }}
+        persist-credentials: false
+        fetch-depth: 0
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      with:
+        node-version: 24
+    - run: bash packaging/make-vendor-package.sh --spec ggml
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        repository: JX-Holdings-LLC/release-infrastructure
+        ref: 181636b602317ba703c3f4bf12775c34560f4efb
+        path: .toolkit
+        persist-credentials: false
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      with:
+        node-version: 24
+    - name: Stage the complete configured release inventory
+      shell: bash
+      env:
+        RELEASE_APP: vendor-ggml
+      run: node .toolkit/src/release.mjs stage --app "$RELEASE_APP" --from packaging/dist/ggml --bundle unified-bundle
+        --sha "$RELEASE_SOURCE_SHA"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: bundle-vendor-ggml
+        path: unified-bundle
+        if-no-files-found: error
+  registry-vendor-ggml:
+    runs-on: ubuntu-latest
+    needs:
+    - plan
+    - build-vendor-ggml
+    if: needs.plan.outputs.selected == 'true' && fromJSON(needs.plan.outputs.apps)['vendor-ggml'].selected
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      with:
+        node-version: 24
+        registry-url: https://registry.npmjs.org
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: bundle-vendor-ggml
+        path: package-output
+    - name: Publish the verified source package
+      shell: bash
+      env:
+        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        DRY_RUN: ${{ inputs.dry_run }}
+        PACKAGE_NAME: '@jxburros/ggml-source'
+        PACKAGE_VERSION: ${{ fromJSON(needs.plan.outputs.apps)['vendor-ggml'].version }}
+      run: |
+        file=$(find package-output -name '*.tgz' -print -quit)
+        if [ "$DRY_RUN" = true ]; then npm publish "$file" --ignore-scripts --access public --dry-run; exit 0; fi
+        if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version >/dev/null 2>&1; then echo 'Package already exists; refusing an ambiguous overwrite/retry.'; exit 1; fi
+        npm publish "$file" --ignore-scripts --access public --provenance --tag next
+  publish-vendor-ggml:
+    needs:
+    - plan
+    - build-vendor-ggml
+    - registry-vendor-ggml
+    if: needs.plan.outputs.selected == 'true' && fromJSON(needs.plan.outputs.apps)['vendor-ggml'].selected
+    uses: JX-Holdings-LLC/release-infrastructure/.github/workflows/finish.yml@181636b602317ba703c3f4bf12775c34560f4efb
+    permissions:
+      contents: write
+    with:
+      toolkit-ref: 181636b602317ba703c3f4bf12775c34560f4efb
+      source-sha: ${{ needs.plan.outputs.sha }}
+      app: vendor-ggml
+      security: standard
+      artifact: bundle-vendor-ggml
+      dry-run: ${{ inputs.dry_run }}

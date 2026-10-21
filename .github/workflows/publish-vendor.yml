@@ -1,93 +1,11 @@
-# Publish a vendored source package to the npm registry:
-# @jxburros/llama-cpp-source (spec `llama.cpp`, what onyx-engine builds
-# against) or @jxburros/ggml-source (spec `ggml`, the standalone ggml the
-# BackTrack audio apps build against). Specs live in packaging/vendor/.
-#
-# Neither package is required for a clean build — `npm ci` fetches and
-# verifies the pinned commit with git — but publishing one saves every
-# consumer that fetch. This workflow builds the same tarball
-# packaging/make-vendor-package.sh produces locally and publishes it,
-# checking first whether the pinned version is already on the registry so a
-# re-run is a no-op rather than an error.
-#
-# Manual dispatch only: a publish is only needed when a pin in
-# packaging/vendor/ changes, not on every push. Defaults to a dry run
-# (`npm publish --dry-run`) so a first-time run can be exercised without
-# actually publishing.
-#
-# One-time setup: see the "Packaging & publishing the vendor source
-# package" section of docs/building.md for how to create the NPM_TOKEN repo
-# secret, or set up npm Trusted Publishing instead so no token is needed.
-name: publish-vendor
-
-on:
-  workflow_dispatch:
-    inputs:
-      spec:
-        description: "Vendor spec to publish (packaging/vendor/<spec>.conf)"
-        type: choice
-        options:
-          - llama.cpp
-          - ggml
-        default: llama.cpp
-      dry_run:
-        description: "Dry run (npm publish --dry-run; nothing is actually published)"
-        type: boolean
-        default: true
-
+name: Vendor release instructions
+'on':
+  workflow_dispatch: {}
 permissions:
   contents: read
-  id-token: write # required for `npm publish --provenance`
-
 jobs:
-  publish:
+  instructions:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          registry-url: https://registry.npmjs.org
-
-      - name: Build vendor package
-        run: bash packaging/make-vendor-package.sh --spec "${{ inputs.spec }}"
-
-      # Name, version and tarball path come from the same lib.sh the build
-      # script uses, so the two can never disagree.
-      - name: Read package name and version
-        id: pkg
-        run: |
-          . packaging/vendor/lib.sh
-          load_vendor_spec "${{ inputs.spec }}"
-          echo "name=$PKG_NAME" >> "$GITHUB_OUTPUT"
-          echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
-          echo "tarball=$VENDOR_TARBALL" >> "$GITHUB_OUTPUT"
-          echo "package: $PKG_NAME@$PKG_VERSION ($VENDOR_NAME $VENDOR_COMMIT)"
-
-      # Idempotent re-runs: if this exact version is already on the
-      # registry (e.g. a re-dispatch after a previous run already published
-      # it), skip rather than erroring on a duplicate-version publish.
-      - name: Check whether this version is already published
-        id: check
-        run: |
-          if npm view "${{ steps.pkg.outputs.name }}@${{ steps.pkg.outputs.version }}" version > /dev/null 2>&1; then
-            echo "::notice::${{ steps.pkg.outputs.name }}@${{ steps.pkg.outputs.version }} is already on the registry; skipping publish."
-            echo "already_published=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "already_published=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Publish
-        if: steps.check.outputs.already_published != 'true'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          tarball="${{ steps.pkg.outputs.tarball }}"
-          args=(--access public --provenance)
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            args+=(--dry-run)
-            echo "::notice::dry_run is true; running npm publish --dry-run (nothing will be published)."
-          fi
-          npm publish "$tarball" "${args[@]}"
+    - run: echo "Use Actions -> Release from main, channel preview, app vendor-llama-cpp or vendor-ggml. Versions
+        come from release.json." >> "$GITHUB_STEP_SUMMARY"
