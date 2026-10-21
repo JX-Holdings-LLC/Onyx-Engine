@@ -159,7 +159,7 @@ jobs:
         (cd "$stage" && 7z a -tzip "$OLDPWD/onyx-engine-${{ steps.tag.outputs.tag }}-${{ matrix.platform-key }}.zip" \
             "${{ matrix.bin-name }}" LICENSE LICENSE-cpp-httplib LICENSE-llama.cpp)
     - name: Upload archive
-      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
         name: onyx-engine-${{ matrix.platform-key }}
         path: onyx-engine-${{ steps.tag.outputs.tag }}-${{ matrix.platform-key }}.${{ matrix.archive-ext }}
@@ -218,7 +218,7 @@ jobs:
       env:
         RELEASE_APP: onyx-engine
       run: node .toolkit/src/release.mjs stage --app "$RELEASE_APP" --from dist --bundle unified-bundle --sha "$RELEASE_SOURCE_SHA"
-    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
         name: bundle-onyx-engine
         path: unified-bundle
@@ -275,7 +275,7 @@ jobs:
         RELEASE_APP: vendor-llama-cpp
       run: node .toolkit/src/release.mjs stage --app "$RELEASE_APP" --from packaging/dist/llama.cpp --bundle unified-bundle
         --sha "$RELEASE_SOURCE_SHA"
-    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
         name: bundle-vendor-llama-cpp
         path: unified-bundle
@@ -358,7 +358,7 @@ jobs:
         RELEASE_APP: vendor-ggml
       run: node .toolkit/src/release.mjs stage --app "$RELEASE_APP" --from packaging/dist/ggml --bundle unified-bundle
         --sha "$RELEASE_SOURCE_SHA"
-    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
         name: bundle-vendor-ggml
         path: unified-bundle
