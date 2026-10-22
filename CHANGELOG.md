@@ -13,6 +13,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **QA profile for the nightly QA runner.** `.ai/qa.yaml` replaces the npm
+  web-app defaults for levels 1–5 with checks that fit a native binary:
+  install and verify the pinned llama.cpp source, run the smoke suite on a
+  fresh build, build in Release and run `--version`, and serve a chat
+  completion from the tiny test model. `.ai/qa.md` gives per-level
+  instructions and records that the browser levels (8–11, 13) do not apply:
+  Onyx Engine has no web UI. The checks live in `scripts/tools/qa-check.js`,
+  which runs under `cmd.exe` as well as `sh` and reports a missing toolchain
+  (cmake, Python with numpy, a POSIX shell) as a SKIP with its reason.
+
 - Research reports in `reports/` with their notes in `research_notes/`:
   improvement opportunities for Onyx Engine, and a staged plan for
   replacing llama.cpp's `common/` library with Onyx code on `llama.h`.
@@ -37,6 +47,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   the README shows the logo.
 
 ### Fixed
+
+- `npm run build` now builds Release with Visual Studio generators too: it
+  passes `--config Release`, which they need (they ignore
+  `CMAKE_BUILD_TYPE`) and make and ninja ignore.
 
 - `/v1/embeddings` under `--pooling rank` no longer reads `n_embd` floats
   past llama.cpp's per-sequence buffer, which holds only `n_cls_out` rank

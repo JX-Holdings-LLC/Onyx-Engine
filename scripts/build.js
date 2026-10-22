@@ -20,5 +20,7 @@ const jobs = String(Number(process.env.ONYX_BUILD_JOBS) || Math.max(1, cpus));
 
 const run = (args) => execFileSync('cmake', args, { stdio: 'inherit' });
 
+// Visual Studio generators ignore CMAKE_BUILD_TYPE and build Debug unless
+// --config says otherwise; make and ninja ignore --config.
 run(['-B', 'build', '-DCMAKE_BUILD_TYPE=Release']);
-run(['--build', 'build', '--target', 'onyx-engine', '-j', jobs]);
+run(['--build', 'build', '--target', 'onyx-engine', '--config', 'Release', '-j', jobs]);

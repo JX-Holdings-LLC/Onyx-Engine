@@ -101,7 +101,7 @@ mapping this is built against.
   `tokenizer.model`, exotic dtypes — is refused with a clear error rather
   than silently mishandled.
 
-See [Roadmap](#roadmap) for what remains genuinely out of scope.
+See [Roadmap](#roadmap-still-out-of-scope) for what remains genuinely out of scope.
 
 ## Quick Start
 
@@ -246,6 +246,8 @@ v2 that probe for `--mmproj`, `--context-shift`, `--reasoning-budget`, and
 [`docs/jx-runtime-integration.md`](docs/jx-runtime-integration.md).
 
 ## Roadmap (still out of scope)
+
+Planned work, open issues and decisions still to make are in [`ROADMAP.md`](ROADMAP.md).
 
 - Multi-model per process (run a second `onyx-engine` process instead)
 - Speculative decoding
