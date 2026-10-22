@@ -11,6 +11,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Adopt the unified release manifest, version-advance validation, manual main-only planning, complete artifact staging, and verified draft publisher. Preserve local packaging, existing updater trust, and distribution identities.
 - Validation: shared engine tests, workflow lint, and prepared manifest/version checks. Native/hosted consumer release dry runs and publication remain unverified until the migration is merged and credentials/settings are checked.
 
+### Planning — 2026-10-22
+
+- **Independent-tool plan** (0.5.2, documentation only): [`reports/independent-tool-plan.md`](reports/independent-tool-plan.md)
+  sets out how to make Onyx Engine easy to build, run and depend on outside the JX ecosystem while
+  keeping JX Runtime the best-supported integration: a Node-free build, repositioning, a stability
+  policy, a supervisor guide, readiness and port selection, operator features, GPU and Docker
+  distribution, a contributor loop, and published benchmarks. Nothing in the binary changes.
+
 ### Documentation — 2026-10-22
 
 - **Documentation reorganized and expanded** (0.5.1, documentation only). `docs/` now has a

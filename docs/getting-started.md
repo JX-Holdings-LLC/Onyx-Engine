@@ -46,7 +46,7 @@ Any GGUF will do:
 On success the process prints two lines on stderr and then sits and serves:
 
 ```text
-onyx-engine 0.5.1: loading model './models/your-model.gguf'
+onyx-engine 0.5.2: loading model './models/your-model.gguf'
 onyx-engine: model loaded (<description>, <size> MiB)
 onyx-engine listening on http://127.0.0.1:8080 (model: my-model, ctx: 4096)
 ```
