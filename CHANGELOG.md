@@ -73,8 +73,11 @@ See the [stability page](docs/reference/stability.md) for the rule this follows.
   completion and refused `0.0.0.0` without a key; a Vulkan build on Ubuntu 24.04 with the
   release workflow's packages; the README's supervisor examples (shell, Python, Node) and the
   `openai` Python and JS clients against a running engine.
-- Not verified here: the Windows smoke run, the arm64, Windows Vulkan and macOS release legs, the
-  CUDA image and the GHCR push. Those run in CI and in a Release dry run.
+- CI ([run 39843754449](https://github.com/JX-Holdings-LLC/Onyx-Engine/actions/runs/39843754449)): green on Linux, macOS and
+  Windows (unit tests and the full smoke suite on all three) and on both build paths (CMake only,
+  npm).
+- Not verified yet: the arm64, Windows Vulkan and macOS release legs, the CUDA image and the GHCR
+  push. Those need a Release dry run.
 
 ### Release infrastructure migration — 2026-10-20
 
