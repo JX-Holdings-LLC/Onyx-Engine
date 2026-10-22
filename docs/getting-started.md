@@ -10,10 +10,17 @@ From nothing to a streamed chat completion. You need a model; everything else is
 
 | Platform | Archive |
 |---|---|
-| Linux, x64 | `onyx-engine-v<version>-linux-x64.tar.gz` |
+| Linux, x64 (AVX2) | `onyx-engine-v<version>-linux-x64.tar.gz` |
+| Linux, x64, any CPU | `onyx-engine-v<version>-linux-x64-baseline.tar.gz` |
+| Linux, x64, Vulkan GPU | `onyx-engine-v<version>-linux-x64-vulkan.tar.gz` |
+| Linux, arm64 | `onyx-engine-v<version>-linux-arm64.tar.gz` |
 | macOS, Apple Silicon | `onyx-engine-v<version>-darwin-arm64.tar.gz` |
 | macOS, Intel | `onyx-engine-v<version>-darwin-x64.tar.gz` |
-| Windows, x64 | `onyx-engine-v<version>-win32-x64.zip` |
+| Windows, x64 (AVX2) | `onyx-engine-v<version>-win32-x64.zip` |
+| Windows, x64, any CPU | `onyx-engine-v<version>-win32-x64-baseline.zip` |
+| Windows, x64, Vulkan GPU | `onyx-engine-v<version>-win32-x64-vulkan.zip` |
+
+The `-baseline`, `-vulkan` and `linux-arm64` archives start with 0.6.0.
 
 ```bash
 sha256sum -c --ignore-missing checksums.txt
@@ -21,7 +28,9 @@ tar -xzf onyx-engine-v<version>-linux-x64.tar.gz
 ./onyx-engine --version
 ```
 
-The archive holds the binary and three licence files, flat. The prebuilt binaries are CPU-only, and the x64 builds require a CPU with AVX2. For a GPU, build from source.
+The archive holds the binary and three licence files, flat. Plain x64 builds need a CPU with AVX2; take `-baseline` for an older CPU. The `-vulkan` builds use any GPU with a Vulkan driver (`-ngl -1` offloads every layer that fits) and fall back to the CPU. For CUDA or ROCm, build from source.
+
+**Docker.** `docker run --rm -p 127.0.0.1:8080:8080 -v "$HOME/models:/models:ro" ghcr.io/jx-holdings-llc/onyx-engine:latest -m /models/your-model.gguf --allow-unauthenticated`. See [running it in Docker](guides/docker.md).
 
 **From source.** You need CMake 3.16 or later (3.21 for the presets), a C++17 compiler, a C compiler and Git. Node.js is not needed.
 

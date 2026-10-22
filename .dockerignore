@@ -1,0 +1,13 @@
+.git
+build
+build-*
+.deps
+node_modules
+vendor
+packaging/dist
+models
+models-test
+*.gguf
+.ci-venv
+.venv
+venv

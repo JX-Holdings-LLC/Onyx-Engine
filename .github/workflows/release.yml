@@ -33,23 +33,58 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # platform-key is ${process.platform}-${process.arch}, plus a variant
+        # suffix for builds JX Runtime's downloader does not pick by default.
+        # x64 builds without a suffix assume AVX2; -baseline runs on any x86-64
+        # CPU; -vulkan adds the Vulkan GPU backend (CPU fallback stays).
         include:
         - platform-key: linux-x64
           runs-on: ubuntu-22.04
           archive-ext: tar.gz
           bin-name: onyx-engine
+          cmake-flags: -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+        - platform-key: linux-x64-baseline
+          runs-on: ubuntu-22.04
+          archive-ext: tar.gz
+          bin-name: onyx-engine
+          cmake-flags: ''
+        # ubuntu-24.04: glslc, which the Vulkan shaders need, is packaged from
+        # 23.04 on. The binary therefore needs glibc 2.39 or later.
+        - platform-key: linux-x64-vulkan
+          runs-on: ubuntu-24.04
+          archive-ext: tar.gz
+          bin-name: onyx-engine
+          cmake-flags: -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DONYX_ENGINE_VULKAN=ON
+        - platform-key: linux-arm64
+          runs-on: ubuntu-22.04-arm
+          archive-ext: tar.gz
+          bin-name: onyx-engine
+          cmake-flags: ''
         - platform-key: darwin-arm64
           runs-on: macos-latest
           archive-ext: tar.gz
           bin-name: onyx-engine
+          cmake-flags: ''
         - platform-key: darwin-x64
           runs-on: macos-15-intel
           archive-ext: tar.gz
           bin-name: onyx-engine
+          cmake-flags: -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
         - platform-key: win32-x64
           runs-on: windows-latest
           archive-ext: zip
           bin-name: onyx-engine.exe
+          cmake-flags: -DGGML_AVX=ON -DGGML_AVX2=ON
+        - platform-key: win32-x64-baseline
+          runs-on: windows-latest
+          archive-ext: zip
+          bin-name: onyx-engine.exe
+          cmake-flags: ''
+        - platform-key: win32-x64-vulkan
+          runs-on: windows-latest
+          archive-ext: zip
+          bin-name: onyx-engine.exe
+          cmake-flags: -DGGML_AVX=ON -DGGML_AVX2=ON -DONYX_ENGINE_VULKAN=ON
     name: build (${{ matrix.platform-key }})
     runs-on: ${{ matrix.runs-on }}
     timeout-minutes: 90
@@ -85,18 +120,27 @@ jobs:
       run: bash packaging/make-vendor-package.sh
     - name: Install vendor package
       run: bash scripts/vendor.sh --install-only
+    - name: Install Vulkan build dependencies (Linux)
+      if: contains(matrix.platform-key, 'vulkan') && runner.os == 'Linux'
+      run: sudo apt-get update && sudo apt-get install -y libvulkan-dev glslc spirv-headers
+    - name: Install Vulkan SDK (Windows)
+      if: contains(matrix.platform-key, 'vulkan') && runner.os == 'Windows'
+      shell: pwsh
+      env:
+        VULKAN_VERSION: 1.4.328.1
+      run: |
+        curl.exe -fsSL -o "$env:RUNNER_TEMP\vulkan-sdk.exe" "https://sdk.lunarg.com/sdk/download/$env:VULKAN_VERSION/windows/vulkansdk-windows-X64-$env:VULKAN_VERSION.exe"
+        & "$env:RUNNER_TEMP\vulkan-sdk.exe" --accept-licenses --default-answer --confirm-command install | Out-Host
+        Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$env:VULKAN_VERSION"
+        Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$env:VULKAN_VERSION\bin"
     - name: Configure (Release, static)
       if: runner.os != 'Windows'
       run: |
-        cpu_flags=()
-        if [ "${{ matrix.platform-key }}" = linux-x64 ] || [ "${{ matrix.platform-key }}" = darwin-x64 ]; then
-          cpu_flags=(-DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON)
-        fi
         cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
-          -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF "${cpu_flags[@]}"
+          -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF ${{ matrix.cmake-flags }}
     - name: Configure (Release, static, MSVC)
       if: runner.os == 'Windows'
-      run: cmake -B build -A x64 -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_AVX=ON -DGGML_AVX2=ON
+      run: cmake -B build -A x64 -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF ${{ matrix.cmake-flags }}
         -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
     - name: Build
       if: runner.os != 'Windows'
@@ -243,6 +287,58 @@ jobs:
       security: standard
       artifact: bundle-onyx-engine
       dry-run: ${{ inputs.dry_run }}
+  # The CPU container image, built from the same source SHA. A dry run builds
+  # it without pushing; a real run pushes ghcr.io/<owner>/onyx-engine:<version>
+  # and :latest (stable channel only) after the GitHub release is published.
+  docker-onyx-engine:
+    name: container image
+    needs:
+    - plan
+    - publish-onyx-engine
+    if: needs.plan.outputs.selected == 'true' && fromJSON(needs.plan.outputs.apps)['onyx-engine'].selected
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      RELEASE_VERSION: ${{ fromJSON(needs.plan.outputs.apps)['onyx-engine'].version }}
+      DRY_RUN: ${{ inputs.dry_run }}
+      CHANNEL: ${{ inputs.channel }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ needs.plan.outputs.sha }}
+        persist-credentials: false
+    - name: Image name
+      id: image
+      run: |
+        image="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')/onyx-engine"
+        tags="$image:$RELEASE_VERSION"
+        if [ "$CHANNEL" = stable ]; then tags="$tags,$image:latest"; fi
+        echo "tags=$tags" >> "$GITHUB_OUTPUT"
+    - uses: docker/setup-buildx-action@v3
+    - uses: docker/login-action@v3
+      if: inputs.dry_run == false
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - uses: docker/build-push-action@v6
+      with:
+        context: .
+        target: cpu
+        platforms: linux/amd64
+        push: ${{ inputs.dry_run == false }}
+        tags: ${{ steps.image.outputs.tags }}
+        labels: |
+          org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          org.opencontainers.image.revision=${{ needs.plan.outputs.sha }}
+          org.opencontainers.image.version=${{ env.RELEASE_VERSION }}
+          org.opencontainers.image.licenses=MIT
+    - name: Smoke-check the image
+      run: |
+        docker buildx build --load --target cpu -t onyx-engine:check .
+        docker run --rm --entrypoint onyx-engine onyx-engine:check --version
   build-vendor-llama-cpp:
     runs-on: ubuntu-latest
     needs:
