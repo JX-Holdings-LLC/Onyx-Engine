@@ -247,6 +247,8 @@ v2 that probe for `--mmproj`, `--context-shift`, `--reasoning-budget`, and
 
 ## Roadmap (still out of scope)
 
+Planned work, open issues and decisions still to make are in [`ROADMAP.md`](ROADMAP.md).
+
 - Multi-model per process (run a second `onyx-engine` process instead)
 - Speculative decoding
 - Audio/image input beyond what the loaded `--mmproj` projector supports;
