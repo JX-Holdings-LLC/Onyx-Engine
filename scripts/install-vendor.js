@@ -64,4 +64,8 @@ function install(spec) {
   }
 }
 
-for (const name of specs) install(readSpec(name));
+if (require.main === module) {
+  for (const name of specs) install(readSpec(name));
+}
+
+module.exports = { readSpec };

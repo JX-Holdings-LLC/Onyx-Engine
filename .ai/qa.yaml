@@ -1,0 +1,225 @@
+schema_version: 3
+kind: qa_levels_template
+
+# QA levels for the nightly QA runner. Onyx Engine is a C++ model-serving
+# binary (llama.cpp vendored at a pinned commit, fetched by `npm ci`), not a
+# web app, so the npm defaults are replaced here:
+#   1 installs and checks the pinned llama.cpp source,
+#   2 runs the smoke suite against a fresh build,
+#   3 builds the binary and runs it,
+#   4 starts it on the tiny test model and checks it serves requests,
+#   5 is the AI review (advisory).
+# Levels 6, 7 and 12 use the built-in defaults; levels 8-11 and 13 need a
+# browser UI, which Onyx Engine does not have. See .ai/qa.md.
+#
+# Every check goes through scripts/tools/qa-check.js, which works under cmd.exe
+# as well as sh, and reports a missing prerequisite (cmake, Python with numpy,
+# a POSIX shell) as SKIP with the reason instead of failing.
+
+project:
+  name: Onyx Engine
+  app_type: "C++ OpenAI-compatible model-serving binary (llama.cpp), built with CMake"
+  default_branch: main
+  package_manager: npm
+  node_version: "22"
+
+safety_rules:
+  - Use only the generated tiny test models in models-test/; never download real models.
+  - Bind test servers to 127.0.0.1 on free ports, and stop them when the check ends.
+  - Do not publish vendor packages or releases.
+  - Do not fabricate results; a check whose prerequisite is missing is a SKIP.
+
+levels:
+  - level: 1
+    name: install_health
+    display_name: Install Health
+    description: >-
+      Install with npm ci, whose postinstall fetches llama.cpp at the commit
+      pinned in packaging/vendor/llama.cpp.conf, then check that exact commit
+      is in place.
+    tools:
+      - git
+      - node
+      - npm
+    required_files:
+      - package.json
+      - packaging/vendor/llama.cpp.conf
+    commands:
+      - id: node_version
+        run: node -v
+      - id: install_dependencies
+        run_if_file_exists:
+          package-lock.json: npm ci
+        otherwise_run: npm install
+      - id: vendored_llama_cpp
+        run: node scripts/tools/qa-check.js vendor
+    pass_when:
+      - npm ci exits 0
+      - node_modules/@jxburros/llama-cpp-source is at the pinned commit with its required files
+    fail_when:
+      - npm ci exits non-zero (for example, git cannot fetch the pinned llama.cpp commit)
+      - the installed llama.cpp source is missing or at a different commit
+    warn_when: []
+    skip_when: []
+    blocked_when:
+      - git, node or npm is unavailable
+    evidence:
+      capture:
+        - command
+        - exit_code
+        - stdout
+        - stderr
+      write_to:
+        - qa-report.md
+        - qa-results.json
+
+  - level: 2
+    name: test_health
+    display_name: Test Health
+    description: >-
+      Build the binary (incremental if it is already built) and run
+      scripts/smoke-test.sh: CLI flags, chat and text completions, streaming,
+      embeddings, rank pooling, parallel slots, context shift, logprobs,
+      reasoning budget and multimodal input, all on generated tiny models.
+    tools:
+      - node
+      - npm
+    required_files:
+      - scripts/smoke-test.sh
+    commands:
+      - id: build
+        run: node scripts/tools/qa-check.js build
+      - id: smoke_tests
+        run: node scripts/tools/qa-check.js smoke
+    pass_when:
+      - the build succeeds and every smoke test prints ok
+    fail_when:
+      - the build fails
+      - any smoke test fails
+    warn_when: []
+    skip_when:
+      - cmake is not installed (build is SKIP, and the smoke tests then SKIP too)
+      - the runner is Windows (the smoke suite is POSIX shell; Runtime Health covers Windows)
+      - bash, curl, or python3 with numpy, pyyaml, tqdm and requests is unavailable
+    blocked_when:
+      - node or npm is unavailable
+      - Install Health has not installed the vendored llama.cpp source
+    evidence:
+      capture:
+        - command
+        - exit_code
+        - stdout
+        - stderr
+      write_to:
+        - qa-report.md
+        - qa-results.json
+
+  - level: 3
+    name: build_health
+    display_name: Build Health
+    description: >-
+      Configure and build the onyx-engine target in Release (npm run build),
+      then run the binary with --version.
+    tools:
+      - node
+      - npm
+    required_files:
+      - CMakeLists.txt
+      - scripts/build.js
+    commands:
+      - id: build
+        run: node scripts/tools/qa-check.js build
+      - id: binary_version
+        run: node scripts/tools/qa-check.js binary
+    pass_when:
+      - npm run build exits 0
+      - the built binary prints its onyx-engine version
+    fail_when:
+      - the CMake configure or build fails (for example, no C++ compiler)
+      - no binary is produced, or it does not run
+    warn_when: []
+    skip_when:
+      - cmake is not installed on the runner (build is SKIP)
+    blocked_when:
+      - node or npm is unavailable
+      - Install Health has not installed the vendored llama.cpp source
+    evidence:
+      capture:
+        - command
+        - exit_code
+        - stdout
+        - stderr
+      write_to:
+        - qa-report.md
+        - qa-results.json
+
+  - level: 4
+    name: runtime_health
+    display_name: Runtime Health
+    description: >-
+      Start the built binary on the generated tiny model on a free loopback
+      port, wait for GET /health to answer 200, check GET /v1/models lists the
+      alias and that a short chat completion returns a choice, then stop it.
+      This is the runtime surface JX Runtime relies on; there is no browser UI.
+    tools:
+      - node
+    required_files:
+      - scripts/make-tiny-model.py
+    commands:
+      - id: serve_tiny_model
+        run: node scripts/tools/qa-check.js runtime
+    pass_when:
+      - /health answers 200, /v1/models lists the alias and the chat completion has a choice
+    fail_when:
+      - the server exits early, /health does not answer 200 within 60 seconds, or an endpoint misbehaves
+    warn_when: []
+    skip_when:
+      - there is no build (Build Health did not run or cmake is missing)
+      - no Python with numpy, pyyaml, tqdm and requests is available to generate the tiny model
+    blocked_when:
+      - node is unavailable
+    evidence:
+      capture:
+        - command
+        - exit_code
+        - stdout
+        - stderr
+      write_to:
+        - qa-report.md
+        - qa-results.json
+
+  - level: 5
+    name: ai_code_review
+    display_name: AI Code Review
+    description: >-
+      Advisory AI review of the server and engine code. Never gates the
+      deterministic levels.
+    tools:
+      - ai_engine
+    commands:
+      - id: run_ai_review
+        run: central_automation_ai_review
+        required: false
+      - id: ai_questions
+        run: chatgpt_qa
+        required: false
+        instructions:
+          - Can a malformed or hostile JSON request body to src/server.cpp crash the process, hang a slot, or read out of bounds?
+          - Is state shared between parallel slots and the engine thread in src/engine.cpp accessed safely?
+          - Do the OpenAI-compatible responses (streaming frames, usage, finish_reason) match what docs/api.md documents?
+    pass_when:
+      - the AI review report is written and the questions return pass
+    fail_when: []
+    warn_when:
+      - an AI question returns warn or fail, or no report is produced
+    skip_when: []
+    blocked_when:
+      - OPENAI_API_KEY is not set (no AI provider is configured)
+    evidence:
+      capture:
+        - ai_questions
+        - ai_verdicts
+        - reasoning
+      write_to:
+        - qa-report.md
+        - qa-results.json
