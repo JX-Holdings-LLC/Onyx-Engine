@@ -4,7 +4,7 @@
 
 ![The pin file feeds npm ci, which fetches and verifies the commit into node_modules, which CMake builds](../../assets/diagrams/svg/vendor-pipeline.svg)
 
-For maintainers upgrading or publishing a vendored source tree. Consumers just run `npm ci`; see [building](building.md).
+For maintainers upgrading or publishing a vendored source tree. Consumers just configure with CMake (which fetches the pinned commit into `.deps/llama.cpp`) or run `npm ci`; see [building](building.md).
 
 ## Vendor specs
 
@@ -20,10 +20,11 @@ Each spec is a list of `KEY="value"` lines: the upstream repository, the
 full 40-hex commit, upstream's own version (and build number, for
 llama.cpp), the npm package name, the directories a fresh fetch checks out,
 the paths pruned from the staged tree, the paths copied back after pruning,
-and the paths an installed tree must contain. Four readers parse it —
+and the paths an installed tree must contain. Five readers parse it —
 `packaging/make-vendor-package.sh` and `scripts/vendor.sh` (sourced as Bash
-through `packaging/vendor/lib.sh`), `scripts/install-vendor.js`, and
-`CMakeLists.txt` — so it stays one value per line, no expansions.
+through `packaging/vendor/lib.sh`), `scripts/install-vendor.js`,
+`cmake/fetch-llama.cmake` and `CMakeLists.txt` — so it stays one value per
+line, no expansions. None of them keeps its own copy of the commit.
 
 The scripts themselves carry nothing specific to llama.cpp, so another
 repository reuses `packaging/make-vendor-package.sh`,

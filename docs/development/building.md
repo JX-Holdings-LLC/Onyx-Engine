@@ -6,8 +6,9 @@ Builds, acceleration backends and the install target. Fetching the pinned llama.
 
 ## Prerequisites
 
-- CMake ≥ 3.16
-- Node.js/npm, to fetch the vendored llama.cpp source tree (see below)
+- CMake ≥ 3.16 (≥ 3.21 to use `CMakePresets.json`)
+- Git, to fetch the pinned llama.cpp source tree (see below)
+- Node.js/npm, optional: `npm ci` and `npm run build` are wrappers over the same steps
 - A C++17 compiler (the project sets `CMAKE_CXX_STANDARD 17`,
   `CMAKE_CXX_STANDARD_REQUIRED ON`)
 - A C compiler (llama.cpp/ggml build C sources too — `CMakeLists.txt`
@@ -17,29 +18,38 @@ Builds, acceleration backends and the install target. Fetching the pinned llama.
 - Threads (`find_package(Threads REQUIRED)`), which is part of the standard
   toolchain on all supported platforms
 
-## Fetching the llama.cpp source (`npm ci`)
+## Fetching the llama.cpp source
 
-The install script fetches llama.cpp's C/C++ source tree at the exact pinned
-Git commit. Git and network access are needed for a fresh install:
+The pin is one line, `VENDOR_COMMIT` in `packaging/vendor/llama.cpp.conf`. Every tool that
+fetches or checks the source reads it from there.
+
+**With CMake alone.** On a bare clone, the first configure fetches the pinned commit with Git
+into `.deps/llama.cpp`. It uses a sparse depth-1 fetch, checks that `HEAD` is the pinned commit,
+removes `.git` and writes a `.vendor-source-commit` stamp:
 
 ```bash
-npm ci   # or: npm install
+cmake -B build -DCMAKE_BUILD_TYPE=Release
 ```
 
-This installs the source tree into `node_modules/@jxburros/llama-cpp-source`.
+`.deps/` is outside the build directory, so every build tree and preset shares one fetch, and a
+later configure that finds a matching stamp fetches nothing. To fetch without configuring (for
+example before going offline), run `cmake -P cmake/fetch-llama.cmake`. To forbid network access
+at configure time, pass `-DONYX_ENGINE_FETCH_LLAMA=OFF`.
+
+**With npm.** `npm ci` (or `npm install`) runs `scripts/install-vendor.js`, which does the same
+fetch and verification into `node_modules/@jxburros/llama-cpp-source`. It does not request the
+unpublished npm package. Both routes produce identical source trees.
+
 `CMakeLists.txt` resolves the llama.cpp source tree in this order:
 
-1. `-DONYX_ENGINE_LLAMA_DIR=<path>` — explicit override, if passed
-2. `node_modules/@jxburros/llama-cpp-source` — canonical, from `npm ci`
-3. `vendor/llama.cpp` — a manually placed source tree (gitignored; fallback
-   only, e.g. for offline work without npm)
+1. `-DONYX_ENGINE_LLAMA_DIR=<path>`: an explicit override, if passed
+2. `node_modules/@jxburros/llama-cpp-source`: from `npm ci` or `scripts/vendor.sh` (CI and releases use the latter)
+3. `vendor/llama.cpp`: a manually placed source tree (gitignored), for offline work
+4. `.deps/llama.cpp`: fetched by CMake, unless `ONYX_ENGINE_FETCH_LLAMA` is `OFF`
 
-If none of the three is present, the configure step fails with a clear
-message (`llama.cpp source tree not found - run: npm ci`), so this step
-cannot be skipped silently.
-
-`npm ci` uses the committed lockfile and `scripts/install-vendor.js` to fetch
-and verify that commit. It does not request the unpublished npm package.
+Before building, CMake compares the stamp (or the package's `vendorCommit`) with the pin and
+fails on a mismatch, so a stale tree cannot be built by accident. A tree passed with
+`ONYX_ENGINE_LLAMA_DIR` or placed in `vendor/llama.cpp` without a stamp is trusted as given.
 
 ### `npm run vendor` — the local fallback
 
@@ -73,6 +83,24 @@ Two details worth knowing:
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target onyx-engine -j "$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+```
+
+## Presets
+
+`CMakePresets.json` (CMake 3.21 or later) names the common configurations. Each one builds into
+`build/<preset>/`:
+
+| Preset | Configuration |
+|---|---|
+| `release` | Release, CPU |
+| `debug` | Debug, CPU |
+| `static` | Release, static, no host-native tuning, no OpenMP: how the release archives are configured |
+| `cuda`, `vulkan`, `metal`, `hip` | Release with that GPU backend (needs the backend's SDK) |
+
+```bash
+cmake --preset vulkan
+cmake --build --preset vulkan -j 8
+./build/vulkan/onyx-engine --version
 ```
 
 (Equivalently: `npm run build`, which runs both `cmake` steps via

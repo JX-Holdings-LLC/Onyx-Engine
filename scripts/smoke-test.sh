@@ -3,12 +3,34 @@
 #
 # Usage: scripts/smoke-test.sh [path-to-onyx-engine-binary]
 #
-# Requires: python3 + numpy (to generate the test model), curl.
+# Requires: python3 (or python) + numpy (to generate the test model), curl,
+# and Bash. Runs on Linux and macOS, and on Windows under Git Bash (the CI
+# windows leg), where the binary is build/Release/onyx-engine.exe.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-BIN="${1:-build/onyx-engine}"
+# Python decodes stdin with the locale's code page on Windows (cp1252), which
+# garbles the UTF-8 JSON piped into the checks; UTF-8 mode fixes that.
+export PYTHONUTF8=1
+
+# Windows Python installs (and venvs) provide python.exe but no python3.exe.
+# Exported so the `bash -c` checks below inherit it.
+if ! command -v python3 > /dev/null 2>&1 && command -v python > /dev/null 2>&1; then
+    python3() { python "$@"; }
+    export -f python3
+fi
+# A path as the native binary sees it: C:/... under Git Bash, unchanged elsewhere.
+native_path() { (cd "$(dirname "$1")" && printf '%s/%s' "$(pwd -W 2> /dev/null || pwd)" "$(basename "$1")"); }
+
+if [ $# -ge 1 ]; then
+    BIN="$1"
+else
+    BIN=build/onyx-engine
+    for cand in build/onyx-engine build/Release/onyx-engine.exe build/onyx-engine.exe; do
+        [ -f "$cand" ] && { BIN="$cand"; break; }
+    done
+fi
 MODEL="models-test/tiny-llama-random.gguf"
 MMPROJ="models-test/tiny-mmproj-random.gguf"
 DEC_MODEL="models-test/tiny-llama-decision.gguf"
@@ -19,6 +41,9 @@ MM_PORT=$((PORT + 3))
 RB_PORT=$((PORT + 4))
 RK_PORT=$((PORT + 5))
 DEC_PORT=$((PORT + 6))
+OPS_PORT=$((PORT + 7))
+TT_PORT=$((PORT + 8))
+LOAD_PORT=$((PORT + 9))
 BASE="http://127.0.0.1:$PORT"
 EMB_BASE="http://127.0.0.1:$EMB_PORT"
 NP_BASE="http://127.0.0.1:$NP_PORT"
@@ -26,6 +51,10 @@ MM_BASE="http://127.0.0.1:$MM_PORT"
 RB_BASE="http://127.0.0.1:$RB_PORT"
 RK_BASE="http://127.0.0.1:$RK_PORT"
 DEC_BASE="http://127.0.0.1:$DEC_PORT"
+OPS_BASE="http://127.0.0.1:$OPS_PORT"
+TT_BASE="http://127.0.0.1:$TT_PORT"
+LOAD_BASE="http://127.0.0.1:$LOAD_PORT"
+OPS_KEY="sk-smoke"
 
 PASS=0
 FAIL=0
@@ -73,6 +102,13 @@ check "--help lists --parallel" bash -c "'$BIN' --help | grep -q -- --parallel"
 check "--help lists --context-shift" bash -c "'$BIN' --help | grep -q -- --context-shift"
 check "--help lists --mmproj" bash -c "'$BIN' --help | grep -q -- --mmproj"
 check "--help lists --no-webui" bash -c "'$BIN' --help | grep -q -- --no-webui"
+for flag in --max-queue --tick-tokens --metrics --allow-unauthenticated; do
+    check "--help lists $flag" bash -c "'$BIN' --help | grep -q -- $flag"
+done
+check "a non-loopback --host without --api-key is refused" bash -c "
+    ! '$BIN' -m '$MODEL' --host 0.0.0.0 --port $LOAD_PORT > models-test/refuse.out 2>&1 &&
+    grep -q -- '--allow-unauthenticated' models-test/refuse.out"
+check "--port -1 is refused" bash -c "! '$BIN' -m '$MODEL' --port -1 2> /dev/null"
 
 echo "== starting generation instance on :$PORT"
 "$BIN" -m "$MODEL" --port "$PORT" -c 512 --alias tiny-test > models-test/onyx-generation.log 2>&1 &
@@ -88,6 +124,14 @@ echo "== starting 2-slot context-shift instance on :$NP_PORT"
 PIDS+=($!)
 echo "== starting multimodal instance on :$MM_PORT"
 "$BIN" -m "$MODEL" --port "$MM_PORT" -c 512 --mmproj "$MMPROJ" --alias tiny-mm > models-test/onyx-multimodal.log 2>&1 &
+PIDS+=($!)
+
+echo "== starting operations instance on :$OPS_PORT (--metrics, --max-queue 1, --api-key)"
+"$BIN" -m "$MODEL" --port "$OPS_PORT" -c 512 -np 1 --max-queue 1 --metrics --api-key "$OPS_KEY" \
+    --alias tiny-ops > models-test/onyx-ops.log 2>&1 &
+PIDS+=($!)
+echo "== starting 2-slot tick-budget instance on :$TT_PORT (--tick-tokens 16)"
+"$BIN" -m "$MODEL" --port "$TT_PORT" -c 1024 -np 2 --tick-tokens 16 --alias tiny-tt > models-test/onyx-tick.log 2>&1 &
 PIDS+=($!)
 
 echo "== starting decision-model instance on :$DEC_PORT"
@@ -109,13 +153,15 @@ for i in $(seq 1 100); do
     curl -sf "$BASE/health" > /dev/null 2>&1 && curl -sf "$EMB_BASE/health" > /dev/null 2>&1 \
         && curl -sf "$NP_BASE/health" > /dev/null 2>&1 && curl -sf "$MM_BASE/health" > /dev/null 2>&1 \
         && curl -sf "$RB_BASE/health" > /dev/null 2>&1 && curl -sf "$RK_BASE/health" > /dev/null 2>&1 \
-        && curl -sf "$DEC_BASE/health" > /dev/null 2>&1 && break
+        && curl -sf "$DEC_BASE/health" > /dev/null 2>&1 && curl -sf "$OPS_BASE/health" > /dev/null 2>&1 \
+        && curl -sf "$TT_BASE/health" > /dev/null 2>&1 && break
     sleep 0.2
 done
 if ! curl -sf "$BASE/health" > /dev/null || ! curl -sf "$EMB_BASE/health" > /dev/null ||
    ! curl -sf "$NP_BASE/health" > /dev/null || ! curl -sf "$MM_BASE/health" > /dev/null ||
    ! curl -sf "$RB_BASE/health" > /dev/null || ! curl -sf "$RK_BASE/health" > /dev/null ||
-   ! curl -sf "$DEC_BASE/health" > /dev/null; then
+   ! curl -sf "$DEC_BASE/health" > /dev/null || ! curl -sf "$OPS_BASE/health" > /dev/null ||
+   ! curl -sf "$TT_BASE/health" > /dev/null; then
     echo "error: one or more test servers did not become ready" >&2
     for log in models-test/onyx-*.log; do [ -f "$log" ] && { echo "== $log"; tail -50 "$log"; }; done
     exit 1
@@ -169,6 +215,19 @@ check "POST /v1/embeddings" \
     -X POST "$EMB_BASE/v1/embeddings" -d '{"input":["hello world","goodbye"]}'
 check "mixed embedding token array returns 400" http_status 400 -X POST "$EMB_BASE/v1/embeddings" \
     -d '{"input":[5,"a"]}'
+# the official OpenAI clients send encoding_format "base64" by default
+check "encoding_format base64 decodes to the float vector" bash -c "
+    f=\$(curl -sf -X POST '$EMB_BASE/v1/embeddings' -d '{\"input\":\"hello world\"}')
+    b=\$(curl -sf -X POST '$EMB_BASE/v1/embeddings' -d '{\"input\":\"hello world\",\"encoding_format\":\"base64\"}')
+    python3 -c '
+import base64, json, struct, sys
+f = json.loads(sys.argv[1])[\"data\"][0][\"embedding\"]
+raw = base64.b64decode(json.loads(sys.argv[2])[\"data\"][0][\"embedding\"])
+b = struct.unpack(\"<%df\" % (len(raw) // 4), raw)
+assert len(b) == len(f) == 64 and max(abs(x - y) for x, y in zip(f, b)) < 1e-6, (f[:3], b[:3])
+' \"\$f\" \"\$b\""
+check "an unknown encoding_format returns 400" http_status 400 -X POST "$EMB_BASE/v1/embeddings" \
+    -d '{"input":"x","encoding_format":"binary"}'
 check "generation rejected in embedding mode (501)" bash -c "
     code=\$(curl -s -o /dev/null -w '%{http_code}' -X POST '$EMB_BASE/v1/chat/completions' -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}')
     [ \"\$code\" = 501 ]"
@@ -516,6 +575,115 @@ check "images without a projector return 501" http_status 501 -X POST "$DEC_BASE
 check "chat completions on a decision model return 501" http_status 501 -X POST "$DEC_BASE/v1/chat/completions" \
     -d '{"messages":[{"role":"user","content":"Hi"}]}'
 check "/v1/systemone on a text model returns 501" http_status 501 -X POST "$BASE/v1/systemone" -d "$SYSTEMONE_BODY"
+
+echo "== readiness and port selection"
+# A safetensors directory makes the engine run the converter before it loads
+# anything. Pointing ONYX_ENGINE_CONVERT_SCRIPT at a stub that waits for a
+# flag file holds the engine in its loading state for as long as the test
+# needs; the stub then fails, which fails the load.
+LOAD_DIR="models-test/loading-model"
+LOAD_FLAG="models-test/loading.release"
+rm -rf "$LOAD_DIR" "$LOAD_FLAG" models-test/loading.exit
+mkdir -p "$LOAD_DIR"
+echo '{"architectures":["LlamaForCausalLM"]}' > "$LOAD_DIR/config.json"
+printf 'x' > "$LOAD_DIR/model.safetensors"
+cat > models-test/stub-converter.py <<PY
+import os, sys, time
+while not os.path.exists("$LOAD_FLAG"):
+    time.sleep(0.05)
+print("stub converter: refusing on purpose", file=sys.stderr)
+sys.exit(3)
+PY
+( rc=0
+  ONYX_ENGINE_CONVERT_SCRIPT="$(native_path models-test/stub-converter.py)" \
+      "$BIN" -m "$LOAD_DIR" --port "$LOAD_PORT" > models-test/onyx-loading.log 2>&1 || rc=$?
+  echo "exit=$rc" > models-test/loading.exit ) &
+PIDS+=($!)
+for i in $(seq 1 100); do
+    [ "$(curl -s -o /dev/null -w '%{http_code}' "$LOAD_BASE/health")" = 503 ] && break
+    sleep 0.1
+done
+check "while loading, /health answers 503 'Loading model'" bash -c "
+    [ \"\$(curl -s -o models-test/load-body.json -w '%{http_code}' '$LOAD_BASE/health')\" = 503 ] &&
+    python3 -c 'import json; d = json.load(open(\"models-test/load-body.json\")); assert d[\"error\"][\"type\"] == \"unavailable_error\" and d[\"error\"][\"message\"] == \"Loading model\", d'"
+check "while loading, model routes answer 503" http_status 503 -X POST "$LOAD_BASE/v1/chat/completions" \
+    -d '{"messages":[{"role":"user","content":"Hi"}]}'
+check "while loading, /props answers 503" http_status 503 "$LOAD_BASE/props"
+check "while loading, stderr already reports the listening port" \
+    grep -q "listening on http://127.0.0.1:$LOAD_PORT (loading)" models-test/onyx-loading.log
+touch "$LOAD_FLAG"
+for i in $(seq 1 100); do [ -f models-test/loading.exit ] && break; sleep 0.1; done
+check "a failed load exits 1 with an error line" bash -c "
+    grep -q '^exit=1$' models-test/loading.exit && grep -q '^error:' models-test/onyx-loading.log"
+check "after a failed load the port is closed" bash -c "! curl -s '$LOAD_BASE/health' > /dev/null"
+check "once loaded, /health answers 200 ok" json_has 'd["status"] == "ok"' "$BASE/health"
+check "stderr reports ready with the bound port" grep -q "ready on http://127.0.0.1:$PORT" models-test/onyx-generation.log
+check "/props reports the bound port" json_has "d['port'] == $PORT" "$BASE/props"
+
+"$BIN" -m "$MODEL" --port 0 -c 256 --alias tiny-port0 > models-test/onyx-port0.log 2>&1 &
+PORT0_PID=$!
+PIDS+=($PORT0_PID)
+PORT0=""
+for i in $(seq 1 100); do
+    PORT0=$(sed -n 's|.*listening on http://127.0.0.1:\([0-9]*\) (loading).*|\1|p' models-test/onyx-port0.log)
+    [ -n "$PORT0" ] && curl -sf "http://127.0.0.1:$PORT0/health" > /dev/null 2>&1 && break
+    sleep 0.1
+done
+check "--port 0 binds a free port and reports it on stderr" test -n "$PORT0"
+check "--port 0: /props reports the same port" json_has "d['port'] == int('${PORT0:-0}')" "http://127.0.0.1:${PORT0:-1}/props"
+kill "$PORT0_PID" 2> /dev/null || true
+
+echo "== operations (X-Request-Id, auth, Host allowlist, /metrics, --max-queue, --tick-tokens)"
+AUTH=(-H "Authorization: Bearer $OPS_KEY")
+check "/health needs no key" curl -sf "$OPS_BASE/health"
+check "a missing key answers 401" http_status 401 "$OPS_BASE/v1/models"
+check "a wrong key of the same length answers 401" http_status 401 -H "Authorization: Bearer sk-smokf" "$OPS_BASE/v1/models"
+check "a key with a longer suffix answers 401" http_status 401 -H "Authorization: Bearer ${OPS_KEY}x" "$OPS_BASE/v1/models"
+check "the right key answers 200" http_status 200 "${AUTH[@]}" "$OPS_BASE/v1/models"
+check "X-Request-Id is echoed" bash -c "
+    curl -s -D - -o /dev/null -H 'Authorization: Bearer $OPS_KEY' -H 'X-Request-Id: req-123.abc' '$OPS_BASE/v1/models' |
+    tr -d '\r' | grep -qi '^x-request-id: req-123.abc$'"
+check "X-Request-Id is echoed on errors too" bash -c "
+    curl -s -D - -o /dev/null -H 'X-Request-Id: req-401' '$OPS_BASE/v1/models' | tr -d '\r' | grep -qi '^x-request-id: req-401$'"
+check "an X-Request-Id with spaces is not echoed" bash -c "
+    ! curl -s -D - -o /dev/null -H 'Authorization: Bearer $OPS_KEY' -H 'X-Request-Id: a b' '$OPS_BASE/v1/models' | grep -qi '^x-request-id'"
+check "a foreign Host header answers 403" http_status 403 -H "Host: evil.example:$OPS_PORT" "$OPS_BASE/health"
+check "Host: localhost is accepted" http_status 200 -H "Host: localhost:$OPS_PORT" "$OPS_BASE/health"
+check "/metrics is off without --metrics" http_status 404 "$BASE/metrics"
+check "/metrics needs the key" http_status 401 "$OPS_BASE/metrics"
+curl -sf "${AUTH[@]}" -X POST "$OPS_BASE/v1/completions" -d '{"prompt":"Once upon a time","max_tokens":8}' > /dev/null || true
+check "/metrics counts tokens under llamacpp:* names" bash -c "
+    curl -sf -H 'Authorization: Bearer $OPS_KEY' '$OPS_BASE/metrics' > models-test/metrics.txt &&
+    grep -q '^# TYPE llamacpp:tokens_predicted_total counter' models-test/metrics.txt &&
+    awk '/^llamacpp:tokens_predicted_total /{exit !(\$2 >= 8)}' models-test/metrics.txt &&
+    awk '/^llamacpp:prompt_tokens_total /{exit !(\$2 > 0)}' models-test/metrics.txt &&
+    grep -q '^llamacpp:requests_deferred 0' models-test/metrics.txt"
+# One slot and --max-queue 1: of twenty simultaneous requests, one runs, one
+# waits, and the rest are refused until those finish.
+check "--max-queue answers 503 with Retry-After when the queue is full" bash -c "
+    rm -rf models-test/mq && mkdir -p models-test/mq
+    for i in \$(seq 1 20); do
+        curl -s -D models-test/mq/h\$i -o models-test/mq/b\$i -H 'Authorization: Bearer $OPS_KEY' \
+          -X POST '$OPS_BASE/v1/completions' -d '{\"prompt\":\"Once upon a time\",\"max_tokens\":400}' &
+    done
+    wait
+    ok=\$(grep -l '^HTTP/1.1 200' models-test/mq/h* | wc -l)
+    busy=\$(grep -l '^HTTP/1.1 503' models-test/mq/h* | wc -l)
+    retry=\$(grep -il '^retry-after: 1' models-test/mq/h* | wc -l)
+    echo \"200: \$ok, 503: \$busy, Retry-After: \$retry\"
+    [ \$ok -ge 1 ] && [ \$busy -ge 1 ] && [ \$retry -eq \$busy ] &&
+    grep -q unavailable_error \$(grep -l '^HTTP/1.1 503' models-test/mq/h* | head -1 | sed 's|/h|/b|')"
+check "/metrics counts refused requests" bash -c "
+    curl -sf -H 'Authorization: Bearer $OPS_KEY' '$OPS_BASE/metrics' | awk '/^onyx:requests_rejected_total /{exit !(\$2 >= 1)}'"
+LONG_PROMPT=$(python3 -c 'print(" ".join(["word"] * 120))')
+check "--tick-tokens 16: two concurrent long prompts still complete" bash -c "
+    for i in 1 2; do
+        curl -sf -X POST '$TT_BASE/v1/completions' -d '{\"prompt\":\"$LONG_PROMPT\",\"max_tokens\":8}' > models-test/tt\$i.json &
+    done
+    wait
+    for i in 1 2; do
+        python3 -c 'import json,sys; d = json.load(open(sys.argv[1])); assert d[\"usage\"][\"completion_tokens\"] == 8 and d[\"usage\"][\"prompt_tokens\"] > 100, d' models-test/tt\$i.json || exit 1
+    done"
 
 echo
 echo "passed: $PASS, failed: $FAIL"

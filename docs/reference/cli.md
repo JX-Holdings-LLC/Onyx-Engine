@@ -4,7 +4,7 @@
 
 `onyx-engine --help` is the source of truth. This page mirrors `src/args.h` and `src/args.cpp` and adds what the help text has no room for.
 
-**One rule governs this surface:** a flag the engine implements is always listed in `--help`, and a flag that is not in `--help` is never accepted by the parser. JX Runtime's adapter probes `--help` before it passes a flag on a real launch, so a flag that appears in only one of the two would turn a missing feature into a failed load. Any new flag goes into the parser and the help text in the same change. See [the integration notes](../integration/jx-runtime.md#version-and-help-probing).
+**One rule governs this surface:** a flag the engine implements is always listed in `--help`, and a flag that is not in `--help` is never accepted by the parser. A supervisor can probe `--help` before it passes a flag on a real launch (JX Runtime's adapter does), so a flag that appears in only one of the two would turn a missing feature into a failed load. Any new flag goes into the parser and the help text in the same change. The [stability page](stability.md) says which parts of this surface are stable.
 
 ```text
 onyx-engine -m MODEL [options]
@@ -13,7 +13,7 @@ onyx-engine -m MODEL [options]
 Only `-m` is required. Anything unrecognized exits with status 1 and names the argument. `--help` and `--version` exit 0. `--version` prints the engine version and the llama.cpp build it was compiled against:
 
 ```text
-onyx-engine 0.5.2
+onyx-engine 0.6.0
 llama.cpp b11820-d77256999
 ```
 
@@ -36,11 +36,20 @@ When `--alias` is absent the engine strips directories, trailing slashes and a `
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--host HOST` | `127.0.0.1` | Address to bind. |
-| `--port PORT` | `8080` | Port to listen on (1 to 65535). |
-| `--api-key KEY` | none | Require `Authorization: Bearer KEY` on every route except `GET /health`. |
+| `--host HOST` | `127.0.0.1` | Address to bind. Anything but a loopback address (`127.x.x.x`, `localhost`, `::1`) requires `--api-key` or `--allow-unauthenticated`. |
+| `--port PORT` | `8080` | Port to listen on (0 to 65535). `0` lets the operating system pick a free port; the bound port is printed on stderr and reported by `/props` as `port`. |
+| `--api-key KEY` | none | Require `Authorization: Bearer KEY` on every route except `GET /health`. The comparison takes the same time however much of the key matches. |
+| `--allow-unauthenticated` | off | Allow a non-loopback `--host` without `--api-key`. Without it, that combination exits 1 before anything is bound. |
+| `--metrics` | off | Serve Prometheus metrics on `GET /metrics` (behind `--api-key` like any other route). See [service endpoints](api/service-endpoints.md#get-metrics). |
 
-The server listens only after the model has loaded. A failure to bind prints `error: failed to bind to HOST:PORT` and exits 1. Read the [security guide](../guides/security.md) before binding anything but loopback.
+The server binds and starts answering before the model loads. Until loading finishes, `/health` and every other route answer `503` with `{"error":{"code":503,"message":"Loading model","type":"unavailable_error"}}`. Two stderr lines mark the transitions, and both carry the bound port:
+
+```text
+onyx-engine listening on http://127.0.0.1:8080 (loading)
+onyx-engine ready on http://127.0.0.1:8080 (model: my-model, ctx: 4096)
+```
+
+A failure to bind prints `error: failed to bind to HOST:PORT` and exits 1. A failed load prints its `error:` line, closes the port and exits 1. Read the [security guide](../guides/security.md) before binding anything but loopback.
 
 ## Compute
 
@@ -53,6 +62,8 @@ The server listens only after the model has loaded. A failure to bind prints `er
 | `-t, --threads N` | `-1` | Generation threads. `-1` is automatic. |
 | `-tb, --threads-batch N` | same as `-t` | Prompt-processing threads. |
 | `-np, --parallel N` | `1` | Concurrent request slots. Requests beyond `N` queue, first in first out. See [slots and context](../architecture/concurrency.md#slots-and-context). |
+| `--max-queue N` | `0` | Requests allowed to wait for a slot. When `N` are already waiting, a new generation request gets `503` (`unavailable_error`) with `Retry-After: 1`. `0` means no limit. Applies to chat and text completions. |
+| `--tick-tokens N` | `0` | Tokens per batching tick, decode rows included. Generating slots always get their next token first; prompt chunks share what is left, at least one token per tick. `0` uses `--batch-size`; a larger value is capped at it. See [the tick budget](../architecture/concurrency.md#the-tick-budget). |
 | `-fa, --flash-attn VAL` | `auto` | `on`, `off`, `auto`, `1` or `0`. A value is mandatory: a bare `-fa` exits with `-fa requires a value`. |
 | `--mlock` | off | Lock the model's memory in RAM. |
 | `--no-mmap` | off | Do not memory-map the model file. |
@@ -76,7 +87,8 @@ The server listens only after the model has loaded. A failure to bind prints `er
 The parser refuses, with a one-line `error:` on stderr and exit status 1:
 
 - a missing `-m`;
-- a port outside 1 to 65535, `-np` below 1, `-b` or `-ub` below 1, a negative `--cache-reuse`, or a negative `-c`;
+- a port outside 0 to 65535, `-np` below 1, `-b` or `-ub` below 1, a negative `--cache-reuse`, `--max-queue`, `--tick-tokens` or `-c`;
+- a non-loopback `--host` without `--api-key` or `--allow-unauthenticated`;
 - an unknown `--pooling` value, or `--pooling` without `--embedding`;
 - `--embedding` together with a decision model (found at load time);
 - a `--chat-template` value that is not Jinja source or `chatml` (use `--chat-template-file` for a path).
@@ -91,4 +103,4 @@ The parser refuses, with a one-line `error:` on stderr and exit status 1:
 
 ## Exit status
 
-`0` after `--help` or `--version`, and when the server stops listening normally. `1` for an argument error, a model that will not resolve or load, a bind failure, or a server that terminates unexpectedly.
+`0` after `--help` or `--version`, and when the server stops listening normally. `1` for an argument error, a refused `--host`, a model that will not resolve or load, a bind failure, or a server that terminates unexpectedly. A signal (`SIGTERM`, `SIGINT`) ends the process at once with the signal's usual status. See [supervising](../guides/supervising.md#exit-codes).

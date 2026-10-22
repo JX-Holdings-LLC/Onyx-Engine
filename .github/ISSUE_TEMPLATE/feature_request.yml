@@ -1,0 +1,24 @@
+name: Feature request
+description: Something Onyx Engine should do that it does not
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The job, not the solution. Who runs into this, and how often?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like Onyx Engine to do?
+      description: A flag, a field, a route, a behaviour. Say if llama-server already does it.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What do you do today?
+  - type: markdown
+    attributes:
+      value: |
+        Out of scope by design: model downloading, a web UI, several models per process, built-in tools or MCP, TTS. See the [roadmap](https://github.com/JX-Holdings-LLC/Onyx-Engine/blob/main/ROADMAP.md) and [compatibility and limits](https://github.com/JX-Holdings-LLC/Onyx-Engine/blob/main/docs/reference/compatibility.md) first.

@@ -1,11 +1,11 @@
 {
   "name": "@jxburros/onyx-engine",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "private": true,
   "vendor": [
     "llama.cpp"
   ],
-  "description": "Onyx Engine - OpenAI-compatible model-serving binary for JX Runtime.",
+  "description": "Onyx Engine - a small, strict, supervisable OpenAI-compatible model server.",
   "license": "MIT",
   "scripts": {
     "postinstall": "node scripts/install-vendor.js",

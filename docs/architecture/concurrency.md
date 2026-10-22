@@ -12,6 +12,32 @@ A request is parsed and validated on an HTTP worker thread, handed to the engine
 
 ![One tick of the engine loop: slots contribute rows to one llama_batch, one decode, one sample per slot](../../assets/diagrams/svg/batching-tick.svg)
 
+## The tick budget
+
+`build_batch` fills each tick in a fixed order: **decode rows first**, one for every generating
+slot, then prompt chunks for the slots still prefilling, split evenly between them. Without
+`--tick-tokens` the tick is bounded only by `--batch-size` (default 2048), so a long prompt
+arriving while others stream makes every streaming slot's next token wait for up to 2048 prompt
+tokens of compute.
+
+`--tick-tokens N` caps the whole tick, decode rows included, at `N` tokens (and never above
+`--batch-size`). The prompt chunks share whatever the decode rows leave, with at least one token
+per tick, so prefill always makes progress even when the decode rows alone reach `N`. A small
+budget (say 256 on a CPU host) keeps inter-token latency flat while prompts arrive, at the cost
+of slower prefill. This is the "decodes first, then fill a token budget" schedule that vLLM and
+Sarathi-Serve use. It does not touch multimodal prefill, which runs inline at admission (see
+[multimodal](multimodal.md)).
+
+## Admission and the queue
+
+Requests that find every slot busy wait in a first-in, first-out queue. By default the queue has
+no limit. `--max-queue N` bounds it: when `N` requests are already waiting, `generate()` refuses
+the next one at once, and the HTTP layer answers `503` (`unavailable_error`) with
+`Retry-After: 1`. A streaming handler checks the same limit before it starts the stream, so the
+refusal is an HTTP status rather than an error frame. A request that loses the race between that
+check and the queue gets a single `503` error frame instead. `/metrics` reports the queue length
+(`llamacpp:requests_deferred`) and the refusals (`onyx:requests_rejected_total`).
+
 ## Slots and context
 
 ![Eight thousand tokens of context split four ways gives four slots of 2048](../../assets/diagrams/svg/context-slots.svg)

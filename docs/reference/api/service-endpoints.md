@@ -6,15 +6,18 @@ The probes and text utilities. They answer in every mode (text, `--embedding` an
 
 ## `GET /health`
 
-Always returns `200` with:
+Exempt from `--api-key`. The answer depends on whether the model has loaded:
 
-```json
-{"status":"ok"}
-```
+| State | Status | Body |
+|---|---|---|
+| Loading (or converting a safetensors model) | `503` | `{"error":{"code":503,"message":"Loading model","type":"unavailable_error"}}` |
+| Ready | `200` | `{"status":"ok"}` |
 
-Exempt from `--api-key` auth. This is a liveness check only — it does not
-report whether the model is fully warmed up beyond having completed
-`onyx_engine::load` (the server does not start listening until load finishes).
+The server binds and answers from the moment the process starts, so a refused connection means
+the process is not running (or has not bound yet), never "still loading". A load that fails
+closes the port and the process exits 1. The loading body is llama-server's, so a supervisor
+written for llama-server reads it unchanged. Every other route answers `503` with the same body
+while loading (after the `--api-key` check). See [supervising](../../guides/supervising.md).
 
 ## `GET /props`
 
@@ -25,6 +28,7 @@ Model and build metadata. No request body.
   "model_alias": "my-model",
   "chat_template": "<resolved Jinja source>",
   "build_info": "onyx-engine/<version> (llama.cpp b11820-d77256999)",
+  "port": 8080,
   "n_ctx": 4096,
   "n_ctx_total": 4096,
   "n_ctx_train": 32768,
@@ -61,9 +65,42 @@ Notes:
   — both `false` when no projector is loaded.
 - `chat_template` is the resolved chat template source. Models without one
   use the ChatML fallback.
+- `port` is the port actually bound. It differs from `--port` only when that was `0`.
 - `decision_type` names the decision-model family (`"openjev"`, `"laya"`,
   ...) when the loaded model is one, and is `null` otherwise. A decision
   model serves [`POST /v1/systemone`](systemone.md) only.
+
+## `GET /metrics`
+
+Only with `--metrics` (otherwise `404`), and behind `--api-key` like any other route. Prometheus
+text exposition format (`text/plain; version=0.0.4`), using llama-server's `llamacpp:*` names so
+dashboards built for it read Onyx unchanged:
+
+| Series | Type | Meaning |
+|---|---|---|
+| `llamacpp:prompt_tokens_total` | counter | Prompt tokens evaluated (prefix-cache hits excluded) |
+| `llamacpp:prompt_seconds_total` | counter | Time spent on prompts |
+| `llamacpp:tokens_predicted_total` | counter | Tokens generated |
+| `llamacpp:tokens_predicted_seconds_total` | counter | Time spent generating |
+| `llamacpp:n_decode_total` | counter | `llama_decode()` calls made by the batching loop |
+| `llamacpp:n_tokens_max` | counter | Largest KV fill a slot has reached |
+| `llamacpp:n_busy_slots_per_decode` | counter | Average slots in use per decode |
+| `llamacpp:prompt_tokens_seconds` | gauge | Average prompt throughput, tokens per second |
+| `llamacpp:predicted_tokens_seconds` | gauge | Average generation throughput, tokens per second |
+| `llamacpp:requests_processing` | gauge | Requests holding a slot now |
+| `llamacpp:requests_deferred` | gauge | Requests waiting for a slot now |
+| `onyx:requests_rejected_total` | counter | Requests refused with `503` because `--max-queue` was full |
+
+The counters cover chat and text completions since the process started. Embedding and decision
+requests are not counted, and a multimodal prefill's own decode calls are not in `n_decode_total`.
+
+## Headers on every route
+
+- **`X-Request-Id`**: when a request carries one of up to 128 printable ASCII characters (no
+  spaces), the response carries the same value, including on errors. Anything else is not
+  echoed.
+- **`Retry-After: 1`** accompanies a `503` caused by `--max-queue`.
+- **`Server: onyx-engine/<version>`**.
 
 ## `GET /v1/models`
 

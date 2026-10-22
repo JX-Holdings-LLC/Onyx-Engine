@@ -33,40 +33,43 @@ int main(int argc, char ** argv) {
         common_log_set_verbosity_thold(-1);
     }
 
-    {
-        // safetensors models are converted to GGUF (cached) before loading
-        std::string resolve_err;
-        const std::string resolved = onyx_resolve_model(args, resolve_err);
-        if (resolved.empty()) {
-            fprintf(stderr, "error: %s\n", resolve_err.c_str());
-            return 1;
-        }
-        args.model_path = resolved;
-    }
-
     llama_backend_init();
 
-    fprintf(stderr, "onyx-engine %s: loading model '%s'\n", ONYX_ENGINE_VERSION, args.model_path.c_str());
-
     onyx_engine engine;
-    if (!engine.load(args)) {
-        fprintf(stderr, "error: %s\n", engine.load_error().c_str());
-        llama_backend_free();
-        return 1;
-    }
 
-    if (engine.n_parallel() > 1) {
-        fprintf(stderr, "onyx-engine: model loaded (%s, %" PRIu64 " MiB, %d slots x %u ctx%s)\n",
-                engine.model_desc().c_str(), engine.model_size_bytes() / (1024 * 1024),
-                engine.n_parallel(), engine.n_ctx_slot(),
-                engine.ctx_shift() ? ", context shift" : "");
-    } else {
-        fprintf(stderr, "onyx-engine: model loaded (%s, %" PRIu64 " MiB%s)\n",
-                engine.model_desc().c_str(), engine.model_size_bytes() / (1024 * 1024),
-                engine.ctx_shift() ? ", context shift" : "");
-    }
+    // The port opens first and answers 503 while everything below runs, so a
+    // supervisor can tell "loading" from "not running" (see server.h).
+    const int rc = onyx_server_run(engine, args, [&]() {
+        {
+            // safetensors models are converted to GGUF (cached) before loading
+            std::string resolve_err;
+            const std::string resolved = onyx_resolve_model(args, resolve_err);
+            if (resolved.empty()) {
+                fprintf(stderr, "error: %s\n", resolve_err.c_str());
+                return false;
+            }
+            args.model_path = resolved;
+        }
 
-    const int rc = onyx_server_run(engine, args);
+        fprintf(stderr, "onyx-engine %s: loading model '%s'\n", ONYX_ENGINE_VERSION, args.model_path.c_str());
+
+        if (!engine.load(args)) {
+            fprintf(stderr, "error: %s\n", engine.load_error().c_str());
+            return false;
+        }
+
+        if (engine.n_parallel() > 1) {
+            fprintf(stderr, "onyx-engine: model loaded (%s, %" PRIu64 " MiB, %d slots x %u ctx%s)\n",
+                    engine.model_desc().c_str(), engine.model_size_bytes() / (1024 * 1024),
+                    engine.n_parallel(), engine.n_ctx_slot(),
+                    engine.ctx_shift() ? ", context shift" : "");
+        } else {
+            fprintf(stderr, "onyx-engine: model loaded (%s, %" PRIu64 " MiB%s)\n",
+                    engine.model_desc().c_str(), engine.model_size_bytes() / (1024 * 1024),
+                    engine.ctx_shift() ? ", context shift" : "");
+        }
+        return true;
+    });
 
     llama_backend_free();
     return rc;

@@ -1,0 +1,45 @@
+name: Bug report
+description: Something answered wrongly, crashed, or refused a valid request
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: onyx-engine --version
+      description: Both lines it prints
+      placeholder: "onyx-engine 0.6.0 / llama.cpp b11820-d77256999"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform and archive
+      description: OS, CPU or GPU, and which release archive (or "built from source", with the CMake options)
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command line
+      description: The exact arguments, with any --api-key value removed
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: request
+    attributes:
+      label: Request and response
+      description: The request body and what came back (status code and body), or the curl command
+      render: shell
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+  - type: textarea
+    id: stderr
+    attributes:
+      label: stderr
+      description: The last 30 or so lines the engine printed; add -v for llama.cpp's full log if it helps
+      render: text

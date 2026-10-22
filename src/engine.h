@@ -2,9 +2,10 @@
 //
 // Concurrency model (v2): one model, one context, `--parallel` request slots.
 // A dedicated engine thread runs a continuous-batching loop: every tick it
-// packs a prompt chunk for each slot still prefilling plus exactly one
-// next-token for each generating slot into a single llama_batch, decodes it
-// once, and samples each slot from its own logits row with its own sampler.
+// packs exactly one next-token for each generating slot, then a prompt chunk
+// for each slot still prefilling, into a single llama_batch (decodes first;
+// --tick-tokens caps the total), decodes it once, and samples each slot from
+// its own logits row with its own sampler.
 //
 // HTTP threads submit requests into a FIFO queue and block in generate()
 // until the request finishes. Generated text is handed back through a
@@ -120,6 +121,7 @@ struct onyx_gen_result {
     int32_t          n_cached    = 0;     // prompt tokens reused from KV cache
     int32_t          n_predicted = 0;     // tokens generated
     bool             truncated   = false; // context was shifted at least once
+    bool             queue_full  = false; // refused at submission: --max-queue reached
     double           t_prompt_ms    = 0;
     double           t_predict_ms   = 0;
 
@@ -218,6 +220,21 @@ struct onyx_slot {
     size_t     rb_end_match   = 0;   // rolling match progress against end_tag
 };
 
+// Process-lifetime counters behind /metrics (llama-server's llamacpp:*
+// names). Generation only: embedding and decision requests are not counted.
+struct onyx_engine_metrics {
+    uint64_t prompt_tokens      = 0;   // prompt tokens evaluated (cache hits excluded)
+    double   prompt_seconds     = 0;
+    uint64_t predicted_tokens   = 0;
+    double   predicted_seconds  = 0;
+    uint64_t n_decode           = 0;   // llama_decode calls made by the batching loop
+    uint64_t n_busy_slots       = 0;   // sum over those calls of the slots in use
+    uint64_t n_tokens_max       = 0;   // largest KV fill a slot reached
+    uint64_t requests_rejected  = 0;   // refused because the queue was full
+    int32_t  requests_processing = 0;  // slots in use now
+    int32_t  requests_deferred   = 0;  // requests waiting for a slot now
+};
+
 void onyx_batch_clear(llama_batch & batch);
 void onyx_batch_add(llama_batch & batch, llama_token id, llama_pos pos,
                     const std::vector<llama_seq_id> & seq_ids, bool logits);
@@ -271,6 +288,14 @@ public:
     // concurrently; further callers queue in FIFO order.
     onyx_gen_result generate(const onyx_gen_params & params, const onyx_token_cb & cb);
 
+    // True when --max-queue is set and that many requests are already
+    // waiting for a slot. A handler checks it before starting a stream, so
+    // the refusal can still be a 503 rather than an error frame; generate()
+    // enforces the same limit for the request that loses a race.
+    bool queue_full();
+
+    onyx_engine_metrics metrics();
+
     // Pooled embedding for one input. Returns empty vector on failure and
     // sets err. Only valid in embedding mode (serialized on a mutex).
     std::vector<float> embed(const std::vector<llama_token> & tokens, std::string & err);
@@ -322,6 +347,8 @@ private:
     uint32_t    n_ctx_          = 0;
     uint32_t    n_ctx_slot_     = 0;   // per-slot context budget
     int32_t     n_batch_        = 0;
+    int32_t     tick_tokens_    = 0;   // --tick-tokens: per-tick token budget, 0 = n_batch_
+    int32_t     max_queue_      = 0;   // --max-queue: waiting requests allowed, 0 = unbounded
     int32_t     n_parallel_     = 1;
     bool        embedding_mode_ = false;
     int32_t     cache_reuse_    = 0;
@@ -341,6 +368,10 @@ private:
 
     // embedding and decision mode only
     std::mutex mutex_;
+
+    // /metrics counters; written by the engine loop, read by HTTP threads
+    std::mutex          metrics_mutex_;
+    onyx_engine_metrics metrics_;
 
     // decision mode: seq 0 keeps the last evaluated prefix (decision_cache_),
     // seq 1 runs one prompt on top of a shared prefix copied from seq 0

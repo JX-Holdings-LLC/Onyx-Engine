@@ -4,7 +4,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/.release/version.cmake")
 
 project(onyx-engine
     VERSION ${APP_RELEASE_VERSION_CORE}
-    DESCRIPTION "Onyx Engine - local model serving binary for JX Runtime"
+    DESCRIPTION "Onyx Engine - a small, strict, supervisable OpenAI-compatible model server"
     LANGUAGES C CXX
 )
 
@@ -35,10 +35,15 @@ set(GGML_BLAS ${ONYX_ENGINE_BLAS} CACHE BOOL "" FORCE)
 # ---------------------------------------------------------------------------
 # Vendored llama.cpp — only the libraries, none of its tools/examples.
 #
-# `npm ci` fetches the pinned Git commit into node_modules. Resolution order:
-#   1. -DONYX_ENGINE_LLAMA_DIR=<path>          explicit override
-#   2. node_modules/@jxburros/llama-cpp-source   (canonical: npm ci)
-#   3. vendor/llama.cpp                      manually placed source tree
+# The pin lives in packaging/vendor/llama.cpp.conf. Resolution order:
+#   1. -DONYX_ENGINE_LLAMA_DIR=<path>            explicit override
+#   2. node_modules/@jxburros/llama-cpp-source   fetched by `npm ci`, or
+#                                                installed by scripts/vendor.sh
+#   3. vendor/llama.cpp                          manually placed source tree
+#   4. .deps/llama.cpp                           fetched here by CMake with Git
+#                                                (ONYX_ENGINE_FETCH_LLAMA, on by
+#                                                default), so a bare clone builds
+#                                                with only CMake, a compiler and Git
 # ---------------------------------------------------------------------------
 set(LLAMA_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -57,6 +62,7 @@ set(LLAMA_BUILD_MTMD     ON  CACHE BOOL "" FORCE)
 set(MTMD_VIDEO           OFF CACHE BOOL "" FORCE)
 
 set(ONYX_ENGINE_LLAMA_DIR "" CACHE PATH "Path to the llama.cpp source tree (overrides auto-detection)")
+option(ONYX_ENGINE_FETCH_LLAMA "Fetch the pinned llama.cpp with Git when no source tree is found" ON)
 
 if (ONYX_ENGINE_LLAMA_DIR)
     set(ONYX_LLAMA_SRC ${ONYX_ENGINE_LLAMA_DIR})
@@ -64,8 +70,15 @@ elseif (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@jxburros/llama-cpp-sour
     set(ONYX_LLAMA_SRC ${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@jxburros/llama-cpp-source)
 elseif (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/vendor/llama.cpp/CMakeLists.txt)
     set(ONYX_LLAMA_SRC ${CMAKE_CURRENT_SOURCE_DIR}/vendor/llama.cpp)
+elseif (ONYX_ENGINE_FETCH_LLAMA)
+    # Outside the build directory so every build tree and preset shares one
+    # fetch; a stamp check makes the second configure a no-op.
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/fetch-llama.cmake)
+    onyx_fetch_llama(${CMAKE_CURRENT_SOURCE_DIR}/.deps/llama.cpp)
+    set(ONYX_LLAMA_SRC ${CMAKE_CURRENT_SOURCE_DIR}/.deps/llama.cpp)
 else()
-    message(FATAL_ERROR "llama.cpp source tree not found - run: npm ci")
+    message(FATAL_ERROR "llama.cpp source tree not found - configure with -DONYX_ENGINE_FETCH_LLAMA=ON, "
+                        "run `cmake -P cmake/fetch-llama.cmake`, or run `npm ci`")
 endif()
 
 if (NOT EXISTS ${ONYX_LLAMA_SRC}/CMakeLists.txt)
@@ -119,10 +132,12 @@ endif()
 if (DEFINED ONYX_INSTALLED_COMMIT)
     string(STRIP "${ONYX_INSTALLED_COMMIT}" ONYX_INSTALLED_COMMIT)
     if (NOT ONYX_INSTALLED_COMMIT STREQUAL ONYX_EXPECTED_LLAMA_COMMIT)
-        message(FATAL_ERROR "installed llama.cpp source does not match the pinned commit; run npm ci")
+        message(FATAL_ERROR "installed llama.cpp source (${ONYX_LLAMA_SRC}) does not match the pinned commit; "
+                            "run npm ci, or delete .deps/llama.cpp and configure again")
     endif()
-elseif (ONYX_LLAMA_SRC STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@jxburros/llama-cpp-source")
-    message(FATAL_ERROR "installed llama.cpp source has no verifiable commit stamp; run npm ci")
+elseif (ONYX_LLAMA_SRC STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@jxburros/llama-cpp-source" OR
+        ONYX_LLAMA_SRC STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}/.deps/llama.cpp")
+    message(FATAL_ERROR "installed llama.cpp source has no verifiable commit stamp; delete it and configure again")
 endif()
 
 message(STATUS "onyx-engine: llama.cpp pin ${ONYX_LLAMA_PIN}")
@@ -184,6 +199,7 @@ add_executable(onyx-engine
     src/convert.cpp
     src/decision.cpp
     src/engine.cpp
+    src/http_util.cpp
     src/server.cpp
 )
 
@@ -214,3 +230,39 @@ set_source_files_properties(src/decision.cpp src/engine.cpp PROPERTIES
 target_link_libraries(onyx-engine PRIVATE onyx-httplib llama-common llama mtmd Threads::Threads)
 
 install(TARGETS onyx-engine RUNTIME DESTINATION bin)
+
+# ---------------------------------------------------------------------------
+# Unit tests: argument parsing, request validation helpers and model-path
+# resolution, without a model or a running server. One ctest entry per suite:
+#   cmake --build build --target onyx-unit-tests && ctest --test-dir build
+# The end-to-end suite (scripts/smoke-test.sh) needs Python and generated
+# models, so it stays outside ctest.
+# ---------------------------------------------------------------------------
+if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(ONYX_ENGINE_TESTS_DEFAULT ON)
+else()
+    set(ONYX_ENGINE_TESTS_DEFAULT OFF)
+endif()
+option(ONYX_ENGINE_TESTS "Build the unit tests and register them with ctest" ${ONYX_ENGINE_TESTS_DEFAULT})
+
+if (ONYX_ENGINE_TESTS)
+    enable_testing()
+    add_executable(onyx-unit-tests
+        tests/unit/main.cpp
+        tests/unit/test_args.cpp
+        tests/unit/test_convert.cpp
+        tests/unit/test_http_util.cpp
+        src/args.cpp
+        src/convert.cpp
+        src/http_util.cpp
+    )
+    target_include_directories(onyx-unit-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(onyx-unit-tests PRIVATE
+        ONYX_ENGINE_VERSION="${APP_RELEASE_VERSION}"
+        ONYX_ENGINE_LLAMA_PIN="${ONYX_LLAMA_PIN}"
+    )
+    target_link_libraries(onyx-unit-tests PRIVATE Threads::Threads)
+    foreach(suite args convert http)
+        add_test(NAME unit.${suite} COMMAND onyx-unit-tests ${suite})
+    endforeach()
+endif()
