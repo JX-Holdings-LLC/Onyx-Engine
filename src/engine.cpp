@@ -145,6 +145,8 @@ bool onyx_engine::load(const onyx_args & args) {
     n_ctx_      = llama_n_ctx(ctx_);
     n_ctx_slot_ = llama_n_ctx_seq(ctx_);
     n_batch_    = (int32_t) cparams.n_batch;
+    tick_tokens_ = args.tick_tokens > 0 ? std::min(args.tick_tokens, n_batch_) : 0;
+    max_queue_   = std::max<int32_t>(0, args.max_queue);
     if (cache_reuse_ > 0 && (llama_model_n_swa(model_) > 0 || !llama_memory_can_shift(llama_get_memory(ctx_)))) {
         cache_reuse_ = 0;
         fprintf(stderr, "warning: cache reuse is disabled for sliding-window or recurrent memory\n");
@@ -388,6 +390,25 @@ static std::vector<onyx_token_probs> collect_delivered_probs(onyx_slot & slot, o
 // public entry points
 // ---------------------------------------------------------------------------
 
+bool onyx_engine::queue_full() {
+    if (max_queue_ <= 0) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(q_mutex_);
+    return (int32_t) queue_.size() >= max_queue_;
+}
+
+onyx_engine_metrics onyx_engine::metrics() {
+    onyx_engine_metrics m;
+    {
+        std::lock_guard<std::mutex> lock(metrics_mutex_);
+        m = metrics_;
+    }
+    std::lock_guard<std::mutex> lock(q_mutex_);
+    m.requests_deferred = (int32_t) queue_.size();
+    return m;
+}
+
 onyx_gen_result onyx_engine::generate(const onyx_gen_params & params, const onyx_token_cb & cb) {
     onyx_gen_result res;
 
@@ -442,6 +463,18 @@ onyx_gen_result onyx_engine::generate(const onyx_gen_params & params, const onyx
 
     {
         std::lock_guard<std::mutex> lock(q_mutex_);
+        if (max_queue_ > 0 && (int32_t) queue_.size() >= max_queue_) {
+            common_sampler_free(req->smpl);
+            req->smpl = nullptr;
+            {
+                std::lock_guard<std::mutex> m_lock(metrics_mutex_);
+                metrics_.requests_rejected++;
+            }
+            res.error      = "server is busy: " + std::to_string(max_queue_) +
+                             " requests are already waiting for a slot (--max-queue)";
+            res.queue_full = true;
+            return res;
+        }
         queue_.push_back(req);
     }
     q_cv_.notify_all();
@@ -719,6 +752,10 @@ bool onyx_engine::admit_queued() {
         }
 
         onyx_slot & slot = *best;
+        {
+            std::lock_guard<std::mutex> m_lock(metrics_mutex_);
+            metrics_.requests_processing++;
+        }
         slot.req       = req;
         slot.prompt    = req->params.prompt_tokens;
         slot.has_media = !req->params.media.empty();
@@ -813,7 +850,12 @@ void onyx_engine::build_batch(llama_batch & batch) {
         return;
     }
 
-    const int32_t budget   = n_batch_ - batch.n_tokens;
+    // --tick-tokens bounds the whole tick, decode rows included, so a burst
+    // of long prompts cannot stretch every streaming slot's next token. The
+    // prompt chunks always get at least one token, so prefill never starves.
+    const int32_t room     = n_batch_ - batch.n_tokens;
+    const int32_t budget   = tick_tokens_ > 0 ? std::min(room, std::max(1, tick_tokens_ - batch.n_tokens)) : room;
+    const int32_t end      = batch.n_tokens + budget;
     const int32_t per_slot = std::max(1, budget / n_prefilling);
 
     for (auto & slot : slots_) {
@@ -821,7 +863,7 @@ void onyx_engine::build_batch(llama_batch & batch) {
             continue;
         }
         const int32_t n_prompt = (int32_t) slot.prompt.size();
-        const int32_t n        = std::min({ n_prompt - slot.n_past, per_slot, n_batch_ - batch.n_tokens });
+        const int32_t n        = std::min({ n_prompt - slot.n_past, per_slot, end - batch.n_tokens });
         for (int32_t k = 0; k < n; k++) {
             const bool last = slot.n_past == n_prompt - 1;
             if (last) {
@@ -872,6 +914,16 @@ bool onyx_engine::decode_batch(llama_batch & batch) {
                 finish(slot, ONYX_FINISH_STOP, err);
             }
             return false;
+        }
+
+        {
+            int32_t n_busy = 0;
+            for (const auto & slot : slots_) {
+                n_busy += slot.state != onyx_slot::ONYX_SLOT_IDLE;
+            }
+            std::lock_guard<std::mutex> m_lock(metrics_mutex_);
+            metrics_.n_decode++;
+            metrics_.n_busy_slots += (uint64_t) n_busy;
         }
 
         // sample for every slot whose logits row landed in this view
@@ -1179,6 +1231,16 @@ void onyx_engine::finish(onyx_slot & slot, onyx_finish_reason reason, const std:
         res.t_prompt_ms = (now - slot.t_start) / 1000.0;
     }
     res.t_predict_ms = (now - slot.t_prompt) / 1000.0;
+
+    {
+        std::lock_guard<std::mutex> m_lock(metrics_mutex_);
+        metrics_.prompt_tokens     += (uint64_t) std::max(0, res.n_prompt - res.n_cached);
+        metrics_.prompt_seconds    += res.t_prompt_ms / 1000.0;
+        metrics_.predicted_tokens  += (uint64_t) std::max(0, res.n_predicted);
+        metrics_.predicted_seconds += res.t_predict_ms / 1000.0;
+        metrics_.n_tokens_max       = std::max(metrics_.n_tokens_max, (uint64_t) std::max(0, slot.n_past));
+        metrics_.requests_processing--;
+    }
 
     // hand over any text withheld for stop-sequence matching, along with
     // whatever prob entries that final flush now fully covers

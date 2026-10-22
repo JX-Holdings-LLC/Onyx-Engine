@@ -9,14 +9,25 @@
 
 #include "httplib.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cinttypes>
 #include <cstdio>
 #include <ctime>
 #include <initializer_list>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
+
+// Largest request body accepted; httplib answers 413 beyond it. The same
+// figure as httplib's implicit default, written down so it is a documented
+// limit rather than a library detail (docs/reference/stability.md).
+static constexpr size_t ONYX_MAX_PAYLOAD_BYTES = 100u * 1024u * 1024u;
+
+// Seconds a client told "busy" (--max-queue) is asked to wait.
+static constexpr int ONYX_RETRY_AFTER_SECONDS = 1;
 
 // ---------------------------------------------------------------------------
 // small helpers
@@ -40,12 +51,114 @@ static void send_error(httplib::Response & res, int status, const std::string & 
     res.set_content(body.dump(), "application/json; charset=utf-8");
 }
 
-static void send_generation_error(httplib::Response & res, const std::string & message) {
+static void send_busy(httplib::Response & res, const std::string & message) {
+    res.set_header("Retry-After", std::to_string(ONYX_RETRY_AFTER_SECONDS));
+    send_error(res, 503, message, "unavailable_error");
+}
+
+static void send_generation_error(httplib::Response & res, const onyx_gen_result & r) {
+    if (r.queue_full) {
+        send_busy(res, r.error);
+        return;
+    }
+    const std::string & message = r.error;
     const bool client_error = message.rfind("prompt (", 0) == 0 ||
         message.rfind("prompt contains", 0) == 0 ||
         message.rfind("failed to initialize sampler", 0) == 0;
     send_error(res, client_error ? 400 : 500, message,
                client_error ? "invalid_request_error" : "server_error");
+}
+
+// SSE error frame for a generation that failed after the stream started.
+static common_json stream_error_json(const onyx_gen_result & r) {
+    common_json e = common_json::object();
+    e["message"] = r.error;
+    e["type"]    = r.queue_full ? "unavailable_error" : "server_error";
+    e["code"]    = r.queue_full ? 503 : 500;
+    common_json err = common_json::object();
+    err["error"] = e;
+    return err;
+}
+
+// X-Request-Id is echoed only when it is short, printable ASCII: it is a
+// caller's correlation id, never something to reflect unchecked into a header.
+static bool valid_request_id(const std::string & id) {
+    if (id.empty() || id.size() > 128) {
+        return false;
+    }
+    for (unsigned char c : id) {
+        if (c < 0x21 || c > 0x7e) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Compares in time that depends only on the lengths, so a caller cannot find
+// the API key one byte at a time by timing 401s.
+static bool constant_time_equals(const std::string & a, const std::string & b) {
+    const size_t n = std::max(a.size(), b.size());
+    unsigned char diff = a.size() == b.size() ? 0 : 1;
+    for (size_t i = 0; i < n; i++) {
+        const unsigned char x = i < a.size() ? (unsigned char) a[i] : 0;
+        const unsigned char y = i < b.size() ? (unsigned char) b[i] : 0;
+        diff |= (unsigned char) (x ^ y);
+    }
+    return diff == 0;
+}
+
+// The host part of a Host header: "[::1]:8080" -> "[::1]", "a:80" -> "a".
+static std::string host_header_name(const std::string & host) {
+    if (!host.empty() && host[0] == '[') {
+        const size_t close = host.find(']');
+        return close == std::string::npos ? host : host.substr(0, close + 1);
+    }
+    const size_t colon = host.find(':');
+    return colon == std::string::npos ? host : host.substr(0, colon);
+}
+
+// DNS-rebinding guard for a loopback-bound server: a browser tricked into
+// talking to 127.0.0.1 still sends the attacker's name in Host.
+static bool host_header_is_loopback(const std::string & host) {
+    std::string name = host_header_name(host);
+    for (auto & c : name) {
+        c = (char) std::tolower((unsigned char) c);
+    }
+    if (name == "localhost" || name == "[::1]" || name.rfind("127.", 0) == 0) {
+        return true;
+    }
+    const std::string suffix = ".localhost";
+    return name.size() > suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+// Prometheus text exposition of the engine counters under llama-server's
+// llamacpp:* names, so dashboards built for llama-server read it unchanged.
+static std::string metrics_text(const onyx_engine_metrics & m) {
+    std::string out;
+    auto add = [&](const char * name, const char * type, const char * help, double value) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%.6g", value);
+        out += std::string("# HELP ") + name + " " + help + "\n";
+        out += std::string("# TYPE ") + name + " " + type + "\n";
+        out += std::string(name) + " " + buf + "\n";
+    };
+    add("llamacpp:prompt_tokens_total", "counter", "Number of prompt tokens processed.", (double) m.prompt_tokens);
+    add("llamacpp:prompt_seconds_total", "counter", "Prompt process time", m.prompt_seconds);
+    add("llamacpp:tokens_predicted_total", "counter", "Number of generation tokens processed.", (double) m.predicted_tokens);
+    add("llamacpp:tokens_predicted_seconds_total", "counter", "Predict process time", m.predicted_seconds);
+    add("llamacpp:n_decode_total", "counter", "Total number of llama_decode() calls", (double) m.n_decode);
+    add("llamacpp:n_tokens_max", "counter", "Largest observed n_tokens.", (double) m.n_tokens_max);
+    add("llamacpp:n_busy_slots_per_decode", "counter", "Average number of busy slots per llama_decode() call",
+        m.n_decode > 0 ? (double) m.n_busy_slots / (double) m.n_decode : 0.0);
+    add("llamacpp:prompt_tokens_seconds", "gauge", "Average prompt throughput in tokens/s.",
+        m.prompt_seconds > 0 ? (double) m.prompt_tokens / m.prompt_seconds : 0.0);
+    add("llamacpp:predicted_tokens_seconds", "gauge", "Average generation throughput in tokens/s.",
+        m.predicted_seconds > 0 ? (double) m.predicted_tokens / m.predicted_seconds : 0.0);
+    add("llamacpp:requests_processing", "gauge", "Number of requests processing.", (double) m.requests_processing);
+    add("llamacpp:requests_deferred", "gauge", "Number of requests deferred.", (double) m.requests_deferred);
+    add("onyx:requests_rejected_total", "counter", "Requests refused with 503 because --max-queue was reached.",
+        (double) m.requests_rejected);
+    return out;
 }
 
 static bool reject_unsupported_fields(const common_json & body, httplib::Response & res,
@@ -584,8 +697,13 @@ static bool sse_write(httplib::DataSink & sink, const common_json & payload) {
 // server
 // ---------------------------------------------------------------------------
 
-int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
+int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::function<bool()> & load) {
     httplib::Server svr;
+
+    // false until `load` succeeds; every route but /health is refused until then
+    std::atomic<bool> ready{false};
+    int bound_port = args.port;
+    const bool loopback = onyx_host_is_loopback(args.host);
 
     svr.set_default_headers({
         {"Server", "onyx-engine/" ONYX_ENGINE_VERSION},
@@ -595,20 +713,35 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         res.status = 403;
     });
 
-    // bearer auth on everything except /health
+    // Every request passes here first, in this order: echo X-Request-Id,
+    // refuse browsers, refuse a foreign Host on a loopback bind, check the
+    // bearer token (not on /health), and answer 503 while the model loads.
     {
         const std::string expected = "Bearer " + args.api_key;
-        svr.set_pre_routing_handler([expected, &args](const httplib::Request & req, httplib::Response & res) {
+        svr.set_pre_routing_handler([expected, &args, &ready, loopback](const httplib::Request & req, httplib::Response & res) {
+            const std::string request_id = req.get_header_value("X-Request-Id");
+            if (valid_request_id(request_id)) {
+                res.set_header("X-Request-Id", request_id);
+            }
             if (req.has_header("Origin")) {
                 send_error(res, 403, "browser-origin requests are disabled", "invalid_request_error");
                 return httplib::Server::HandlerResponse::Handled;
             }
-            if (args.api_key.empty()) return httplib::Server::HandlerResponse::Unhandled;
+            if (loopback && req.has_header("Host") && !host_header_is_loopback(req.get_header_value("Host"))) {
+                send_error(res, 403, "Host header is not a loopback name; this server is bound to loopback",
+                           "invalid_request_error");
+                return httplib::Server::HandlerResponse::Handled;
+            }
             if (req.path == "/health" || req.method == "OPTIONS") {
                 return httplib::Server::HandlerResponse::Unhandled;
             }
-            if (req.get_header_value("Authorization") != expected) {
+            if (!args.api_key.empty() &&
+                !constant_time_equals(req.get_header_value("Authorization"), expected)) {
                 send_error(res, 401, "invalid or missing API key", "authentication_error");
+                return httplib::Server::HandlerResponse::Handled;
+            }
+            if (!ready.load()) {
+                send_error(res, 503, "Loading model", "unavailable_error");
                 return httplib::Server::HandlerResponse::Handled;
             }
             return httplib::Server::HandlerResponse::Unhandled;
@@ -634,11 +767,23 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
 
     // ---- health / diagnostics -------------------------------------------
 
-    svr.Get("/health", [](const httplib::Request &, httplib::Response & res) {
+    // 503 with llama-server's loading body until the model is up, then 200.
+    // A refused connection now means the process is not running at all.
+    svr.Get("/health", [&ready](const httplib::Request &, httplib::Response & res) {
+        if (!ready.load()) {
+            send_error(res, 503, "Loading model", "unavailable_error");
+            return;
+        }
         res.set_content("{\"status\":\"ok\"}", "application/json; charset=utf-8");
     });
 
-    svr.Get("/props", [&](const httplib::Request &, httplib::Response & res) {
+    if (args.metrics) {
+        svr.Get("/metrics", [&engine](const httplib::Request &, httplib::Response & res) {
+            res.set_content(metrics_text(engine.metrics()), "text/plain; version=0.0.4");
+        });
+    }
+
+    svr.Get("/props", [&engine, &bound_port](const httplib::Request &, httplib::Response & res) {
         common_json defaults = common_json::object();
         // Per-slot, not the whole context - llama-server parity. Its
         // get_res_props() reports default_generation_settings.n_ctx as
@@ -657,6 +802,8 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         props["model_alias"]                 = engine.alias();
         props["chat_template"]               = engine.chat_template_source();
         props["build_info"]                  = std::string("onyx-engine/" ONYX_ENGINE_VERSION " (llama.cpp " ONYX_ENGINE_LLAMA_PIN ")");
+        // the port actually bound; differs from --port only for --port 0
+        props["port"]                        = bound_port;
         // Deliberately the same value as default_generation_settings.n_ctx
         // above: llama-server publishes only the nested one, and consumers
         // differ on which they read (JX Runtime's adapter takes the first of
@@ -866,7 +1013,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
                 return !req.is_connection_closed();
             });
             if (!r.error.empty()) {
-                send_generation_error(res, r.error);
+                send_generation_error(res, r);
                 return;
             }
 
@@ -912,6 +1059,10 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         st->parser_params = parser_params;
 
         if (!validate_stream_sampler(engine, gp, res)) return;
+        if (engine.queue_full()) {
+            send_busy(res, "server is busy: the request queue is full (--max-queue)");
+            return;
+        }
         res.set_chunked_content_provider("text/event-stream", [&engine, gp, st, include_usage](size_t offset, httplib::DataSink & sink) {
             if (offset > 0) {
                 // single-shot provider: everything is written on the first call
@@ -968,13 +1119,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
             onyx_gen_result r = engine.generate(gp, emit_piece);
 
             if (!r.error.empty()) {
-                common_json err = common_json::object();
-                common_json e   = common_json::object();
-                e["message"] = r.error;
-                e["type"]    = "server_error";
-                e["code"]    = 500;
-                err["error"] = e;
-                sse_write(sink, err);
+                sse_write(sink, stream_error_json(r));
                 sink.done();
                 return true;
             }
@@ -1134,7 +1279,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
                 return !req.is_connection_closed();
             });
             if (!r.error.empty()) {
-                send_generation_error(res, r.error);
+                send_generation_error(res, r);
                 return;
             }
             common_json out = make_cmpl_payload(r.text, finish_reason_str(r, false).c_str(),
@@ -1150,6 +1295,10 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         }
 
         if (!validate_stream_sampler(engine, gp, res)) return;
+        if (engine.queue_full()) {
+            send_busy(res, "server is busy: the request queue is full (--max-queue)");
+            return;
+        }
         res.set_chunked_content_provider("text/event-stream", [&engine, gp, make_cmpl_payload, include_usage](size_t offset, httplib::DataSink & sink) {
             if (offset > 0) {
                 return false;
@@ -1168,13 +1317,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
             onyx_gen_result r = engine.generate(gp, emit_piece);
 
             if (!r.error.empty()) {
-                common_json err = common_json::object();
-                common_json e   = common_json::object();
-                e["message"] = r.error;
-                e["type"]    = "server_error";
-                e["code"]    = 500;
-                err["error"] = e;
-                sse_write(sink, err);
+                sse_write(sink, stream_error_json(r));
                 sink.done();
                 return true;
             }
@@ -1397,17 +1540,43 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
 
     svr.set_read_timeout(600);
     svr.set_write_timeout(600);
+    svr.set_payload_max_length(ONYX_MAX_PAYLOAD_BYTES);
 
-    if (!svr.bind_to_port(args.host, args.port)) {
+    if (args.port == 0) {
+        bound_port = svr.bind_to_any_port(args.host);
+        if (bound_port <= 0) {
+            fprintf(stderr, "error: failed to bind to %s on any port\n", args.host.c_str());
+            return 1;
+        }
+    } else if (!svr.bind_to_port(args.host, args.port)) {
         fprintf(stderr, "error: failed to bind to %s:%d\n", args.host.c_str(), args.port);
         return 1;
     }
 
-    fprintf(stderr, "onyx-engine listening on http://%s:%d (model: %s, ctx: %u%s)\n",
-            args.host.c_str(), args.port, engine.alias().c_str(), engine.n_ctx(),
+    // Serve from a second thread while the model loads on this one.
+    std::atomic<bool> listen_failed{false};
+    std::thread listener([&svr, &listen_failed] {
+        if (!svr.listen_after_bind()) {
+            listen_failed = true;
+        }
+    });
+    svr.wait_until_ready();
+
+    fprintf(stderr, "onyx-engine listening on http://%s:%d (loading)\n", args.host.c_str(), bound_port);
+
+    if (!load()) {
+        svr.stop();
+        listener.join();
+        return 1;
+    }
+    ready = true;
+
+    fprintf(stderr, "onyx-engine ready on http://%s:%d (model: %s, ctx: %u%s)\n",
+            args.host.c_str(), bound_port, engine.alias().c_str(), engine.n_ctx(),
             engine.embedding_mode() ? ", embedding mode" : engine.decision_mode() ? ", decision model" : "");
 
-    if (!svr.listen_after_bind()) {
+    listener.join();
+    if (listen_failed) {
         fprintf(stderr, "error: server terminated unexpectedly\n");
         return 1;
     }

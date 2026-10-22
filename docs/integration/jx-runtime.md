@@ -2,7 +2,9 @@
 
 # JX Runtime integration
 
-Onyx Engine exists so that [JX Runtime](https://github.com/jxburros/JX-Runtime), a Node.js model runtime, can spawn `onyx-engine` where it would otherwise spawn a third-party `llama-server`: one process per loaded model, polled at `GET /health`, with its OpenAI-compatible endpoints proxied through to callers.
+[JX Runtime](https://github.com/jxburros/JX-Runtime), a Node.js model runtime, is Onyx Engine's first-class integration. It spawns `onyx-engine` where it would otherwise spawn a third-party `llama-server`: one process per loaded model, polled at `GET /health`, with its OpenAI-compatible endpoints proxied through to callers.
+
+JX Runtime has no private contract. Everything this page lists is public behaviour, and every item is on the [stability page](../reference/stability.md); anyone writing their own supervisor gets the same guarantees (see [supervising](../guides/supervising.md)).
 
 ![JX Runtime spawns one onyx-engine per loaded model and proxies requests to it](../../assets/diagrams/svg/jx-runtime.svg)
 
@@ -22,7 +24,7 @@ JX Runtime talks to its child process over a small, fixed set of endpoints. The 
 
 | Adapter step | Route | What the engine guarantees |
 |---|---|---|
-| Wait for readiness (`_waitReady()`) | `GET /health`, with exponential backoff from 25 ms to 300 ms | The port is not open until the model has loaded, so the first `200 {"status":"ok"}` means the model is loaded, not merely that the process started. |
+| Wait for readiness (`_waitReady()`) | `GET /health`, with exponential backoff from 25 ms to 300 ms | `503 Loading model` while loading, then `200 {"status":"ok"}`. Only a `200` means the model is loaded; the adapter keeps polling on anything else, and stops on process exit. See [readiness](#readiness). |
 | Capture properties at load (`_captureProps()`) | `GET /props` | `chat_template`, `build_info`, and the context length under **both** `n_ctx` and `default_generation_settings.n_ctx`, the same value. See [per-slot context](#per-slot-context). |
 | Count tokens for preflight (`tokenCount()`) | `POST /tokenize` with `{"content": ...}` | Returns `{"tokens": [...]}`. |
 | Render a prompt (`renderPrompt()`) | `POST /apply-template` with a chat-completions-style body | Returns `{"prompt": "..."}`. |
@@ -40,6 +42,24 @@ All of these calls except the streaming proxy go through a small, bounded, best-
 JX Runtime proxies `POST /v1/systemone` for decision ("System One") models, and the `onyxengine` adapter inherits the route from the `llamacpp` adapter. The engine serves it for a model with `<arch>.decision.type` in its metadata, with llama-server's request and response shapes, so the adapter needs no change to send `decide` loads to Onyx.
 
 Such a process serves only that route: chat and completions answer `501`, and `/props` carries `"decision_type": "<family>"` (`null` for other models), which the adapter can use to tell the two apart. A text model answers `/v1/systemone` with `501`, which the adapter already surfaces as "engine does not provide /v1/systemone". Image input needs `--mmproj` and one of the families listed in [decision models](../guides/decision-models.md#images).
+
+## Readiness
+
+From 0.6.0 the engine binds its port before it loads the model and answers `503` with
+llama-server's loading body (`{"error":{"code":503,"message":"Loading model","type":"unavailable_error"}}`)
+on `/health` and every other route until the model is up. Earlier versions kept the port closed
+until then.
+
+The adapter's `_waitReady()` already treats only `res.ok` as ready and retries on any other
+status or a refused connection, while checking whether the process has exited. It therefore works
+unchanged against both behaviours, and against `llama-server`, which answers the same `503`.
+JX Runtime's next release also records when the engine first answered `503`
+(`stages.firstHealthLoadingMs`), separating "process started and port open" from "model loaded" in
+its load telemetry.
+
+The engine prints the bound port on stderr (`onyx-engine listening on http://HOST:PORT (loading)`)
+and in `/props` (`port`), so `--port 0` is available to a supervisor that wants the operating
+system to choose. JX Runtime still chooses the port itself and passes it.
 
 ## `--alias` is the model identity
 
@@ -82,8 +102,9 @@ The engine's final SSE frame, for both `/v1/chat/completions` and `/v1/completio
 
 | Event | Engine behavior | Adapter's job |
 |---|---|---|
-| Spawn | Parses arguments, resolves and loads the model, then binds | Pass `--alias`, `--port`, `-c`, `--parallel` and only the feature flags the build advertises |
-| Ready | `/health` returns `200` | Poll with backoff; do not treat a refused connection during load as a failure |
+| Spawn | Parses arguments, binds, then resolves and loads the model (`/health` answers `503` meanwhile) | Pass `--alias`, `--port`, `-c`, `--parallel` and only the feature flags the build advertises |
+| Ready | `/health` returns `200` | Poll with backoff; treat `503` and a refused connection as "not yet", and process exit as failure |
+| Failed load | Prints `error: ...`, closes the port, exits 1 | Report the stderr tail |
 | Request | Queues FIFO, decodes in a shared batch | Proxy; read `usage` and `timings` from the last frame |
 | Client disconnect | The request is cancelled at the next tick and its slot freed | Close the upstream connection promptly |
 | Unload | Process is signalled and exits | Free the port; there is no in-process unload |
@@ -92,4 +113,4 @@ The engine holds the model for the life of the process. Swapping models means st
 
 ## Changing the contract
 
-Anything above that JX Runtime reads is part of a contract: the six routes, the `/props` fields, the final-frame fields, the asset names and the `--help` rule. Before changing one, check the adapter, and record the change in the [changelog](../../CHANGELOG.md) so the JX Runtime side can move its pin deliberately.
+Anything above that JX Runtime reads is part of the public contract on the [stability page](../reference/stability.md): the routes, the `/props` fields, the final-frame fields, the readiness answers, the asset names and the `--help` rule. A change to one follows that page's rule (a minor version and a **Breaking** changelog heading). Check the adapter as well, so the JX Runtime side can move its pin deliberately.

@@ -13,7 +13,8 @@ Find the message, read the cause. Messages are quoted as the engine prints them.
 | `error: unknown argument '--foo' (see --help)` | The flag is not implemented. The parser accepts only what `--help` lists; see [the CLI reference](../reference/cli.md). |
 | `error: -fa requires a value` | `-fa` needs `on`, `off`, `auto`, `1` or `0`. |
 | `error: --pooling requires --embedding` | Add `--embedding`. |
-| `error: failed to bind to HOST:PORT` | The port is in use, or the address is not on this machine. |
+| `error: failed to bind to HOST:PORT` | The port is in use, or the address is not on this machine. `--port 0` picks a free one. |
+| `error: --host ... accepts connections from other machines; set --api-key, ...` | A non-loopback `--host` needs `--api-key`, or `--allow-unauthenticated` if something else guards the port. See [security](security.md). |
 | `error: model path does not exist: '...'` | The `-m` path is wrong. Relative paths resolve against the directory you launched from. |
 | `error: failed to load model from '...'` | The file is missing, truncated, or not a model llama.cpp can read. Check the path and the file's size. |
 | `error: failed to create inference context (ctx-size N)` | Not enough memory for that context. Lower `-c`, or offload fewer layers. |
@@ -23,7 +24,7 @@ Find the message, read the cause. Messages are quoted as the engine prints them.
 | a converter error naming a missing script | Set `ONYX_ENGINE_CONVERT_SCRIPT`, or run the binary from where `scripts/` sits beside it. |
 | a converter refusal naming an architecture, tokenizer or dtype | The safetensors model is outside what the converter handles. Use a GGUF. |
 
-The port is not open until loading finishes. A refused connection in the first seconds is normal on a big model; poll `GET /health` rather than sleeping.
+The port opens at once and `GET /health` answers `503` (`Loading model`) until loading finishes, then `200`. Poll it rather than sleeping. A refused connection after you have seen a `503` means the process exited: read its stderr for the `error:` line.
 
 ## A request failed
 
@@ -31,6 +32,10 @@ The port is not open until loading finishes. A refused connection in the first s
 |---|---|
 | `401 invalid or missing API key` | The server was started with `--api-key`. Send `Authorization: Bearer KEY`. |
 | `403 browser-origin requests are disabled` | The request carried an `Origin` header. Call from a server, not a page; or let a proxy strip it. |
+| `403 Host header is not a loopback name` | The engine is bound to loopback and the request's `Host` named something else (a DNS name, a LAN address). Call it as `127.0.0.1` or `localhost`, or have the proxy rewrite `Host`. |
+| `503 Loading model` | The model is still loading. Wait for `GET /health` to answer `200`. |
+| `503 server is busy: ... (--max-queue)` | The wait queue is full. Retry after the `Retry-After` seconds, raise `--max-queue`, or add slots. |
+| `413` (empty body) | The request body is over 100 MiB. |
 | `400 unsupported field: logit_bias` (or `mirostat`, `dry_*`, `xtc_*`, `typical_p`, `dynatemp_*`) | Not implemented. Remove the field. See [compatibility](../reference/compatibility.md). |
 | `400 only n=1 is supported` | Send one request per choice. |
 | `400 prompt does not fit in the context window` | The prompt is longer than **one slot's** window. Read `n_ctx` from `/props`, shorten the prompt, or raise `-c` (or lower `-np`). |

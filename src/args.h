@@ -1,15 +1,17 @@
 // onyx-engine command line arguments.
 //
 // Flag names deliberately mirror llama-server's flags for the subset we
-// implement, because JX Runtime's llamacpp adapter probes `--help` text to
-// decide which flags a server binary understands. A flag appears in the
-// parser and in the --help text together, or not at all — an unimplemented
-// flag must be absent from both so callers never pass it expecting behavior
-// we do not have. v2 added --parallel (real slots), --context-shift, --keep,
-// --reasoning-budget, --reasoning-budget-message, and --mmproj under this
-// rule. --no-webui is a no-op accepted under the same rule, purely for
-// compatibility: JX Runtime's llama.cpp adapter passes it on every launch,
-// and onyx-engine has no web UI to disable.
+// implement, so a supervisor written for llama-server can drive onyx-engine
+// unchanged. `--help` is part of the interface: a flag appears in the parser
+// and in the --help text together, or not at all, so any supervisor can probe
+// `--help` to learn which flags this build accepts (JX Runtime's adapter does
+// exactly that). An unimplemented flag must be absent from both, so callers
+// never pass it expecting behavior we do not have. v2 added --parallel (real
+// slots), --context-shift, --keep, --reasoning-budget,
+// --reasoning-budget-message, and --mmproj under this rule. --no-webui and
+// --jinja are accepted as no-ops purely for llama-server compatibility:
+// supervisors built for llama-server pass them, and onyx-engine has no web UI
+// and always uses Jinja templates. See docs/reference/stability.md.
 #pragma once
 
 #include <cstdint>
@@ -24,8 +26,9 @@ struct onyx_args {
 
     // network
     std::string host = "127.0.0.1";
-    int         port = 8080;
+    int         port = 8080;         // 0 = any free port, reported once bound
     std::string api_key;             // optional bearer token
+    bool        allow_unauthenticated = false; // permit a non-loopback --host without --api-key
 
     // context / compute
     int32_t n_ctx           = 4096;  // 0 = use model's training context
@@ -35,6 +38,8 @@ struct onyx_args {
     int32_t n_threads       = -1;    // -1 = auto
     int32_t n_threads_batch = -1;    // -1 = same as n_threads
     int32_t n_parallel      = 1;     // concurrent request slots (continuous batching)
+    int32_t max_queue       = 0;     // requests allowed to wait for a slot; 0 = unbounded
+    int32_t tick_tokens     = 0;     // per-tick token budget (decodes first); 0 = batch size
     int32_t flash_attn      = -1;    // -1 auto, 0 off, 1 on
     bool    mlock           = false;
     bool    no_mmap         = false;
@@ -47,6 +52,7 @@ struct onyx_args {
     bool        jinja        = true;  // accepted for compat; jinja is always used
     bool        verbose      = false;
     bool        no_webui     = false; // accepted for compat; onyx-engine has no web UI
+    bool        metrics      = false; // serve Prometheus metrics on /metrics
 
     // context shift (v2): drop oldest tokens mid-generation instead of
     // stopping when the context fills
@@ -72,6 +78,9 @@ struct onyx_args {
 // Parses argv. Returns false (after printing an error to stderr) on invalid
 // input. On --help/--version, sets the corresponding flag and returns true.
 bool onyx_args_parse(int argc, char ** argv, onyx_args & out);
+
+// True for a --host that only accepts connections from this machine.
+bool onyx_host_is_loopback(const std::string & host);
 
 void onyx_args_print_help();
 void onyx_args_print_version();

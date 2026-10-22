@@ -23,15 +23,17 @@ tar -xzf onyx-engine-v<version>-linux-x64.tar.gz
 
 The archive holds the binary and three licence files, flat. The prebuilt binaries are CPU-only, and the x64 builds require a CPU with AVX2. For a GPU, build from source.
 
-**From source.** You need CMake 3.16 or later, a C++17 compiler, a C compiler, Git, and Node.js with npm (npm is only the installer and task runner; the package has no npm dependencies).
+**From source.** You need CMake 3.16 or later (3.21 for the presets), a C++17 compiler, a C compiler and Git. Node.js is not needed.
 
 ```bash
 git clone https://github.com/JX-Holdings-LLC/Onyx-Engine.git
 cd Onyx-Engine
-npm ci           # fetches and verifies the pinned llama.cpp commit with Git
-npm run build    # CMake configure and build, one job per CPU
+cmake -B build -DCMAKE_BUILD_TYPE=Release     # fetches and verifies the pinned llama.cpp commit with Git
+cmake --build build --target onyx-engine -j 8
 ./build/onyx-engine --version
 ```
+
+Or with a preset: `cmake --preset release && cmake --build --preset release` (the binary lands in `build/release/`). If you have Node.js, `npm ci && npm run build` does the same job and produces the same binary at `build/onyx-engine`.
 
 A cold build compiles all of llama.cpp and takes several minutes. For CUDA, Vulkan, Metal, ROCm or BLAS, see [building](development/building.md#acceleration-option-matrix).
 
@@ -43,15 +45,16 @@ Any GGUF will do:
 ./build/onyx-engine -m ./models/your-model.gguf --alias my-model --port 8080
 ```
 
-On success the process prints two lines on stderr and then sits and serves:
+On success the process prints four lines on stderr and then sits and serves:
 
 ```text
-onyx-engine 0.5.2: loading model './models/your-model.gguf'
+onyx-engine listening on http://127.0.0.1:8080 (loading)
+onyx-engine 0.6.0: loading model './models/your-model.gguf'
 onyx-engine: model loaded (<description>, <size> MiB)
-onyx-engine listening on http://127.0.0.1:8080 (model: my-model, ctx: 4096)
+onyx-engine ready on http://127.0.0.1:8080 (model: my-model, ctx: 4096)
 ```
 
-It binds `127.0.0.1` only. The port is not open until the model has loaded, so the first successful `GET /health` means the model is ready. A safetensors directory works too (`-m ./Llama-3-8B-hf/`); it is converted to GGUF once and cached. See [serving models](guides/serving-models.md).
+It binds `127.0.0.1` only. The port opens at once: `GET /health` answers `503` while the model loads and `200` once it is ready. Pass `--port 0` to let the system choose a free port; the `listening on` line says which. A safetensors directory works too (`-m ./Llama-3-8B-hf/`); it is converted to GGUF once and cached. See [serving models](guides/serving-models.md).
 
 ## 3. Ask it something
 
@@ -85,7 +88,7 @@ curl -d '{"content":"Hello!"}' http://127.0.0.1:8080/tokenize
 ## 5. Run the tests, offline
 
 ```bash
-npm test         # scripts/smoke-test.sh against tiny generated models
+bash scripts/smoke-test.sh    # or: npm test
 ```
 
 The smoke test generates its own random-weight models with a small numpy script, so it needs `python3` with numpy, `curl` and Bash, and downloads nothing. It checks the shape of every response, not the words, because the weights are random. See [testing and CI](development/testing-and-ci.md).

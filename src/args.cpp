@@ -32,7 +32,7 @@ void onyx_args_print_help() {
     printf(
         "usage: onyx-engine [options]\n"
         "\n"
-        "Onyx Engine - OpenAI-compatible model serving binary for JX Runtime.\n"
+        "Onyx Engine - a small, strict, supervisable OpenAI-compatible model server.\n"
         "Serves a single GGUF model per process.\n"
         "\n"
         "model:\n"
@@ -49,9 +49,14 @@ void onyx_args_print_help() {
         "       --no-webui              accepted for compatibility (onyx-engine has no web UI)\n"
         "\n"
         "network:\n"
-        "       --host HOST             address to bind (default: 127.0.0.1)\n"
-        "       --port PORT             port to listen on (default: 8080)\n"
+        "       --host HOST             address to bind (default: 127.0.0.1); any other\n"
+        "                               than loopback requires --api-key\n"
+        "       --port PORT             port to listen on, 0 = any free port, reported\n"
+        "                               on stderr and in /props (default: 8080)\n"
         "       --api-key KEY           require this bearer token except on /health\n"
+        "       --allow-unauthenticated\n"
+        "                               allow a non-loopback --host without --api-key\n"
+        "       --metrics               serve Prometheus metrics on /metrics\n"
         "\n"
         "compute:\n"
         "  -c,  --ctx-size N            context size in tokens, 0 = model default (default: 4096)\n"
@@ -63,12 +68,17 @@ void onyx_args_print_help() {
         "  -tb, --threads-batch N       prompt processing threads, -1 = same as --threads\n"
         "  -np, --parallel N            concurrent request slots; requests beyond this\n"
         "                               queue (default: 1)\n"
-        // "on|off|auto" (pipes), not "on, off, auto": JX Runtime's generic
-        // llama.cpp adapter decides whether to pass `-fa <value>` or a bare
-        // `-fa` by matching /on\|off\|auto|'on'/ against this line, and the
+        "       --max-queue N           requests allowed to wait for a slot; beyond it,\n"
+        "                               answer 503 with Retry-After, 0 = unbounded\n"
+        "                               (default: 0)\n"
+        "       --tick-tokens N         tokens per batching tick, decode rows first,\n"
+        "                               0 = --batch-size (default: 0)\n"
+        // "on|off|auto" (pipes), not "on, off, auto": supervisors probe this
+        // line to choose between `-fa <value>` and a bare `-fa` (JX Runtime's
+        // llama.cpp adapter matches /on\|off\|auto|'on'/ against it), and the
         // comma form reads as the old bare-toggle flag — which onyx-engine
         // rejects ("error: -fa requires a value"). The pipe form is also what
-        // the error message on line ~141 and llama-server's own help use.
+        // the --flash-attn error message and llama-server's own help use.
         "  -fa, --flash-attn VAL        flash attention: on|off|auto|1|0 (default: auto)\n"
         "       --mlock                 lock model memory in RAM\n"
         "       --no-mmap               do not memory-map the model file\n"
@@ -95,6 +105,10 @@ void onyx_args_print_help() {
         "misc:\n"
         "  -h,  --help                  show this help and exit\n"
         "       --version               show version and exit\n");
+}
+
+bool onyx_host_is_loopback(const std::string & host) {
+    return host == "localhost" || host == "::1" || host == "[::1]" || host.rfind("127.", 0) == 0;
 }
 
 bool onyx_args_parse(int argc, char ** argv, onyx_args & out) {
@@ -124,6 +138,8 @@ bool onyx_args_parse(int argc, char ** argv, onyx_args & out) {
         if (is("-v", "--verbose")) { out.verbose = true; continue; }
         if (is("--jinja"))         { out.jinja   = true; continue; }
         if (is("--no-webui"))      { out.no_webui = true; continue; }
+        if (is("--metrics"))       { out.metrics = true; continue; }
+        if (is("--allow-unauthenticated")) { out.allow_unauthenticated = true; continue; }
         if (is("--mlock"))         { out.mlock   = true; continue; }
         if (is("--no-mmap"))       { out.no_mmap = true; continue; }
         if (is("--embedding", "--embeddings")) { out.embedding = true; continue; }
@@ -164,6 +180,8 @@ bool onyx_args_parse(int argc, char ** argv, onyx_args & out) {
         if (is("-t", "--threads"))            { if (!(val = need_value(i, argv[i])) || !parse_int(val, n)) return false; out.n_threads = n; continue; }
         if (is("-tb", "--threads-batch"))     { if (!(val = need_value(i, argv[i])) || !parse_int(val, n)) return false; out.n_threads_batch = n; continue; }
         if (is("-np", "--parallel"))          { if (!(val = need_value(i, argv[i])) || !parse_int(val, n)) return false; out.n_parallel = n; continue; }
+        if (is("--max-queue"))                { if (!(val = need_value(i, argv[i])) || !parse_int(val, n)) return false; out.max_queue = n; continue; }
+        if (is("--tick-tokens"))              { if (!(val = need_value(i, argv[i])) || !parse_int(val, n)) return false; out.tick_tokens = n; continue; }
         if (is("--cache-reuse"))              { if (!(val = need_value(i, argv[i])) || !parse_int(val, n)) return false; out.cache_reuse = n; continue; }
         if (is("--keep"))                     { if (!(val = need_value(i, argv[i])) || !parse_int(val, n)) return false; out.n_keep = n; continue; }
         if (is("--reasoning-budget"))         { if (!(val = need_value(i, argv[i])) || !parse_int(val, n)) return false; out.reasoning_budget = n; continue; }
@@ -177,9 +195,14 @@ bool onyx_args_parse(int argc, char ** argv, onyx_args & out) {
         fprintf(stderr, "error: --model is required (see --help)\n");
         return false;
     }
-    if (out.port < 1 || out.port > 65535 || out.n_parallel < 1 || out.cache_reuse < 0 ||
-        out.n_batch < 1 || out.n_ubatch < 1 || out.n_ctx < 0) {
-        fprintf(stderr, "error: invalid port, parallel, cache-reuse, batch or context value\n");
+    if (out.port < 0 || out.port > 65535 || out.n_parallel < 1 || out.cache_reuse < 0 ||
+        out.n_batch < 1 || out.n_ubatch < 1 || out.n_ctx < 0 || out.max_queue < 0 || out.tick_tokens < 0) {
+        fprintf(stderr, "error: invalid port, parallel, max-queue, tick-tokens, cache-reuse, batch or context value\n");
+        return false;
+    }
+    if (!onyx_host_is_loopback(out.host) && out.api_key.empty() && !out.allow_unauthenticated) {
+        fprintf(stderr, "error: --host %s accepts connections from other machines; set --api-key, "
+                        "or pass --allow-unauthenticated to serve without one\n", out.host.c_str());
         return false;
     }
     if (out.pooling != "" && out.pooling != "none" && out.pooling != "mean" &&
