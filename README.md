@@ -9,7 +9,7 @@
 
 Onyx Engine is a single-model, OpenAI-compatible model-serving binary built on
 [llama.cpp](https://github.com/ggml-org/llama.cpp) (vendored as a pinned
-source tree, currently commit `9723942ad`, fetched by the install script).
+source tree, currently commit `d77256999` (b11820), fetched by the install script).
 One `onyx-engine` process loads one model
 (GGUF, or a safetensors model converted to GGUF on first load) and serves
 it over HTTP on `127.0.0.1:<port>`.
@@ -44,6 +44,10 @@ mapping this is built against.
 - Structured output via GBNF grammar, `json_schema`, or `response_format`
 - Embeddings via `--embedding` mode (pooled, L2-normalized; raw rank scores
   under `--pooling rank`)
+- **Decision models** (`/v1/systemone`, TypeSafe-compatible): a GGUF with
+  `<arch>.decision.type` answers typed `choice`/`score`/`noul` questions from
+  one prefill, for every family llama-server supports (openjev, laya, kev,
+  clef, lfm2-d1, h2o-lightning, ...), with images for the label families
 - **Parallel request slots + continuous batching** (`--parallel`/`-np`): a
   single engine thread packs one shared `llama_batch` per tick across all
   slots, so up to `-np N` requests generate concurrently instead of queuing
@@ -193,6 +197,7 @@ platforms, `checksums.txt`, and the packaging changes above.
 | `POST` | `/v1/chat/completions` | Chat completion, streaming or not |
 | `POST` | `/v1/completions` | Text completion, streaming or not |
 | `POST` | `/v1/embeddings` | Pooled embeddings (only when started with `--embedding`) |
+| `POST` | `/v1/systemone` | Typed decisions (only for a decision model, which serves nothing else) |
 
 Full request/response detail, including exactly which JSON fields are read
 and the SSE frame format, is in [`docs/api.md`](docs/api.md).

@@ -6,23 +6,26 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
 
 ## Where Onyx Engine stands
 
-- **Version 0.4.2;** the last dated CHANGELOG release is 0.3.1, and `.release/README.md` records
-  no dry run of the new release workflow yet. This branch adds the QA profile in `.ai/` and fixes
-  `npm run build` for Visual Studio.
-- **llama.cpp pinned at b10711** (`9723942ad`, 2026-08-30), about 1,070 commits behind upstream;
-  ggml pinned at `36da571` to match. `npm ci` fetches the source with Git.
+- **Version 0.5.0;** the last dated CHANGELOG release is 0.3.1, and `.release/README.md` records
+  no dry run of the new release workflow yet.
+- **llama.cpp pinned at b11820** (`d77256999`, 2026-10-22, the latest release when it moved);
+  ggml pinned at `f1aa6a3` to match. `npm ci` fetches the source with Git.
 - **Implemented:** OpenAI-compatible chat, completions, embeddings and models; llama-server-style
   utility endpoints; SSE with `usage` and `timings`; Jinja templates and tool calls through
   `common/`; GBNF and `json_schema`; parallel slots with continuous batching; context shift;
-  logprobs; reasoning budget; image and audio via `--mmproj`; per-slot prefix reuse; a numpy-only
+  logprobs; reasoning budget; image and audio via `--mmproj`; per-slot prefix reuse; decision
+  models on `/v1/systemone` ([#49][i49]); a numpy-only
   `LlamaForCausalLM` converter; `--api-key`. Release binaries are CPU-only, for four platforms.
 - **How JX Runtime uses it:** its `onyxengine` adapter spawns one `onyx-engine` per loaded model,
   polls `/health`, proxies chat, completion and embeddings, probes `--help` before passing a
   flag, and installs release archives ([integration doc](docs/jx-runtime-integration.md)).
 
-## Now: no pin bump needed
+## Now
 
-- **Decide [#49][i49]**, decision models; see [Decisions needed](#decisions-needed).
+- **`logit_bias` for label tokens** ([#49][i49], optional): would make JX Runtime's chat-model
+  decision shim cheaper; `logit_bias` still gets a 400. See [Decisions needed](#decisions-needed).
+- **Decision images for clef, lfm2-d1-omni and vllm-d3:** these answer `501` today; they need media
+  evaluated in the same batch as the text that reads it (`docs/architecture.md`).
 - **Memory flags:** `--cache-type-k/-v` and MoE offload (`--cpu-moe`, `--n-cpu-moe`, `-ot`), plain
   plumbing onto libllama. ([R1 ranking][R1-rank] #1; [R2 table][R2-table])
 - **Operations:** `/metrics` under llama.cpp's `llamacpp:*` names, an `X-Request-Id` echo,
@@ -33,21 +36,22 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
   without `--api-key`. ([R1 hardening][R1-hard])
 - **Stage 1 of the `common/` plan:** Onyx-owned tokenize, batch and log helpers and sampler,
   nlohmann JSON with a depth cap, a narrower SWA/recurrent reuse gate (`src/engine.cpp` line 113)
-  and a thin chat seam. 1–1.5 weeks. **Must land before the next pin bump**: upstream master has
-  removed `common_batch_add`. ([R2 stages][R2-stages])
+  and a thin chat seam. 1–1.5 weeks. The b11820 bump already brought Onyx batch helpers
+  (`onyx_batch_add`, since upstream removed `common_batch_add`) and a part-aware prompt tokenizer
+  for common's new `common_chat_prompt`; the rest still applies. ([R2 stages][R2-stages])
 - **Song Deck structured output (its M1):** run Song Deck's real schemas through `json_schema` →
   GBNF and make truncated JSON fail clearly. ([Song Deck plan][SD-onyx], step 1)
 - **First 0.4.x release:** dry-run the unified workflow, then update the tag-push steps and
   "upcoming v0.4.0" notes in `README.md` and `docs/building.md`.
 
-## Next: weeks, mostly after a pin bump
+## Next: weeks
 
-- **Pin-bump pipeline, then the bump:** a scheduled Action that updates the vendor specs and
-  opens a PR with the `common/` header diff; then b11361 or later. Needs Stage 1.
+- **Pin-bump pipeline:** a scheduled Action that updates the vendor specs and opens a PR with the
+  `common/` header diff. (The bump to b11820 itself was done by hand for #49.)
   ([R1 ranking][R1-rank] #9)
 - **KV state (Stage 2):** context checkpoints and a host-RAM prompt cache, so SWA and hybrid
   models (Gemma 4, gpt-oss, Qwen3.5, Granite 4) get prefix reuse again; then slot save/restore and
-  media-aware matching under `--mmproj`. 2.5–3.5 weeks on the bumped pin, which carries upstream's
+  media-aware matching under `--mmproj`. 2.5–3.5 weeks; the b11820 pin carries upstream's
   checkpoint fixes. ([R2 KV][R2-kv])
 - **Auto-fit (`--fit`)** for one GPU plus CPU, alongside Stage 2. It reads memory through the
   unstable `src/llama-ext.h`, so it needs a fallback estimate. ([R2 table][R2-table])
@@ -82,18 +86,17 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
 
 | Item | What it needs | Where it sits |
 |---|---|---|
-| [#49][i49] decision models (`/v1/systemone`) | Owner picks (a) or (b); optionally `logit_bias` for label tokens | Open. The route landed upstream after the pin ([llama.cpp #29818](https://github.com/ggml-org/llama.cpp/pull/29818)); `logit_bias` gets a 400 today |
-| Dependabot: `actions/cache`, `download-artifact`, `upload-artifact`, `setup-node` | Review, then merge or close | Open since late September; `release.yml` was rewritten on 2026-10-20, so they may need a rebase |
+| [#49][i49] decision models (`/v1/systemone`) | Close once 0.5.0 merges; `logit_bias` stays optional | Option (a) done: llama.cpp re-vendored to b11820 and the handler ported (`src/decision.cpp`) |
+| Dependabot: `actions/cache`, `download-artifact`, `upload-artifact`, `setup-node` | Nothing; they close when 0.5.0 merges | Their bumps are folded into 0.5.0. Alone they failed `versions / validate`: a workflow change has to advance the onyx-engine version, which Dependabot cannot do |
 | QA follow-up to #46, #47, #51 (closed) | `browser_qa: { enabled: false }` for Onyx Engine in QAI-ality's `config/apps.yml` | QA runner config, outside this repo; gives levels 8–11 and 13 a clean SKIP |
 | #35, #36 (closed) | Nothing | Fixed on main: `npm ci` fetches llama.cpp with Git |
 
 ## Decisions needed
 
-1. **#49, decision models.** (a) Re-vendor llama.cpp to b11361 or later and port the
-   `/v1/systemone` handler into `src/server.cpp`: the pin bump moves forward, behind Stage 1, and
-   BackTrack's ggml pin moves with it. (b) Document that JX Runtime's `llamacpp` backend serves
-   decision models and have its `onyxengine` adapter refuse them: no Onyx code. Either way, decide
-   on `logit_bias` for label tokens. R1's notes skipped `/v1/systemone` as unidentified.
+1. **#49, `logit_bias` for label tokens.** Option (a) is done (0.5.0): llama.cpp at b11820 and
+   `/v1/systemone` in Onyx code. BackTrack's ggml pin should move to `f1aa6a3` with it. Still open:
+   whether to accept `logit_bias` restricted to label tokens, so a chat model can serve the
+   decision shim with an enum constraint plus logprobs.
 2. **How far to own the chat layer.** Full Stage 3 drops `common/` but loses automatic support for
    new chat templates; keeping upstream's chat layer behind the seam costs 3–5 days once and
    0.5–2 days per pin bump. ([R2 chat layer][R2-chat])

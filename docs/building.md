@@ -356,10 +356,10 @@ packaging/make-vendor-package.sh [--spec NAME|FILE] [path-to-upstream-checkout]
 
 - **Spec.** `--spec` names a file in `packaging/vendor/` (`llama.cpp`, the
   default, or `ggml`) or gives a path to one.
-- **Pin.** For llama.cpp: commit `9723942adc518b43c4b95dc4dce6906903eb5e09`,
-  build `b10711`, package version `0.3.0-b10711.g9723942ad`. For ggml:
-  commit `36da57138425487184aa1da2eee2cde155909c6f`, package version
-  `0.22.0.g36da57138`. The version is always
+- **Pin.** For llama.cpp: commit `d77256999f211f8c0a5b12d13564f48d685b59e7`,
+  build `b11820`, package version `0.7.0-b11820.gd77256999`. For ggml:
+  commit `f1aa6a3465ffad40dadd390ac16b9deedd4e97f7`, package version
+  `0.27.0-gf1aa6a346`. The version is always
   `<upstream version>[-b<build>].g<9-char commit>`.
 - **Source.** With a path, it stages from that local checkout (which must
   be at the pinned commit). Without one, it does a depth-1 `git fetch` of

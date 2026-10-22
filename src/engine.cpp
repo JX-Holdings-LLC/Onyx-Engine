@@ -5,6 +5,10 @@
 
 #include "mtmd-helper.h"
 
+#include "llama-cpp.h"
+// staging API: llama_batch_ext_set_decision_order (see CMakeLists.txt)
+#include "llama-ext.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -78,6 +82,20 @@ bool onyx_engine::load(const onyx_args & args) {
     vocab_   = llama_model_get_vocab(model_);
     add_bos_ = llama_vocab_get_add_bos(vocab_);
 
+    // a decision model serves /v1/systemone only: one request at a time, no
+    // batching loop, and two sequences (a shared prefix and one question)
+    const onyx_decision_type decision_type = onyx_decision_type_of(model_);
+    const bool is_decision = decision_type != ONYX_DECISION_NONE;
+    if (is_decision && embedding_mode_) {
+        load_error_ = "--embedding cannot be used with a decision model (it serves /v1/systemone)";
+        return false;
+    }
+    if (is_decision) {
+        n_parallel_        = 1;
+        ctx_shift_         = false;
+        decision_reuse_on_ = args.cache_reuse > 0;
+    }
+
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx     = args.n_ctx < 0 ? 0 : (uint32_t) args.n_ctx;
     // the batching loop needs room for one row per slot plus at least one
@@ -87,6 +105,11 @@ bool onyx_engine::load(const onyx_args & args) {
     // one llama.cpp sequence per request slot; llama.cpp divides n_ctx into
     // per-sequence budgets (kv_unified stays at its default false)
     cparams.n_seq_max = (uint32_t) n_parallel_;
+    if (is_decision) {
+        // both sequences see the whole context instead of half of it each
+        cparams.n_seq_max  = 2;
+        cparams.kv_unified = true;
+    }
 
     const int32_t hw_threads = (int32_t) std::thread::hardware_concurrency();
     cparams.n_threads       = args.n_threads       > 0 ? args.n_threads       : std::max(1, hw_threads);
@@ -100,6 +123,18 @@ bool onyx_engine::load(const onyx_args & args) {
     if (embedding_mode_) {
         cparams.embeddings   = true;
         cparams.pooling_type = pick_pooling(args.pooling, true);
+    }
+    if (is_decision && !onyx_decision_reads_embeddings(decision_type)) {
+        // label families read one logits row per decode; llama.cpp wants
+        // room for one per sequence
+        cparams.n_outputs_max = cparams.n_seq_max;
+    }
+    if (onyx_decision_reads_embeddings(decision_type)) {
+        // these families answer from per-token embeddings rows, read from
+        // the one batch that holds them all
+        cparams.embeddings   = true;
+        cparams.pooling_type = LLAMA_POOLING_TYPE_NONE;
+        cparams.n_ubatch     = cparams.n_batch;
     }
 
     ctx_ = llama_init_from_model(model_, cparams);
@@ -175,6 +210,17 @@ bool onyx_engine::load(const onyx_args & args) {
         return false;
     }
 
+    if (is_decision) {
+        try {
+            decision_.init(model_, media_marker());
+        } catch (const std::exception & e) {
+            load_error_ = std::string("failed to set up the decision model: ") + e.what();
+            return false;
+        }
+        fprintf(stderr, "decision model (%s): serving /v1/systemone\n", onyx_decision_type_name(decision_type));
+        return true;
+    }
+
     if (!embedding_mode_) {
         slots_.resize((size_t) n_parallel_);
         for (int32_t i = 0; i < n_parallel_; i++) {
@@ -201,8 +247,45 @@ std::string onyx_engine::chat_template_source() const {
     return chat_templates_ ? common_chat_templates_source(chat_templates_.get()) : "";
 }
 
+// llama_batch fill helpers. upstream's common_batch_add/common_batch_clear
+// went away when common moved to llama_batch_ext; onyx-engine keeps the plain
+// llama_batch and fills it itself.
+void onyx_batch_clear(llama_batch & batch) {
+    batch.n_tokens = 0;
+}
+
+void onyx_batch_add(llama_batch & batch, llama_token id, llama_pos pos,
+                    const std::vector<llama_seq_id> & seq_ids, bool logits) {
+    const int32_t i = batch.n_tokens;
+    batch.token[i]    = id;
+    batch.pos[i]      = pos;
+    batch.n_seq_id[i] = (int32_t) seq_ids.size();
+    for (size_t k = 0; k < seq_ids.size(); k++) {
+        batch.seq_id[i][k] = seq_ids[k];
+    }
+    batch.logits[i] = logits;
+    batch.n_tokens++;
+}
+
 std::vector<llama_token> onyx_engine::tokenize(const std::string & text, bool add_special, bool parse_special) const {
     return common_tokenize(vocab_, text, add_special, parse_special);
+}
+
+std::vector<llama_token> onyx_engine::tokenize_prompt(const common_chat_prompt & prompt) const {
+    // template text is parsed for special tokens; text that came from the
+    // request (message content) is not, so a client cannot write "<|im_end|>"
+    // and get the control token. BOS, if the vocab adds one, comes once.
+    std::vector<llama_token> out;
+    bool first = true;
+    for (const auto & part : prompt.parts) {
+        const auto toks = common_tokenize(vocab_, part.text, /* add_special */ first, /* parse_special */ !part.is_input);
+        out.insert(out.end(), toks.begin(), toks.end());
+        first = false;
+    }
+    if (first) {
+        out = common_tokenize(vocab_, "", true, true);
+    }
+    return out;
 }
 
 std::string onyx_engine::detokenize(const std::vector<llama_token> & tokens, bool special) const {
@@ -430,9 +513,9 @@ std::vector<float> onyx_engine::embed(const std::vector<llama_token> & tokens, s
     llama_memory_clear(llama_get_memory(ctx_), true);
 
     llama_batch batch = llama_batch_init((int32_t) tokens.size(), 0, 1);
-    common_batch_clear(batch);
+    onyx_batch_clear(batch);
     for (size_t k = 0; k < tokens.size(); k++) {
-        common_batch_add(batch, tokens[k], (llama_pos) k, {0}, true);
+        onyx_batch_add(batch, tokens[k], (llama_pos) k, {0}, true);
     }
 
     const bool encoder_only = llama_model_has_encoder(model_) && !llama_model_has_decoder(model_);
@@ -694,7 +777,7 @@ bool onyx_engine::admit_queued() {
 }
 
 void onyx_engine::build_batch(llama_batch & batch) {
-    common_batch_clear(batch);
+    onyx_batch_clear(batch);
     for (auto & slot : slots_) {
         slot.i_batch = -1;
     }
@@ -708,7 +791,7 @@ void onyx_engine::build_batch(llama_batch & batch) {
             break;
         }
         slot.i_batch = batch.n_tokens;
-        common_batch_add(batch, slot.sampled, slot.n_past, { slot.seq_id }, true);
+        onyx_batch_add(batch, slot.sampled, slot.n_past, { slot.seq_id }, true);
         if (!slot.has_media) {
             // media slots never reuse their KV, so the mirror array they would
             // be matched against is not maintained (and could not be: an image
@@ -744,7 +827,7 @@ void onyx_engine::build_batch(llama_batch & batch) {
             if (last) {
                 slot.i_batch = batch.n_tokens;
             }
-            common_batch_add(batch, slot.prompt[(size_t) slot.n_past], slot.n_past, { slot.seq_id }, last);
+            onyx_batch_add(batch, slot.prompt[(size_t) slot.n_past], slot.n_past, { slot.seq_id }, last);
             slot.cache_tokens.push_back(slot.prompt[(size_t) slot.n_past]);
             slot.n_past++;
         }
@@ -1131,4 +1214,346 @@ void onyx_engine::finish(onyx_slot & slot, onyx_finish_reason reason, const std:
         req->finished = true;
     }
     req->cv.notify_all();
+}
+
+// ---------------------------------------------------------------------------
+// decision mode
+// ---------------------------------------------------------------------------
+
+// Keeps the longest prefix of seq 0 that `tokens` starts with, up to n_max
+// tokens, and drops the rest of seq 0. Returns how many tokens are kept.
+int32_t onyx_engine::decision_reuse(const std::vector<llama_token> & tokens, int32_t n_max) {
+    llama_memory_t mem = llama_get_memory(ctx_);
+
+    size_t n_keep = 0;
+    if (mem && decision_reuse_on_) {
+        const size_t n_lim = (size_t) std::max(0, n_max);
+        while (n_keep < decision_cache_.size() && n_keep < tokens.size() && n_keep < n_lim &&
+               decision_cache_[n_keep] == tokens[n_keep]) {
+            n_keep++;
+        }
+    }
+    if (mem && n_keep == 0) {
+        llama_memory_seq_rm(mem, 0, -1, -1);
+    } else if (mem && n_keep < decision_cache_.size() && !llama_memory_seq_rm(mem, 0, (llama_pos) n_keep, -1)) {
+        // recurrent state cannot be cut back; start over then
+        llama_memory_seq_rm(mem, 0, -1, -1);
+        n_keep = 0;
+    }
+    decision_cache_.resize(n_keep);
+    return (int32_t) n_keep;
+}
+
+// Decodes p.tokens[from, end) into `seq` at their own positions and reads
+// p's outputs. The outputs sit in one batch: everything before the first
+// position read goes in n_batch chunks, the rest in one decode. With `out`
+// null the tokens are only evaluated (a shared prefix).
+bool onyx_engine::decision_eval(const onyx_decision_prompt & p, llama_seq_id seq, int32_t from,
+                                std::vector<float> * out, std::string & err) {
+    const int32_t n = (int32_t) p.tokens.size();
+    const bool    want_out = out != nullptr;
+
+    // the first position whose output is read: every one from there is an
+    // output when embeddings are read, only the last otherwise
+    int32_t out_from = n;
+    if (want_out) {
+        const int32_t first = p.pos_first();
+        out_from = std::max(from, first >= 0 ? first : n - 1);
+        if (!llama_get_causal_attn(ctx_)) {
+            out_from = from; // non-causal: the whole prompt sees itself in one batch
+        }
+        if (n - out_from > n_batch_) {
+            err = "prompt: the question and its options (" + std::to_string(n - out_from) +
+                  " tokens) do not fit in one batch; raise --batch-size (now " + std::to_string(n_batch_) + ")";
+            return false;
+        }
+    }
+
+    llama_batch_ext_ptr batch(llama_batch_ext_init(ctx_));
+    for (int32_t pos = from; pos < n; ) {
+        const int32_t end = pos < out_from ? std::min(out_from, pos + n_batch_) : n;
+        llama_batch_ext_clear(batch.get());
+        for (int32_t i = pos; i < end; i++) {
+            const int32_t   idx = llama_batch_ext_add_token(batch.get(), seq, p.tokens[(size_t) i]);
+            const llama_pos ipos = i;
+            if (idx < 0 || !llama_batch_ext_set_pos(batch.get(), idx, &ipos)) {
+                err = "failed to build the decision batch";
+                return false;
+            }
+            if (i >= out_from && (p.reads_embeddings() || i == n - 1)) {
+                llama_batch_ext_set_output_logits(batch.get(), idx, true);
+            }
+            if (!p.order.empty() && p.order[(size_t) i] != LLAMA_DECISION_ORDER_NONE) {
+                llama_batch_ext_set_decision_order(batch.get(), idx, (llama_decision_order) p.order[(size_t) i]);
+            }
+        }
+        const int32_t rc = llama_process(ctx_, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+        if (rc != 0) {
+            err = rc == 1 ? "prompt does not fit in the context window (no free KV slot)" : "decision evaluation failed";
+            return false;
+        }
+        pos = end;
+    }
+    if (!want_out) {
+        return true;
+    }
+
+    // outputs of the last batch: batch index == position - out_from
+    std::vector<float> & scores = *out;
+    scores.clear();
+    if (!p.labels.empty()) {
+        const float * logits = llama_get_logits_ith(ctx_, n - 1 - out_from);
+        if (!logits) {
+            err = "the model returned no logits";
+            return false;
+        }
+        for (const llama_token label : p.labels) {
+            scores.push_back(logits[label]);
+        }
+        if (!p.label_groups.empty()) {
+            std::vector<float> grouped;
+            size_t i = 0;
+            for (const int32_t k : p.label_groups) {
+                grouped.push_back(*std::max_element(scores.begin() + i, scores.begin() + i + k));
+                i += (size_t) k;
+            }
+            scores = std::move(grouped);
+        }
+        return true;
+    }
+
+    auto embd_at = [&](int32_t pos) -> const float * {
+        return pos >= out_from && pos < n ? llama_get_embeddings_ith(ctx_, pos - out_from) : nullptr;
+    };
+
+    // joint head: the scores are the first rows
+    for (int32_t i = 0; i < p.n_scores; i++) {
+        const float * embd = i < n - out_from ? llama_get_embeddings_ith(ctx_, i) : nullptr;
+        if (!embd) {
+            err = "the model returned no embeddings";
+            return false;
+        }
+        scores.push_back(embd[0]);
+    }
+
+    const int32_t n_embd_out = llama_model_n_embd_out(model_);
+    const int32_t n_half     = n_embd_out / 2;
+    const float * embd_q     = p.pointer >= 0 ? embd_at(p.pointer) : nullptr;
+    if (p.column < 0 || p.column >= n_embd_out) {
+        err = "the decision output column is out of range";
+        return false;
+    }
+    for (const int32_t marker : p.markers) {
+        const float * embd = embd_at(marker);
+        if (!embd || (p.pointer >= 0 && !embd_q)) {
+            err = "the model returned no embeddings";
+            return false;
+        }
+        if (p.pointer < 0) {
+            scores.push_back(embd[p.column]);
+            continue;
+        }
+        // kev: embeddings are [q | k]
+        float dot = 0.0f;
+        for (int32_t i = 0; i < n_half; i++) {
+            dot += embd_q[i] * embd[n_half + i];
+        }
+        scores.push_back(dot / std::sqrt((float) n_half));
+    }
+    return true;
+}
+
+// A prompt with media, label families only: prefilled through mtmd into a
+// cleared seq 0, the labels read from the last row.
+bool onyx_engine::decision_eval_media(const onyx_decision_prompt & p, std::vector<float> & scores,
+                                      int32_t & n_tokens, std::string & err) {
+    if (!mctx_ || p.labels.empty()) {
+        err = "prompt: image input is not supported for this decision model";
+        return false;
+    }
+    decision_reuse(p.tokens, 0);
+
+    mtmd::bitmaps bitmaps;
+    for (const auto & buf : p.media) {
+        auto out = mtmd_helper_bitmap_init_from_buf(mctx_, buf.data(), buf.size(), /* placeholder */ false,
+                                                    mtmd_helper_init_opt_default());
+        if (!out.bitmap) {
+            err = "prompt: failed to decode media input (unsupported or corrupt image/audio data)";
+            return false;
+        }
+        bitmaps.entries.emplace_back(out.bitmap);
+    }
+
+    mtmd_input_text text {
+        /* text          */ p.text.c_str(),
+        /* text_len      */ p.text.size(),
+        /* add_special   */ false,
+        /* parse_special */ true,
+    };
+    mtmd::input_chunks chunks(mtmd_input_chunks_init());
+    auto bitmaps_c_ptr = bitmaps.c_ptr();
+    const int32_t rc = mtmd_tokenize(mctx_, chunks.ptr.get(), &text, bitmaps_c_ptr.data(), bitmaps_c_ptr.size());
+    if (rc != 0) {
+        err = rc == 1 ? "prompt: the number of images does not match the template's media markers"
+                      : "prompt: failed to preprocess media input";
+        return false;
+    }
+    const llama_pos n_pos_total = mtmd_helper_get_n_pos(chunks.ptr.get());
+    if (n_pos_total >= (llama_pos) n_ctx_slot_) {
+        err = "prompt (" + std::to_string(n_pos_total) + " positions, media included) does not fit in the "
+              "context window (" + std::to_string(n_ctx_slot_) + " tokens)";
+        return false;
+    }
+
+    llama_pos n_past = 0;
+    const size_t n_chunks = chunks.size();
+    for (size_t i = 0; i < n_chunks; i++) {
+        llama_pos new_n_past = n_past;
+        if (mtmd_helper_eval_chunk_single(mctx_, ctx_, chunks[i], n_past, 0, n_batch_,
+                                          /* logits_last */ i + 1 == n_chunks, &new_n_past) != 0) {
+            llama_memory_seq_rm(llama_get_memory(ctx_), 0, -1, -1);
+            err = "failed to evaluate media prompt";
+            return false;
+        }
+        n_past = new_n_past;
+    }
+    // media positions cannot be prefix-matched, so nothing is kept
+    llama_memory_seq_rm(llama_get_memory(ctx_), 0, -1, -1);
+
+    const float * logits = llama_get_logits_ith(ctx_, -1);
+    if (!logits) {
+        err = "the model returned no logits";
+        return false;
+    }
+    scores.clear();
+    for (const llama_token label : p.labels) {
+        scores.push_back(logits[label]);
+    }
+    if (!p.label_groups.empty()) {
+        std::vector<float> grouped;
+        size_t i = 0;
+        for (const int32_t k : p.label_groups) {
+            grouped.push_back(*std::max_element(scores.begin() + i, scores.begin() + i + k));
+            i += (size_t) k;
+        }
+        scores = std::move(grouped);
+    }
+    n_tokens += (int32_t) mtmd_helper_get_n_tokens(chunks.ptr.get());
+    return true;
+}
+
+bool onyx_engine::decide(const std::vector<onyx_decision_prompt> & prompts, bool share_prefix,
+                         std::vector<std::vector<float>> & scores, int32_t & n_tokens, std::string & err) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    scores.assign(prompts.size(), {});
+    n_tokens = 0;
+    if (!decision_mode()) {
+        err = "this instance is not serving a decision model";
+        return false;
+    }
+
+    const int32_t n_vocab = llama_vocab_n_tokens(vocab_);
+    bool has_media = false;
+    for (const auto & p : prompts) {
+        has_media = has_media || !p.media.empty();
+        if (!p.media.empty()) {
+            continue;
+        }
+        if (p.tokens.empty()) {
+            err = "prompt produced no tokens";
+            return false;
+        }
+        if (p.tokens.size() >= n_ctx_slot_) {
+            err = "prompt (" + std::to_string(p.tokens.size()) + " tokens) does not fit in the context window (" +
+                  std::to_string(n_ctx_slot_) + " tokens)";
+            return false;
+        }
+        for (const llama_token t : p.labels) {
+            if (t < 0 || t >= n_vocab) {
+                err = "decision label is not a valid token";
+                return false;
+            }
+        }
+    }
+
+    llama_memory_t mem    = llama_get_memory(ctx_);
+    const bool     causal = llama_get_causal_attn(ctx_);
+    // a prompt can continue from cached tokens only in a causal context with
+    // memory, for a family whose prompts are read that way
+    const bool can_continue = mem && causal && decision_.can_share_prompt();
+
+    // the prefix all prompts share, evaluated once into seq 0; each prompt
+    // then runs in seq 1 from a copy of it
+    int32_t n_shared = 0;
+    if (share_prefix && can_continue && prompts.size() > 1 && !has_media) {
+        const auto & first = prompts[0].tokens;
+        n_shared = (int32_t) first.size();
+        for (const auto & p : prompts) {
+            int32_t k = 0;
+            while (k < n_shared && (size_t) k < p.tokens.size() && p.tokens[(size_t) k] == first[(size_t) k]) {
+                k++;
+            }
+            // every prompt keeps at least one token, and everything it reads, for itself
+            const int32_t first_read = p.pos_first();
+            k = std::min(k, (int32_t) p.tokens.size() - 1);
+            if (first_read >= 0) {
+                k = std::min(k, first_read);
+            }
+            n_shared = std::min(n_shared, k);
+        }
+    }
+
+    if (n_shared > 0) {
+        const auto & first = prompts[0];
+        const int32_t n_keep = decision_reuse(first.tokens, n_shared);
+        onyx_decision_prompt prefix;
+        prefix.tokens.assign(first.tokens.begin(), first.tokens.begin() + n_shared);
+        if (n_keep < n_shared && !decision_eval(prefix, 0, n_keep, nullptr, err)) {
+            decision_reuse({}, 0);
+            return false;
+        }
+        decision_cache_ = prefix.tokens;
+
+        for (size_t i = 0; i < prompts.size(); i++) {
+            llama_memory_seq_rm(mem, 1, -1, -1);
+            llama_memory_seq_cp(mem, 0, 1, -1, -1);
+            if (!decision_eval(prompts[i], 1, n_shared, &scores[i], err)) {
+                llama_memory_seq_rm(mem, 1, -1, -1);
+                return false;
+            }
+            n_tokens += (int32_t) prompts[i].tokens.size();
+        }
+        llama_memory_seq_rm(mem, 1, -1, -1);
+        return true;
+    }
+
+    for (size_t i = 0; i < prompts.size(); i++) {
+        const auto & p = prompts[i];
+        if (!p.media.empty()) {
+            if (!decision_eval_media(p, scores[i], n_tokens, err)) {
+                return false;
+            }
+            continue;
+        }
+        // reuse only what comes before the first position read, and never
+        // the whole prompt
+        int32_t n_max = 0;
+        if (can_continue) {
+            const int32_t first_read = p.pos_first();
+            n_max = first_read >= 0 ? first_read : (int32_t) p.tokens.size() - 1;
+        }
+        const int32_t n_keep = decision_reuse(p.tokens, n_max);
+        if (!decision_eval(p, 0, n_keep, &scores[i], err)) {
+            decision_reuse({}, 0);
+            return false;
+        }
+        if (can_continue) {
+            decision_cache_ = p.tokens;
+        } else if (mem) {
+            llama_memory_seq_rm(mem, 0, -1, -1);
+        }
+        n_tokens += (int32_t) p.tokens.size();
+    }
+    return true;
 }

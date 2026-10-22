@@ -72,6 +72,19 @@ shapes):
   `chat` → `/v1/chat/completions`, `completion` → `/v1/completions`,
   `embeddings` → `/v1/embeddings`. `onyx-engine` implements all three exactly
   where the adapter expects them.
+- **Decision models (`/v1/systemone`).** JX Runtime proxies `POST
+  /v1/systemone` for decision ("System One") models; the `onyxengine`
+  adapter inherits the route from the llamacpp adapter. `onyx-engine` serves
+  it (since 0.5.0) for a model with `<arch>.decision.type` in its metadata,
+  with llama-server's request and response shapes (see
+  [`api.md`](api.md#post-v1systemone)), so the adapter needs no change to
+  send `decide` loads to Onyx. Such a process serves only that route: chat
+  and completions answer `501`, and `/props` carries
+  `"decision_type": "<family>"` (`null` for other models), which the adapter
+  can use to tell the two apart. A text model answers `/v1/systemone` with
+  `501`, which the adapter already surfaces as "engine does not provide
+  /v1/systemone". Image input needs `--mmproj` and one of the families listed
+  in `api.md`.
 
 All of these calls (except the streaming inference proxy itself) go through
 `_engineJson()`, a small bounded best-effort JSON fetch with a timeout —
@@ -106,7 +119,7 @@ JX Runtime's adapter never assumes a capability; it probes for it:
   but exited non-zero" (the latter is treated leniently since some
   `llama-server` builds exit non-zero on `--version`). `onyx-engine
   --version` prints `onyx-engine <version>` then
-  `llama.cpp b10711-9723942ad` and exits `0` —
+  `llama.cpp b11820-d77256999` and exits `0` —
   a clean answer either probe style would accept.
 - `supportsJinja()`, `supportsMmproj()`, and the generic `supportsFlag(flag)`
   all run `<binary> --help` once (cached per binary) and regex-search the
