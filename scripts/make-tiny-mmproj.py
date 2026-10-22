@@ -16,11 +16,12 @@ REPO = Path(__file__).resolve().parent.parent
 _CANDIDATES = [
     REPO / "node_modules" / "@jxburros" / "llama-cpp-source",
     REPO / "vendor" / "llama.cpp",
+    REPO / ".deps" / "llama.cpp",
 ]
 try:
     LLAMA_SRC = next(p for p in _CANDIDATES if (p / "CMakeLists.txt").exists())
 except StopIteration:
-    sys.exit("error: llama.cpp source tree not found - run: npm ci")
+    sys.exit("error: llama.cpp source tree not found - configure with CMake (or run npm ci) first")
 
 sys.path.insert(0, str(LLAMA_SRC / "gguf-py"))
 

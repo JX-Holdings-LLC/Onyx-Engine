@@ -12,7 +12,7 @@ Onyx Engine implements a subset of the OpenAI API and a few llama-server conveni
 | `logit_bias`, `typical_p`, `mirostat`, `mirostat_tau`, `mirostat_eta`, `dynatemp_range`, `dynatemp_exponent`, `dry_multiplier`, `dry_base`, `dry_allowed_length`, `dry_penalty_last_n`, `xtc_probability`, `xtc_threshold` | `400 unsupported field: <name>` |
 | `echo`, `suffix`, `best_of` on `/v1/completions` | `400 unsupported field: <name>` |
 | `dimensions` on `/v1/embeddings` | `400 dimensions is not supported` |
-| an `encoding_format` other than `float` | `400 only float encoding_format is supported` |
+| an `encoding_format` other than `float` or `base64` | `400 encoding_format must be float or base64` |
 | `top_logprobs` without `logprobs: true`, or outside 0 to 20 | `400` |
 | a prompt longer than one slot's context | `400 prompt does not fit in the context window` |
 | a media URL (`http://`, `https://`, `file://`) | `400`; media must be inline base64 |

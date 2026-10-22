@@ -5,7 +5,7 @@
 `POST /v1/embeddings`, available only when the process was started with `--embedding`. See [embeddings and reranking](../../guides/embeddings-and-reranking.md) for how to launch and use it.
 
 Returns `501` unless the process was started with `--embedding`. Requires
-`input`; missing it is `400`. `dimensions` and any `encoding_format` other than `float` are refused with `400`.
+`input`; missing it is `400`. `encoding_format` is `float` (the default: an array of numbers) or `base64` (the vector's float32 bytes, little-endian, base64-encoded, as OpenAI returns them; the official OpenAI clients ask for this by default and decode it themselves). `dimensions` and any other `encoding_format` are refused with `400`.
 
 `input` accepts: a string, an array of strings, an array of integer token
 ids (a single pre-tokenized input), or an array of arrays of integers

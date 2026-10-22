@@ -28,7 +28,7 @@ curl http://127.0.0.1:8082/v1/embeddings -H 'Content-Type: application/json' \
 
 `input` may be a string, an array of strings, an array of token ids (one pre-tokenized input) or an array of arrays of token ids. Each item gets `{"object":"embedding","index":i,"embedding":[...]}`, and the vectors are L2-normalized, so a dot product is a cosine similarity. `usage` counts input tokens only.
 
-Not supported, and refused with `400`: `dimensions`, and an `encoding_format` other than `float`. Clients that always send `dimensions` need a proxy that drops it, or a client setting that omits it.
+`encoding_format: "base64"`, which the official OpenAI Python and JS clients send by default, works and is decoded by the client. Not supported, and refused with `400`: `dimensions`, and an `encoding_format` other than `float` or `base64`. Clients that always send `dimensions` need a proxy that drops it, or a client setting that omits it.
 
 ## Reranking
 

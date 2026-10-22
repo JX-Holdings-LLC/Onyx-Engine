@@ -199,6 +199,7 @@ add_executable(onyx-engine
     src/convert.cpp
     src/decision.cpp
     src/engine.cpp
+    src/http_util.cpp
     src/server.cpp
 )
 
@@ -229,3 +230,39 @@ set_source_files_properties(src/decision.cpp src/engine.cpp PROPERTIES
 target_link_libraries(onyx-engine PRIVATE onyx-httplib llama-common llama mtmd Threads::Threads)
 
 install(TARGETS onyx-engine RUNTIME DESTINATION bin)
+
+# ---------------------------------------------------------------------------
+# Unit tests: argument parsing, request validation helpers and model-path
+# resolution, without a model or a running server. One ctest entry per suite:
+#   cmake --build build --target onyx-unit-tests && ctest --test-dir build
+# The end-to-end suite (scripts/smoke-test.sh) needs Python and generated
+# models, so it stays outside ctest.
+# ---------------------------------------------------------------------------
+if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(ONYX_ENGINE_TESTS_DEFAULT ON)
+else()
+    set(ONYX_ENGINE_TESTS_DEFAULT OFF)
+endif()
+option(ONYX_ENGINE_TESTS "Build the unit tests and register them with ctest" ${ONYX_ENGINE_TESTS_DEFAULT})
+
+if (ONYX_ENGINE_TESTS)
+    enable_testing()
+    add_executable(onyx-unit-tests
+        tests/unit/main.cpp
+        tests/unit/test_args.cpp
+        tests/unit/test_convert.cpp
+        tests/unit/test_http_util.cpp
+        src/args.cpp
+        src/convert.cpp
+        src/http_util.cpp
+    )
+    target_include_directories(onyx-unit-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(onyx-unit-tests PRIVATE
+        ONYX_ENGINE_VERSION="${APP_RELEASE_VERSION}"
+        ONYX_ENGINE_LLAMA_PIN="${ONYX_LLAMA_PIN}"
+    )
+    target_link_libraries(onyx-unit-tests PRIVATE Threads::Threads)
+    foreach(suite args convert http)
+        add_test(NAME unit.${suite} COMMAND onyx-unit-tests ${suite})
+    endforeach()
+endif()

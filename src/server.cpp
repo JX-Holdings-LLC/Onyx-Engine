@@ -1,5 +1,7 @@
 #include "server.h"
 
+#include "http_util.h"
+
 #include "chat.h"
 #include "common.h"
 #include "json-schema-to-grammar.h"
@@ -14,6 +16,7 @@
 #include <cctype>
 #include <cinttypes>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <initializer_list>
 #include <random>
@@ -78,57 +81,6 @@ static common_json stream_error_json(const onyx_gen_result & r) {
     common_json err = common_json::object();
     err["error"] = e;
     return err;
-}
-
-// X-Request-Id is echoed only when it is short, printable ASCII: it is a
-// caller's correlation id, never something to reflect unchecked into a header.
-static bool valid_request_id(const std::string & id) {
-    if (id.empty() || id.size() > 128) {
-        return false;
-    }
-    for (unsigned char c : id) {
-        if (c < 0x21 || c > 0x7e) {
-            return false;
-        }
-    }
-    return true;
-}
-
-// Compares in time that depends only on the lengths, so a caller cannot find
-// the API key one byte at a time by timing 401s.
-static bool constant_time_equals(const std::string & a, const std::string & b) {
-    const size_t n = std::max(a.size(), b.size());
-    unsigned char diff = a.size() == b.size() ? 0 : 1;
-    for (size_t i = 0; i < n; i++) {
-        const unsigned char x = i < a.size() ? (unsigned char) a[i] : 0;
-        const unsigned char y = i < b.size() ? (unsigned char) b[i] : 0;
-        diff |= (unsigned char) (x ^ y);
-    }
-    return diff == 0;
-}
-
-// The host part of a Host header: "[::1]:8080" -> "[::1]", "a:80" -> "a".
-static std::string host_header_name(const std::string & host) {
-    if (!host.empty() && host[0] == '[') {
-        const size_t close = host.find(']');
-        return close == std::string::npos ? host : host.substr(0, close + 1);
-    }
-    const size_t colon = host.find(':');
-    return colon == std::string::npos ? host : host.substr(0, colon);
-}
-
-// DNS-rebinding guard for a loopback-bound server: a browser tricked into
-// talking to 127.0.0.1 still sends the attacker's name in Host.
-static bool host_header_is_loopback(const std::string & host) {
-    std::string name = host_header_name(host);
-    for (auto & c : name) {
-        c = (char) std::tolower((unsigned char) c);
-    }
-    if (name == "localhost" || name == "[::1]" || name.rfind("127.", 0) == 0) {
-        return true;
-    }
-    const std::string suffix = ".localhost";
-    return name.size() > suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
 // Prometheus text exposition of the engine counters under llama-server's
@@ -326,77 +278,6 @@ static common_json diff_to_delta(const common_chat_msg_diff & diff) {
 // ---------------------------------------------------------------------------
 // multimodal content parts
 // ---------------------------------------------------------------------------
-
-// Minimal base64 decoder (same shape as llama-server's). Stops at the first
-// character that is neither base64 nor padding.
-static onyx_media_buffer base64_decode(const std::string & encoded) {
-    static const std::string chars =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    onyx_media_buffer out;
-    uint8_t quad[4];
-    int n = 0;
-
-    for (char c : encoded) {
-        const size_t idx = chars.find(c);
-        if (idx == std::string::npos) {
-            break;   // '=' padding, whitespace or garbage: stop here
-        }
-        quad[n++] = (uint8_t) idx;
-        if (n == 4) {
-            out.push_back((unsigned char) ((quad[0] << 2) | (quad[1] >> 4)));
-            out.push_back((unsigned char) (((quad[1] & 0x0f) << 4) | (quad[2] >> 2)));
-            out.push_back((unsigned char) (((quad[2] & 0x03) << 6) | quad[3]));
-            n = 0;
-        }
-    }
-    for (int i = n; i < 4; i++) {
-        quad[i] = 0;
-    }
-    if (n > 1) {
-        out.push_back((unsigned char) ((quad[0] << 2) | (quad[1] >> 4)));
-    }
-    if (n > 2) {
-        out.push_back((unsigned char) (((quad[1] & 0x0f) << 4) | (quad[2] >> 2)));
-    }
-    return out;
-}
-
-// onyx-engine performs no network or filesystem I/O on behalf of a request, so a
-// media payload can never be a location the server would have to go fetch.
-// Checked before any capability check: this holds whatever projector is loaded.
-static void reject_media_url(const std::string & url, const char * what) {
-    for (const char * scheme : {"http://", "https://", "file://"}) {
-        if (url.rfind(scheme, 0) == 0) {
-            throw std::runtime_error(std::string(scheme) + " " + what +
-                                     " URLs are not supported: onyx-engine does not fetch remote or local "
-                                     "resources. Inline the data as a 'data:<mime>;base64,...' URI or a "
-                                     "bare base64 string.");
-        }
-    }
-}
-
-// Resolves one media payload to raw file bytes: a data: URI or bare base64.
-static onyx_media_buffer decode_media_payload(const std::string & url, const char * what) {
-    std::string payload = url;
-    if (url.rfind("data:", 0) == 0) {
-        const size_t comma = url.find(',');
-        if (comma == std::string::npos) {
-            throw std::runtime_error("malformed data: URI (no comma separating the payload)");
-        }
-        const std::string header = url.substr(0, comma);
-        if (header.size() < 6 || header.compare(header.size() - 6, 6, "base64") != 0) {
-            throw std::runtime_error("data: URI must be base64 encoded");
-        }
-        payload = url.substr(comma + 1);
-    }
-
-    onyx_media_buffer data = base64_decode(payload);
-    if (data.empty()) {
-        throw std::runtime_error(std::string("could not decode ") + what + " data (expected base64)");
-    }
-    return data;
-}
 
 // Rewrites the OpenAI content-part arrays in `messages` in place: every
 // image_url / input_audio part is decoded into `out_media` and replaced by a
@@ -1346,8 +1227,11 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             send_error(res, 400, "dimensions is not supported", "invalid_request_error");
             return;
         }
-        if (body.contains("encoding_format") && body.at("encoding_format").get<std::string>() != "float") {
-            send_error(res, 400, "only float encoding_format is supported", "invalid_request_error");
+        // the official OpenAI clients ask for base64 unless told otherwise
+        const std::string encoding = body.contains("encoding_format") && !body.at("encoding_format").is_null()
+            ? body.at("encoding_format").get<std::string>() : "float";
+        if (encoding != "float" && encoding != "base64") {
+            send_error(res, 400, "encoding_format must be float or base64", "invalid_request_error");
             return;
         }
         if (!engine.embedding_mode()) {
@@ -1414,14 +1298,18 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             }
             n_prompt_total += (int64_t) inputs[i].size();
 
-            common_json vec = common_json::array();
-            for (float v : emb) {
-                vec.push_back((double) v);
-            }
             common_json item = common_json::object();
-            item["object"]    = "embedding";
-            item["index"]     = (int64_t) i;
-            item["embedding"] = vec;
+            item["object"] = "embedding";
+            item["index"]  = (int64_t) i;
+            if (encoding == "base64") {
+                item["embedding"] = embedding_base64(emb);
+            } else {
+                common_json vec = common_json::array();
+                for (float v : emb) {
+                    vec.push_back((double) v);
+                }
+                item["embedding"] = vec;
+            }
             data.push_back(item);
         }
 

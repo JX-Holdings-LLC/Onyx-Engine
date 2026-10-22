@@ -3,12 +3,30 @@
 #
 # Usage: scripts/smoke-test.sh [path-to-onyx-engine-binary]
 #
-# Requires: python3 + numpy (to generate the test model), curl.
+# Requires: python3 (or python) + numpy (to generate the test model), curl,
+# and Bash. Runs on Linux and macOS, and on Windows under Git Bash (the CI
+# windows leg), where the binary is build/Release/onyx-engine.exe.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-BIN="${1:-build/onyx-engine}"
+# Windows Python installs (and venvs) provide python.exe but no python3.exe.
+# Exported so the `bash -c` checks below inherit it.
+if ! command -v python3 > /dev/null 2>&1 && command -v python > /dev/null 2>&1; then
+    python3() { python "$@"; }
+    export -f python3
+fi
+# A path as the native binary sees it: C:/... under Git Bash, unchanged elsewhere.
+native_path() { (cd "$(dirname "$1")" && printf '%s/%s' "$(pwd -W 2> /dev/null || pwd)" "$(basename "$1")"); }
+
+if [ $# -ge 1 ]; then
+    BIN="$1"
+else
+    BIN=build/onyx-engine
+    for cand in build/onyx-engine build/Release/onyx-engine.exe build/onyx-engine.exe; do
+        [ -f "$cand" ] && { BIN="$cand"; break; }
+    done
+fi
 MODEL="models-test/tiny-llama-random.gguf"
 MMPROJ="models-test/tiny-mmproj-random.gguf"
 DEC_MODEL="models-test/tiny-llama-decision.gguf"
@@ -193,6 +211,19 @@ check "POST /v1/embeddings" \
     -X POST "$EMB_BASE/v1/embeddings" -d '{"input":["hello world","goodbye"]}'
 check "mixed embedding token array returns 400" http_status 400 -X POST "$EMB_BASE/v1/embeddings" \
     -d '{"input":[5,"a"]}'
+# the official OpenAI clients send encoding_format "base64" by default
+check "encoding_format base64 decodes to the float vector" bash -c "
+    f=\$(curl -sf -X POST '$EMB_BASE/v1/embeddings' -d '{\"input\":\"hello world\"}')
+    b=\$(curl -sf -X POST '$EMB_BASE/v1/embeddings' -d '{\"input\":\"hello world\",\"encoding_format\":\"base64\"}')
+    python3 -c '
+import base64, json, struct, sys
+f = json.loads(sys.argv[1])[\"data\"][0][\"embedding\"]
+raw = base64.b64decode(json.loads(sys.argv[2])[\"data\"][0][\"embedding\"])
+b = struct.unpack(\"<%df\" % (len(raw) // 4), raw)
+assert len(b) == len(f) == 64 and max(abs(x - y) for x, y in zip(f, b)) < 1e-6, (f[:3], b[:3])
+' \"\$f\" \"\$b\""
+check "an unknown encoding_format returns 400" http_status 400 -X POST "$EMB_BASE/v1/embeddings" \
+    -d '{"input":"x","encoding_format":"binary"}'
 check "generation rejected in embedding mode (501)" bash -c "
     code=\$(curl -s -o /dev/null -w '%{http_code}' -X POST '$EMB_BASE/v1/chat/completions' -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}')
     [ \"\$code\" = 501 ]"
@@ -560,7 +591,7 @@ print("stub converter: refusing on purpose", file=sys.stderr)
 sys.exit(3)
 PY
 ( rc=0
-  ONYX_ENGINE_CONVERT_SCRIPT="$PWD/models-test/stub-converter.py" \
+  ONYX_ENGINE_CONVERT_SCRIPT="$(native_path models-test/stub-converter.py)" \
       "$BIN" -m "$LOAD_DIR" --port "$LOAD_PORT" > models-test/onyx-loading.log 2>&1 || rc=$?
   echo "exit=$rc" > models-test/loading.exit ) &
 PIDS+=($!)

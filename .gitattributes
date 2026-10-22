@@ -1,0 +1,5 @@
+# Shell and Python scripts must keep LF endings: a CRLF checkout (the Windows
+# default) breaks bash with "$'\r': command not found".
+*.sh   text eol=lf
+*.py   text eol=lf
+*.cmake text eol=lf

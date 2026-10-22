@@ -1,6 +1,5 @@
 #include "args.h"
-
-#include "llama.h"
+#include "http_util.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -108,7 +107,7 @@ void onyx_args_print_help() {
 }
 
 bool onyx_host_is_loopback(const std::string & host) {
-    return host == "localhost" || host == "::1" || host == "[::1]" || host.rfind("127.", 0) == 0;
+    return host == "localhost" || host == "::1" || host == "[::1]" || onyx_is_ipv4_loopback(host);
 }
 
 bool onyx_args_parse(int argc, char ** argv, onyx_args & out) {
