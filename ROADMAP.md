@@ -8,16 +8,21 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
 
 ## Where Onyx Engine stands
 
-- **Version 0.5.2;** the last dated CHANGELOG release is 0.3.1, and `.release/README.md` records
+- **Version 0.6.0;** the last dated CHANGELOG release is 0.3.1, and `.release/README.md` records
   no dry run of the new release workflow yet.
 - **llama.cpp pinned at b11820** (`d77256999`, 2026-10-22, the latest release when it moved);
-  ggml pinned at `f1aa6a3` to match. `npm ci` fetches the source with Git.
+  ggml pinned at `f1aa6a3` to match. CMake (or `npm ci`) fetches the source with Git; no Node is
+  needed to build.
 - **Implemented:** OpenAI-compatible chat, completions, embeddings and models; llama-server-style
   utility endpoints; SSE with `usage` and `timings`; Jinja templates and tool calls through
   `common/`; GBNF and `json_schema`; parallel slots with continuous batching; context shift;
   logprobs; reasoning budget; image and audio via `--mmproj`; per-slot prefix reuse; decision
   models on `/v1/systemone` ([#49][i49]); a numpy-only
-  `LlamaForCausalLM` converter; `--api-key`. Release binaries are CPU-only, for four platforms.
+  `LlamaForCausalLM` converter; `--api-key`; `503` while loading and `--port 0`; `/metrics`,
+  `X-Request-Id`, `--max-queue` and `--tick-tokens`; base64 embeddings. Release binaries for
+  nine platform variants (CPU, baseline x64, arm64 Linux, Vulkan) and a CPU Docker image.
+- **Independent-tool plan:** items 1 to 8 of [`reports/independent-tool-plan.md`](reports/independent-tool-plan.md)
+  landed in 0.6.0; item 9 (conformance suite, benchmarks, real-model nightly, sanitizers) is open.
 - **How JX Runtime uses it:** its `onyxengine` adapter spawns one `onyx-engine` per loaded model,
   polls `/health`, proxies chat, completion and embeddings, probes `--help` before passing a
   flag, and installs release archives ([integration doc](docs/integration/jx-runtime.md)).
@@ -30,12 +35,11 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
   evaluated in the same batch as the text that reads it ([`docs/architecture/decision-models.md`](docs/architecture/decision-models.md)).
 - **Memory flags:** `--cache-type-k/-v` and MoE offload (`--cpu-moe`, `--n-cpu-moe`, `-ot`), plain
   plumbing onto libllama. ([R1 ranking][R1-rank] #1; [R2 table][R2-table])
-- **Operations:** `/metrics` under llama.cpp's `llamacpp:*` names, an `X-Request-Id` echo,
-  `--max-queue` answering 503 with `Retry-After`, and a per-tick token budget, decodes first.
-  ([R1 ranking][R1-rank] #2–3)
-- **Hardening:** a loopback Host allowlist, constant-time API-key compare, a shorter read timeout
-  and explicit payload cap, cpp-httplib v0.54.1 → v0.62, and refusing a non-loopback `--host`
-  without `--api-key`. ([R1 hardening][R1-hard])
+- **Operations:** done in 0.6.0 (`/metrics`, `X-Request-Id`, `--max-queue`, `--tick-tokens`).
+  Still open: a queue-wait timeout. ([R1 ranking][R1-rank] #2–3)
+- **Hardening:** the loopback Host allowlist, constant-time key compare, the explicit payload
+  cap and the non-loopback `--host` refusal are done (0.6.0). Still open: a shorter read timeout
+  and cpp-httplib v0.54.1 → v0.62. ([R1 hardening][R1-hard])
 - **Stage 1 of the `common/` plan:** Onyx-owned tokenize, batch and log helpers and sampler,
   nlohmann JSON with a depth cap, a narrower SWA/recurrent reuse gate (`src/engine.cpp` line 113)
   and a thin chat seam. 1–1.5 weeks. The b11820 bump already brought Onyx batch helpers
@@ -43,8 +47,10 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
   for common's new `common_chat_prompt`; the rest still applies. ([R2 stages][R2-stages])
 - **Song Deck structured output (its M1):** run Song Deck's real schemas through `json_schema` →
   GBNF and make truncated JSON fail clearly. ([Song Deck plan][SD-onyx], step 1)
-- **First release from the unified workflow:** dry-run it, then publish. The docs already
-  describe the manual, dry-run-first flow ([`docs/development/releasing.md`](docs/development/releasing.md)).
+- **First release from the unified workflow:** dry-run it, then publish. The publisher bug that
+  failed the v0.4.1 and v0.5.1 runs is fixed by the infrastructure pin in 0.6.0; delete their
+  empty drafts and tags. The docs describe the manual, dry-run-first flow
+  ([`docs/development/releasing.md`](docs/development/releasing.md)).
 
 ## Next: weeks
 
@@ -57,14 +63,14 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
   checkpoint fixes. ([R2 KV][R2-kv])
 - **Auto-fit (`--fit`)** for one GPU plus CPU, alongside Stage 2. It reads memory through the
   unstable `src/llama-ext.h`, so it needs a fallback estimate. ([R2 table][R2-table])
-- **Client compatibility:** embeddings `base64` and `dimensions`, `/v1/rerank` over
+- **Client compatibility:** embeddings `dimensions` (`base64` landed in 0.6.0), `/v1/rerank` over
   `--pooling rank`, `reasoning`/`reasoning_effort`, `allowed_tools` and `strict` tools, and context
   length in `/v1/models`. ([R1 API][R1-api]; [ranking][R1-rank] #5)
 - **`/v1/responses` and `/v1/messages`** for Codex and Claude Code, 1–2 weeks each; JX Runtime
   needs new `KIND_PATHS` entries to route them. ([R1 API][R1-api])
 - **CI and distribution:** an ASan/UBSan smoke-test job, fuzz harnesses, an RPC-off assertion,
-  build attestations, immutable releases, and baseline-x64 and arm64 builds (x64 builds now
-  assume AVX2). ([R1 hardening][R1-hard])
+  build attestations and immutable releases (baseline-x64, arm64 Linux and Vulkan builds landed
+  in 0.6.0). ([R1 hardening][R1-hard])
 - **Release convention** (`docs/release-convention.md`) for JX Runtime's installer and the audio
   apps, before Song Deck's M3. ([Song Deck plan][SD-onyx], step 2)
 
@@ -78,8 +84,7 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
   Stage 3. ([R2 speculation][R2-spec])
 - **Converter:** accept Llama 3 RoPE and the `llama-bpe` pre-tokenizer, rebase on the vendored
   `gguf-py`, and prefer pre-quantized GGUFs through an `-hf` resolver. ([R1 converter][R1-conv])
-- **Readiness:** listen at once and answer 503 while loading, with a matching change to JX
-  Runtime's `_waitReady()`. **Unified KV** behind a flag, so `-np N` stops splitting the context.
+- **Unified KV** behind a flag, so `-np N` stops splitting the context.
 - **Waiting on upstream:** MTP, EAGLE3 and DFlash (until their API reaches `llama.h`), and
   `GGML_BACKEND_DL` GPU variants. **Not planned:** multi-model routing, built-in tools or MCP,
   a web UI, TTS and realtime, which duplicate JX Runtime's role. ([R1 ranking][R1-rank])
@@ -108,18 +113,20 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
 4. **Converter.** Fix and rebase the numpy converter, fall back to upstream's
    `convert_hf_to_gguf.py` when torch is present, or lean on pre-quantized GGUFs; and whether the
    `-hf` resolver lives in Onyx or in JX Runtime.
-5. **Release builds and signing.** Baseline-x64 and arm64 variants (cheap) or `GGML_BACKEND_DL`
-   with CPU variants and Vulkan (as upstream does); whether to pay for Windows Authenticode (about
+5. **Release builds and signing.** Baseline-x64, arm64 Linux and Vulkan variants shipped in
+   0.6.0 as separate archives; still open: `GGML_BACKEND_DL` runtime CPU dispatch instead, CUDA
+   or ROCm archives, Metal in the `darwin-arm64` archive, a published arm64 or CUDA image; whether to pay for Windows Authenticode (about
    €8.60 a month) and macOS notarization.
-6. **Changes JX Runtime must agree to:** 503-while-loading readiness, refusing a non-loopback
-   `--host` without `--api-key`, and whether JX's idle unload makes `--sleep-idle-seconds` moot.
+6. **JX Runtime:** 503-while-loading readiness and the non-loopback `--host` refusal shipped in
+   0.6.0 without needing a JX change (its `_waitReady()` treats only `200` as ready, and it binds
+   `127.0.0.1`). Still open: whether JX's idle unload makes `--sleep-idle-seconds` moot.
 7. **llguidance for faster grammars.** R1 defers a build with it; R2 rules it out (Rust toolchain).
 
 ## Cross-repo dependencies
 
 - **[JX Runtime](https://github.com/jxburros/JX-Runtime)** spawns and proxies Onyx Engine and
-  installs its release archives by tag and asset name. Responses and Messages routing, 503
-  readiness, #49 and the pinned release tag all need changes there too.
+  installs its release archives by tag and asset name. Responses and Messages routing, #49 and
+  the pinned release tag need changes there too.
 - **[BackTrack](https://github.com/jxburros/BackTrack)** vendors ggml with Onyx's scripts (it was
   last at `36da571`; Onyx now pins `f1aa6a3`). After a llama.cpp bump, run
   `scripts/check-ggml-pin.sh ../BackTrack/packaging/vendor/ggml.conf` and move both pins.

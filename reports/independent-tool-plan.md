@@ -222,12 +222,22 @@ questions in the issue.
 
 ## Checklist
 
-- [ ] 1. Node-free CMake build with npm wrappers kept, presets added
-- [ ] 2. README, `--help` and descriptions repositioned; client section added
-- [ ] 3. Stability policy page
-- [ ] 4. Supervising guide
-- [ ] 5. Early listen with `503 loading`; `--port 0`; JX `_waitReady()` updated
-- [ ] 6. `X-Request-Id`, `--max-queue`, `/metrics`, hardening
-- [ ] 7. Vulkan and baseline builds, arm64 Linux, Docker image
-- [ ] 8. `CONTRIBUTING.md`, `ctest`, templates, Windows smoke
+Items 1 to 8 landed in 0.6.0 (see the [changelog](../CHANGELOG.md)). Answers to
+[Things to confirm](#things-to-confirm), found while doing them: JX Runtime never runs `npm ci` in
+an Onyx checkout (it installs release archives); its `_waitReady()` treats only `res.ok` as
+ready and retries on `503`, so early listening needed no JX change (its next release records
+the first `503` as a load stage); the release tooling keeps the npm package names, which item 1
+did not change; and 0.6.0 is a minor advance because it carries breaking changes. Two
+departures from the plan: the CMake fetch is a Git sparse fetch (not `FetchContent`) placed in
+`.deps/`, and the stale `v0.4.1`/`v0.5.1` drafts still need deleting by hand.
+
+
+- [x] 1. Node-free CMake build with npm wrappers kept, presets added
+- [x] 2. README, `--help` and descriptions repositioned; client section added
+- [x] 3. Stability policy page
+- [x] 4. Supervising guide
+- [x] 5. Early listen with `503 loading`; `--port 0`; JX `_waitReady()` updated
+- [x] 6. `X-Request-Id`, `--max-queue`, `/metrics`, hardening
+- [x] 7. Vulkan and baseline builds, arm64 Linux, Docker image
+- [x] 8. `CONTRIBUTING.md`, `ctest`, templates, Windows smoke
 - [ ] 9. Conformance suite, benchmarks, real-model nightly, sanitizers and fuzzing

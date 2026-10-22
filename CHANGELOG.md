@@ -6,6 +6,72 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Independent tool — 2026-10-22 (0.6.0)
+
+Items 1 to 8 of [`reports/independent-tool-plan.md`](reports/independent-tool-plan.md), and the
+release publisher fix. Agent: Claude Code (Claude).
+
+#### Breaking
+
+See the [stability page](docs/reference/stability.md) for the rule this follows.
+
+- **A non-loopback `--host` without `--api-key` exits 1** unless `--allow-unauthenticated` is
+  passed. JX Runtime binds `127.0.0.1` and is unaffected.
+- **A loopback bind answers `403` to a non-loopback `Host` header** (DNS-rebinding guard).
+- **The port opens before the model loads.** `/health` and every other route answer
+  `503 {"error":{"code":503,"message":"Loading model","type":"unavailable_error"}}` until it is
+  ready (llama-server's body); a failed load closes the port and exits 1. JX Runtime's
+  `_waitReady()` already treats only `200` as ready, so it needs no change; its next release also
+  records the first `503` as `stages.firstHealthLoadingMs`.
+
+#### Added
+
+- **Node-free build** (item 1): a bare clone builds with `cmake -B build && cmake --build build`;
+  `cmake/fetch-llama.cmake` fetches the pinned commit with Git into `.deps/llama.cpp`, verifies
+  it and writes the stamp CMake checks, reading the pin from `packaging/vendor/llama.cpp.conf`
+  like every other tool. `npm ci` and `npm run build` are unchanged; the two routes produce
+  identical source trees. `CMakePresets.json` adds `release`, `debug`, `static`, `cuda`, `vulkan`,
+  `metal` and `hip`. The tiny-model generators also find `.deps/llama.cpp`.
+- **Readiness and port selection** (item 5): the above, plus `--port 0` (the bound port is printed
+  on stderr and reported as `/props.port`) and two stable stderr lines, `listening on ... (loading)`
+  and `ready on ...`.
+- **Operator features** (item 6): `X-Request-Id` echo; `--max-queue N` (`503` with
+  `Retry-After: 1`); `/metrics` behind `--metrics` with llama-server's `llamacpp:*` names plus
+  `onyx:requests_rejected_total`; `--tick-tokens N`, a per-tick token budget with decode rows
+  first. Hardening: constant-time key compare, the `Host` allowlist, an explicit 100 MiB body cap.
+- **Base64 embeddings**: `encoding_format: "base64"`. The official `openai` Python and JS clients
+  send it by default, so their embeddings calls answered `400` before.
+- **Distribution** (item 7): release archives for `linux-arm64`, `linux-x64-baseline`,
+  `win32-x64-baseline`, `linux-x64-vulkan` and `win32-x64-vulkan`; a `Dockerfile` (CPU and CUDA
+  targets) and a release job that publishes the CPU image to GHCR.
+- **Contributor loop** (item 8): `CONTRIBUTING.md`; C++ unit tests under ctest (`tests/unit/`:
+  argument parsing, the request helpers now in `src/http_util.cpp`, model-path resolution); the
+  smoke suite on the Windows CI leg; a `build-paths` CI job for the CMake-only and npm builds;
+  issue and PR templates; `.gitattributes` keeping scripts at LF; a code map.
+- **Docs** (items 2–4): README repositioned (what it is first, "Works best with JX Runtime"
+  after, a clients section); `--help`, `CMakeLists.txt` and `package.json` no longer say "for JX
+  Runtime"; new [stability](docs/reference/stability.md), [supervising](docs/guides/supervising.md),
+  [clients](docs/guides/clients.md) and [Docker](docs/guides/docker.md) pages; the CLI, API,
+  security, troubleshooting, concurrency, compatibility, testing, releasing and JX integration
+  pages updated.
+
+#### Fixed
+
+- **Release publishing**: the Release workflow pinned release-infrastructure `181636b`, whose
+  publisher looked up the draft it had just created with `GET releases/tags/<tag>`, which never
+  returns drafts. The `v0.4.1` and `v0.5.1` runs failed there with a 404 and left empty drafts
+  and tags behind. Both pins now point at `d7f42f9`, which reads the release list.
+
+#### Validation
+
+- Locally (Linux x64): unit tests 3/3 suites pass; `scripts/smoke-test.sh` passes 103 of 103
+  checks (35 new); a bare-clone CMake build and `--version`; the Docker CPU image built, served a
+  completion and refused `0.0.0.0` without a key; a Vulkan build on Ubuntu 24.04 with the
+  release workflow's packages; the README's supervisor examples (shell, Python, Node) and the
+  `openai` Python and JS clients against a running engine.
+- Not verified here: the Windows smoke run, the arm64, Windows Vulkan and macOS release legs, the
+  CUDA image and the GHCR push. Those run in CI and in a Release dry run.
+
 ### Release infrastructure migration — 2026-10-20
 
 - Adopt the unified release manifest, version-advance validation, manual main-only planning, complete artifact staging, and verified draft publisher. Preserve local packaging, existing updater trust, and distribution identities.
