@@ -4,7 +4,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/.release/version.cmake")
 
 project(onyx-engine
     VERSION ${APP_RELEASE_VERSION_CORE}
-    DESCRIPTION "Onyx Engine - local model serving binary for JX Runtime"
+    DESCRIPTION "Onyx Engine - a small, strict, supervisable OpenAI-compatible model server"
     LANGUAGES C CXX
 )
 
@@ -35,10 +35,15 @@ set(GGML_BLAS ${ONYX_ENGINE_BLAS} CACHE BOOL "" FORCE)
 # ---------------------------------------------------------------------------
 # Vendored llama.cpp — only the libraries, none of its tools/examples.
 #
-# `npm ci` fetches the pinned Git commit into node_modules. Resolution order:
-#   1. -DONYX_ENGINE_LLAMA_DIR=<path>          explicit override
-#   2. node_modules/@jxburros/llama-cpp-source   (canonical: npm ci)
-#   3. vendor/llama.cpp                      manually placed source tree
+# The pin lives in packaging/vendor/llama.cpp.conf. Resolution order:
+#   1. -DONYX_ENGINE_LLAMA_DIR=<path>            explicit override
+#   2. node_modules/@jxburros/llama-cpp-source   fetched by `npm ci`, or
+#                                                installed by scripts/vendor.sh
+#   3. vendor/llama.cpp                          manually placed source tree
+#   4. .deps/llama.cpp                           fetched here by CMake with Git
+#                                                (ONYX_ENGINE_FETCH_LLAMA, on by
+#                                                default), so a bare clone builds
+#                                                with only CMake, a compiler and Git
 # ---------------------------------------------------------------------------
 set(LLAMA_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -57,6 +62,7 @@ set(LLAMA_BUILD_MTMD     ON  CACHE BOOL "" FORCE)
 set(MTMD_VIDEO           OFF CACHE BOOL "" FORCE)
 
 set(ONYX_ENGINE_LLAMA_DIR "" CACHE PATH "Path to the llama.cpp source tree (overrides auto-detection)")
+option(ONYX_ENGINE_FETCH_LLAMA "Fetch the pinned llama.cpp with Git when no source tree is found" ON)
 
 if (ONYX_ENGINE_LLAMA_DIR)
     set(ONYX_LLAMA_SRC ${ONYX_ENGINE_LLAMA_DIR})
@@ -64,8 +70,15 @@ elseif (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@jxburros/llama-cpp-sour
     set(ONYX_LLAMA_SRC ${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@jxburros/llama-cpp-source)
 elseif (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/vendor/llama.cpp/CMakeLists.txt)
     set(ONYX_LLAMA_SRC ${CMAKE_CURRENT_SOURCE_DIR}/vendor/llama.cpp)
+elseif (ONYX_ENGINE_FETCH_LLAMA)
+    # Outside the build directory so every build tree and preset shares one
+    # fetch; a stamp check makes the second configure a no-op.
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/fetch-llama.cmake)
+    onyx_fetch_llama(${CMAKE_CURRENT_SOURCE_DIR}/.deps/llama.cpp)
+    set(ONYX_LLAMA_SRC ${CMAKE_CURRENT_SOURCE_DIR}/.deps/llama.cpp)
 else()
-    message(FATAL_ERROR "llama.cpp source tree not found - run: npm ci")
+    message(FATAL_ERROR "llama.cpp source tree not found - configure with -DONYX_ENGINE_FETCH_LLAMA=ON, "
+                        "run `cmake -P cmake/fetch-llama.cmake`, or run `npm ci`")
 endif()
 
 if (NOT EXISTS ${ONYX_LLAMA_SRC}/CMakeLists.txt)
@@ -119,10 +132,12 @@ endif()
 if (DEFINED ONYX_INSTALLED_COMMIT)
     string(STRIP "${ONYX_INSTALLED_COMMIT}" ONYX_INSTALLED_COMMIT)
     if (NOT ONYX_INSTALLED_COMMIT STREQUAL ONYX_EXPECTED_LLAMA_COMMIT)
-        message(FATAL_ERROR "installed llama.cpp source does not match the pinned commit; run npm ci")
+        message(FATAL_ERROR "installed llama.cpp source (${ONYX_LLAMA_SRC}) does not match the pinned commit; "
+                            "run npm ci, or delete .deps/llama.cpp and configure again")
     endif()
-elseif (ONYX_LLAMA_SRC STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@jxburros/llama-cpp-source")
-    message(FATAL_ERROR "installed llama.cpp source has no verifiable commit stamp; run npm ci")
+elseif (ONYX_LLAMA_SRC STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}/node_modules/@jxburros/llama-cpp-source" OR
+        ONYX_LLAMA_SRC STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}/.deps/llama.cpp")
+    message(FATAL_ERROR "installed llama.cpp source has no verifiable commit stamp; delete it and configure again")
 endif()
 
 message(STATUS "onyx-engine: llama.cpp pin ${ONYX_LLAMA_PIN}")

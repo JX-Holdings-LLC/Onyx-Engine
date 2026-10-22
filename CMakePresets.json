@@ -1,0 +1,58 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    { "name": "release", "inherits": "base", "displayName": "Release (CPU)" },
+    {
+      "name": "debug",
+      "inherits": "base",
+      "displayName": "Debug (CPU)",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "static",
+      "inherits": "base",
+      "displayName": "Release, static and portable, as the release archives are built",
+      "cacheVariables": { "BUILD_SHARED_LIBS": "OFF", "GGML_NATIVE": "OFF", "GGML_OPENMP": "OFF" }
+    },
+    {
+      "name": "cuda",
+      "inherits": "base",
+      "displayName": "Release with CUDA (NVIDIA)",
+      "cacheVariables": { "ONYX_ENGINE_CUDA": "ON" }
+    },
+    {
+      "name": "vulkan",
+      "inherits": "base",
+      "displayName": "Release with Vulkan",
+      "cacheVariables": { "ONYX_ENGINE_VULKAN": "ON" }
+    },
+    {
+      "name": "metal",
+      "inherits": "base",
+      "displayName": "Release with Metal (macOS)",
+      "cacheVariables": { "ONYX_ENGINE_METAL": "ON" }
+    },
+    {
+      "name": "hip",
+      "inherits": "base",
+      "displayName": "Release with ROCm/HIP (AMD)",
+      "cacheVariables": { "ONYX_ENGINE_HIP": "ON" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "release", "configurePreset": "release", "configuration": "Release", "targets": ["onyx-engine"] },
+    { "name": "debug", "configurePreset": "debug", "configuration": "Debug", "targets": ["onyx-engine"] },
+    { "name": "static", "configurePreset": "static", "configuration": "Release", "targets": ["onyx-engine"] },
+    { "name": "cuda", "configurePreset": "cuda", "configuration": "Release", "targets": ["onyx-engine"] },
+    { "name": "vulkan", "configurePreset": "vulkan", "configuration": "Release", "targets": ["onyx-engine"] },
+    { "name": "metal", "configurePreset": "metal", "configuration": "Release", "targets": ["onyx-engine"] },
+    { "name": "hip", "configurePreset": "hip", "configuration": "Release", "targets": ["onyx-engine"] }
+  ]
+}
