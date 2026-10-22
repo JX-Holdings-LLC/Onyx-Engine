@@ -28,9 +28,10 @@ There is no in-process model swapping and no multi-model registry. Running more 
 | `src/args.h` / `src/args.cpp` | `onyx_args` struct, `argv` parsing, `--help` and `--version` text |
 | `src/convert.h` / `src/convert.cpp` | `onyx_resolve_model()`: GGUF passthrough versus safetensors detection, conversion and caching ([details](safetensors-conversion.md)) |
 | `src/decision.h` / `src/decision.cpp` | `onyx_decision`: decision-model ("System One") support behind `/v1/systemone`: family detection from `<arch>.decision.type`, request parsing, prompt rendering with the model's `systemone` template, and turning raw outputs into answers ([details](decision-models.md)) |
+| `src/http_util.h` / `src/http_util.cpp` | Request helpers with no engine dependency: media payload and base64 decoding, base64 embeddings, the `X-Request-Id`, API-key and `Host` checks. Unit-tested in `tests/unit/` |
 | `src/engine.h` / `src/engine.cpp` | `onyx_engine`: owns the llama.cpp model and context (and the optional mtmd context), runs the batching loop, generation and embedding, tokenize and detokenize helpers ([details](concurrency.md)) |
 | `src/server.h` / `src/server.cpp` | The HTTP layer on `cpp-httplib`: request parsing, response and SSE-frame construction, every route handler |
-| `src/main.cpp` | Entry point: parse arguments, resolve the model, initialize the llama.cpp backend, load, serve, tear down |
+| `src/main.cpp` | Entry point: parse arguments, initialize the llama.cpp backend, then hand `onyx_server_run` a load step (resolve, convert, load) that runs while the server already answers `503` |
 
 `server.cpp` depends on `engine.h` (to call generation, embedding and tokenize) and on llama.cpp's `common` headers (`chat.h`, `common.h`, `json.h`, `json-schema-to-grammar.h`, `sampling.h`, `log.h`) for chat templating, JSON, grammar construction and sampling parameter types. `engine.cpp` depends directly on `llama.h`, the core C API, plus `common.h`, `sampling.h` and `log.h`.
 

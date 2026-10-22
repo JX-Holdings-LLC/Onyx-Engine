@@ -1,0 +1,19 @@
+name: Question
+description: How do I...? Why does it...?
+labels: [question]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The [documentation home](https://github.com/JX-Holdings-LLC/Onyx-Engine/blob/main/docs/README.md) and [troubleshooting](https://github.com/JX-Holdings-LLC/Onyx-Engine/blob/main/docs/guides/troubleshooting.md) answer most questions.
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Version, command line, and what you have tried
