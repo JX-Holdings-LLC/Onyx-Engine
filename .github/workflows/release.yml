@@ -75,7 +75,7 @@ jobs:
         echo "commit=$commit" >> "$GITHUB_OUTPUT"
     - name: Cache vendored llama.cpp source package
       id: vendor-cache
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: packaging/dist
         key: vendor-${{ steps.pin.outputs.commit }}-${{ hashFiles('packaging/make-vendor-package.sh', 'packaging/vendor/lib.sh',
@@ -159,7 +159,7 @@ jobs:
         (cd "$stage" && 7z a -tzip "$OLDPWD/onyx-engine-${{ steps.tag.outputs.tag }}-${{ matrix.platform-key }}.zip" \
             "${{ matrix.bin-name }}" LICENSE LICENSE-cpp-httplib LICENSE-llama.cpp)
     - name: Upload archive
-      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
         name: onyx-engine-${{ matrix.platform-key }}
         path: onyx-engine-${{ steps.tag.outputs.tag }}-${{ matrix.platform-key }}.${{ matrix.archive-ext }}
@@ -194,7 +194,7 @@ jobs:
         echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
       shell: bash
     - name: Download all archives
-      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
       with:
         path: dist
         pattern: onyx-engine-*
@@ -210,7 +210,7 @@ jobs:
         ref: 181636b602317ba703c3f4bf12775c34560f4efb
         path: .toolkit
         persist-credentials: false
-    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
       with:
         node-version: 24
     - name: Stage the complete configured release inventory
@@ -218,7 +218,7 @@ jobs:
       env:
         RELEASE_APP: onyx-engine
       run: node .toolkit/src/release.mjs stage --app "$RELEASE_APP" --from dist --bundle unified-bundle --sha "$RELEASE_SOURCE_SHA"
-    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
         name: bundle-onyx-engine
         path: unified-bundle
@@ -256,7 +256,7 @@ jobs:
         ref: ${{ needs.plan.outputs.sha }}
         persist-credentials: false
         fetch-depth: 0
-    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
       with:
         node-version: 24
     - run: bash packaging/make-vendor-package.sh --spec llama.cpp
@@ -266,7 +266,7 @@ jobs:
         ref: 181636b602317ba703c3f4bf12775c34560f4efb
         path: .toolkit
         persist-credentials: false
-    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
       with:
         node-version: 24
     - name: Stage the complete configured release inventory
@@ -275,7 +275,7 @@ jobs:
         RELEASE_APP: vendor-llama-cpp
       run: node .toolkit/src/release.mjs stage --app "$RELEASE_APP" --from packaging/dist/llama.cpp --bundle unified-bundle
         --sha "$RELEASE_SOURCE_SHA"
-    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
         name: bundle-vendor-llama-cpp
         path: unified-bundle
@@ -290,11 +290,11 @@ jobs:
       contents: read
       id-token: write
     steps:
-    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
       with:
         node-version: 24
         registry-url: https://registry.npmjs.org
-    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
       with:
         name: bundle-vendor-llama-cpp
         path: package-output
@@ -339,7 +339,7 @@ jobs:
         ref: ${{ needs.plan.outputs.sha }}
         persist-credentials: false
         fetch-depth: 0
-    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
       with:
         node-version: 24
     - run: bash packaging/make-vendor-package.sh --spec ggml
@@ -349,7 +349,7 @@ jobs:
         ref: 181636b602317ba703c3f4bf12775c34560f4efb
         path: .toolkit
         persist-credentials: false
-    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
       with:
         node-version: 24
     - name: Stage the complete configured release inventory
@@ -358,7 +358,7 @@ jobs:
         RELEASE_APP: vendor-ggml
       run: node .toolkit/src/release.mjs stage --app "$RELEASE_APP" --from packaging/dist/ggml --bundle unified-bundle
         --sha "$RELEASE_SOURCE_SHA"
-    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
         name: bundle-vendor-ggml
         path: unified-bundle
@@ -373,11 +373,11 @@ jobs:
       contents: read
       id-token: write
     steps:
-    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
       with:
         node-version: 24
         registry-url: https://registry.npmjs.org
-    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
       with:
         name: bundle-vendor-ggml
         path: package-output
