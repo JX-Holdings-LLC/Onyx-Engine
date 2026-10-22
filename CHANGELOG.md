@@ -23,8 +23,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   maintaining the docs; and the JX Runtime integration contract.
   **Moved pages:** `docs/api.md` is `docs/reference/api/`, `docs/architecture.md` is
   `docs/architecture/`, `docs/building.md` is split across `docs/development/`, and
-  `docs/jx-runtime-integration.md` is `docs/integration/jx-runtime.md`. Links into the old paths
-  and their anchors need updating.
+  `docs/jx-runtime-integration.md` is `docs/integration/jx-runtime.md`. Short stub pages remain at
+  the four old paths and point to the new ones, so existing links land somewhere useful; anchors
+  into the old pages do not carry over.
 - **Diagrams in the logo's palette**, 17 of them, drawn as layered Vixl documents and exported to
   SVG by `assets/diagrams/build.py` (`assets/diagrams/svg/`), used in the README and across the
   docs. A rebuild is byte-identical.
