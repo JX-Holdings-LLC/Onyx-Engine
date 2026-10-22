@@ -89,6 +89,22 @@ legs did not, and `needs: build` correctly withheld the archives:
   quoting, `GetModuleFileNameW`, `python`), so the Windows leg is the
   proof that a `win32-x64` release asset can be built at all.
 
+## The v0.4.1 and v0.5.1 publish failures
+
+Both live runs got through plan, build and stage, then failed in `publish-onyx-engine`
+([run 39829737521](https://github.com/JX-Holdings-LLC/Onyx-Engine/actions/runs/39829737521) for v0.5.1)
+with `gh: Not Found (HTTP 404)` on `gh api repos/JX-Holdings-LLC/Onyx-Engine/releases/tags/v0.5.1`.
+The publisher at infrastructure commit `181636b` created the draft and then fetched it with
+`GET releases/tags/{tag}`. That endpoint returns only published releases, so a draft always comes back
+404. Each failed run left a tag and an empty draft behind (`v0.4.1`, `v0.5.1`).
+
+**Fix:** move both pins to `d7f42f9`. From that commit the toolkit finds drafts in the release
+list and retries for up to 15 seconds while a new draft shows up there. The new pin brings two other
+changes: a plan that selects nothing fails and names the reason, and a release's notes cover every
+version after the last published one (here, everything after v0.4.0). The stale `v0.4.1` and
+`v0.5.1` drafts and tags are not reused, because the next release has a higher version. Delete
+them by hand when convenient.
+
 Whether a given release carries all four archives and `checksums.txt` is visible on its
 [Releases](https://github.com/JX-Holdings-LLC/Onyx-Engine/releases) page. The unified
 workflow has no recorded dry run yet; the [roadmap](../../ROADMAP.md#now) lists it as the first item to close.
