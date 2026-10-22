@@ -7,123 +7,48 @@
 
 # Onyx Engine
 
-Onyx Engine is a single-model, OpenAI-compatible model-serving binary built on
-[llama.cpp](https://github.com/ggml-org/llama.cpp) (vendored as a pinned
-source tree, currently commit `d77256999` (b11820), fetched by the install script).
-One `onyx-engine` process loads one model
-(GGUF, or a safetensors model converted to GGUF on first load) and serves
-it over HTTP on `127.0.0.1:<port>`.
+One binary. One model. One port. Onyx Engine is a single-model, OpenAI-compatible model server built on [llama.cpp](https://github.com/ggml-org/llama.cpp), and it is built the way a good shop builds an engine: a small number of parts, each doing one job, with nothing bolted on that the machine does not need.
 
-## Relationship to JX Runtime
+You point it at a model (a GGUF, or a safetensors model it converts once and remembers), it binds `127.0.0.1`, and it serves chat, completions, embeddings and typed decisions over HTTP. When something goes wrong it tells you which part, in plain words, instead of running rough and hoping you do not notice.
 
-Onyx Engine exists so [JX Runtime](https://github.com/jxburros/JX-Runtime) — a
-Node.js model runtime — can spawn `onyx-engine` in place of a third-party
-`llama-server` binary: one `onyx-engine` process per loaded model, polled at
-`GET /health`, with its OpenAI-compatible endpoints proxied through to
-callers. See [`docs/jx-runtime-integration.md`](docs/jx-runtime-integration.md)
-for exactly how the two projects are meant to connect. JX Runtime now ships
-that adapter: `src/backends/onyxengine.js`, selected via
-`execution.backend: 'onyxengine'` and configured under
-`backends.onyxengine.*`, plus a managed install path
-(`jx-runtime backend install --engine onyx`) that downloads a prebuilt
-`onyx-engine` from this repo's [Releases](#prebuilt-binaries) into
-`<data-dir>/engines/onyx-engine/` — the same way JX Runtime already manages
-its pinned `llama-server` download. See that document for the endpoint
-mapping this is built against.
+![Anatomy of the engine: callers, HTTP layer, request queue, engine loop and slots, llama.cpp and ggml](assets/diagrams/svg/anatomy.svg)
 
-## Features (v2)
+## Why it exists
 
-- OpenAI-compatible `/v1/chat/completions`, `/v1/completions`, and
-  `/v1/embeddings`, plus `/v1/models`
-- llama-server-style utility endpoints: `/health`, `/props`, `/tokenize`,
-  `/detokenize`, `/apply-template`
-- SSE streaming for chat and text completions, ending in a final frame that
-  carries `usage` and `timings` with empty `choices`, then `data: [DONE]`
-- Jinja chat templates (via llama.cpp's `common` library), with tool-call
-  parsing and streamed tool-call deltas in chat completions
-- Structured output via GBNF grammar, `json_schema`, or `response_format`
-- Embeddings via `--embedding` mode (pooled, L2-normalized; raw rank scores
-  under `--pooling rank`)
-- **Decision models** (`/v1/systemone`, TypeSafe-compatible): a GGUF with
-  `<arch>.decision.type` answers typed `choice`/`score`/`noul` questions from
-  one prefill, for every family llama-server supports (openjev, laya, kev,
-  clef, lfm2-d1, h2o-lightning, ...), with images for the label families
-- **Parallel request slots + continuous batching** (`--parallel`/`-np`): a
-  single engine thread packs one shared `llama_batch` per tick across all
-  slots, so up to `-np N` requests generate concurrently instead of queuing
-  one at a time
-- **Context shift** (`--context-shift`, `--keep`): a generating slot that
-  fills its context drops the oldest non-preserved tokens and keeps going
-  instead of stopping, mirroring `llama-server`
-- **Logprobs** on both `/v1/chat/completions` (`logprobs`/`top_logprobs`,
-  nested `logprobs.content[]` shape) and `/v1/completions` (legacy
-  `logprobs: N`, flat parallel-array shape) — raw model probabilities from
-  the full-vocab softmax, unaffected by grammar/sampler constraints
-- **Reasoning-budget control** (`--reasoning-budget`,
-  `--reasoning-budget-message`, or the per-request `reasoning_budget_tokens`):
-  cap or suppress a thinking model's `<think>...</think>` block
-- **Multimodal input** via `--mmproj` (image, and audio when the projector
-  supports it): `image_url`/`input_audio` content parts as `data:` URIs or
-  raw base64 only — onyx-engine never fetches a remote or local resource on a
-  request's behalf
-- **Safetensors models**: a `-m` pointing at a Hugging Face directory (or a
-  `.safetensors` file inside one) is converted to GGUF on first load by
-  onyx-engine's own numpy-only converter (`scripts/convert-safetensors.py`,
-  no torch/transformers), cached under `onyx-cache/` next to the model (or
-  `--convert-dir`) and reused on later launches
-- KV-cache common-prefix reuse (`--cache-reuse`), per slot, to avoid
-  re-processing an unchanged prompt prefix
-- CPU by default; optional CUDA, Vulkan, Metal, ROCm/HIP, or BLAS
-  acceleration selected at build time via CMake options
-- Optional bearer-token auth (`--api-key`) on every endpoint except `/health`
+[JX Runtime](https://github.com/jxburros/JX-Runtime), a Node.js model runtime, runs one engine process per loaded model. Onyx Engine is the process it spawns in place of a third-party `llama-server` binary: JX Runtime spawns it, polls `GET /health` until the model is up, and proxies callers' requests straight through. It also stands on its own for anything that speaks the OpenAI API. The [integration notes](docs/integration/jx-runtime.md) give the exact contract.
 
-**v2 scope and limits**, stated up front rather than discovered later:
+## Spec sheet
 
-- One model per process, still. Running a second model means starting a
-  second `onyx-engine` process on a different port.
-- `-np N` divides the context N ways (`kv_unified` stays at llama.cpp's
-  default `false`), so more slots means less context per request; an
-  overflowing slot without `--context-shift` simply stops at `n_predict`
-  as before.
-- A multimodal request's media is prefilled through mtmd at slot admission,
-  which runs the vision/audio encoder and its own decode calls inline —
-  this momentarily serializes the batching loop for the duration of that
-  one prefill (see [`docs/architecture.md`](docs/architecture.md)), but
-  other slots' KV and queued requests are otherwise unaffected.
-- `--context-shift` and `--cache-reuse` are force-disabled (with a startup
-  warning) whenever `--mmproj` is loaded — a media chunk's KV positions
-  cannot be partially discarded or prefix-matched token-by-token.
-- Remote/local media URLs (`http://`, `https://`, `file://`) are rejected
-  with `400` by design; only `data:<mime>;base64,...` URIs or bare base64
-  strings are accepted, since onyx-engine performs no I/O on a request's
-  behalf.
-- The safetensors converter only handles the standard Hugging Face
-  `LlamaForCausalLM` layout (optionally sharded via
-  `model.safetensors.index.json`) with a byte-level BPE `tokenizer.json`.
-  Tokenizer pre-processing layouts and RoPE scaling it cannot represent are
-  rejected. Anything else — another architecture, a SentencePiece
-  `tokenizer.model`, exotic dtypes — is refused with a clear error rather
-  than silently mishandled.
+| | |
+|---|---|
+| **Serves** | `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`, `/v1/systemone`, plus `/health`, `/props`, `/tokenize`, `/detokenize`, `/apply-template` |
+| **Models** | GGUF; safetensors (`LlamaForCausalLM`) converted to GGUF on first load by a numpy-only script, cached and reused; multimodal through `--mmproj`; embedding, reranking and decision models |
+| **Concurrency** | `-np N` request slots, one engine thread, one shared batch per tick (continuous batching) |
+| **Streaming** | SSE with a closing `usage` and `timings` frame, then `[DONE]` |
+| **Constraints** | GBNF grammar, `json_schema`, `response_format`, tool calls with streamed deltas |
+| **Extras** | logprobs, reasoning-budget control, context shift, per-slot prefix reuse |
+| **Hardware** | CPU by default; CUDA, Vulkan, Metal, ROCm/HIP or BLAS chosen at build time |
+| **Platforms** | `linux-x64`, `darwin-arm64`, `darwin-x64`, `win32-x64` |
+| **Built on** | llama.cpp b11820 (`d77256999`), fetched by exact commit and verified with Git |
+| **Auth** | optional `--api-key` bearer token, on every route but `/health` |
+| **Licence** | MIT |
 
-See [Roadmap](#roadmap-still-out-of-scope) for what remains genuinely out of scope.
+## Start her up
 
-## Quick Start
+**Prebuilt.** Each [release](https://github.com/JX-Holdings-LLC/Onyx-Engine/releases) carries an archive per platform and a `checksums.txt`. The prebuilt binaries are CPU-only, and the x64 ones need AVX2.
+
+**From source.** CMake 3.16+, a C++17 compiler, Git, and Node.js (npm is only the installer; the package has no dependencies).
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/JX-Holdings-LLC/Onyx-Engine.git
 cd Onyx-Engine
-npm ci           # fetch the verified llama.cpp commit with Git
-
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target onyx-engine -j "$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+npm ci            # fetches the pinned llama.cpp commit with Git
+npm run build     # CMake configure and build, one job per CPU
 
 ./build/onyx-engine -m model.gguf --port 8080
 ```
 
-(`npm run build` does the two `cmake` steps above in one command; `npm test`
-runs `scripts/smoke-test.sh`.)
-
-Then, in another terminal:
+The port stays shut until the model has loaded, so the first answer from `/health` is the sound of an engine that has actually caught. Then:
 
 ```bash
 curl http://127.0.0.1:8080/health
@@ -133,158 +58,105 @@ curl http://127.0.0.1:8080/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
-`npm ci` uses the lockfile and the postinstall script to fetch the exact
-llama.cpp Git commit into `node_modules/@jxburros/llama-cpp-source`.
-Git and network access are required for the first install. For an existing
-source checkout, `npm run vendor -- /path/to/llama.cpp` remains available.
+Build with a GPU backend, size the context, run a safetensors model, or put a key on it: [getting started](docs/getting-started.md) and [serving models](docs/guides/serving-models.md) go through each.
 
-For acceleration builds (CUDA, Vulkan, Metal, ROCm, BLAS) see
-[`docs/building.md`](docs/building.md).
+## What goes on under the hood
 
-## Vendored source
+A request comes in the intake (the HTTP layer), gets authenticated, validated and run through the chat template, queues up, and is admitted to a free slot. Every slot with work contributes rows to one shared batch; one decode serves them all; each slot is sampled on its own and streamed out the exhaust.
 
-The install script fetches and verifies the commit pinned in
-`packaging/vendor/llama.cpp.conf` directly from the llama.cpp Git repository.
-There is no dependency on an unpublished npm registry package. CMake accepts
-an explicit `-DONYX_ENGINE_LLAMA_DIR` override for offline builds. The
-maintainer package workflow is optional for distributing a pruned source archive.
+![One request, start to finish: authenticate, validate, render, tokenize, queue, decode, stream](assets/diagrams/svg/request-lifecycle.svg)
 
-To stage an existing checkout at the pinned commit instead:
+A few things worth knowing before you open the bonnet any further:
+
+- **Slots share the context.** `-c 16384 -np 4` gives each request about 4096 tokens, not 16384. `/props` reports the per-slot figure as `n_ctx`, because that is the number a prompt has to fit. See [slots and context](docs/architecture/concurrency.md#slots-and-context).
+- **Repeated prefixes are cheap.** Each slot keeps the tokens it last decoded and reuses the common prefix of the next prompt. `timings.cache_n` tells you how much it saved.
+- **Images stall the loop, briefly.** Encoding media happens inline at admission and holds the engine for that one prefill. [Why](docs/architecture/multimodal.md).
+- **It does no I/O on your behalf.** No URL or file named in a request is ever opened; media arrives as base64. Browsers are refused outright.
+
+The whole machine, part by part, is in the [architecture notes](docs/architecture/README.md).
+
+## Routes
+
+| Method | Path | What it does |
+|---|---|---|
+| `GET` | `/health` | Liveness; exempt from `--api-key` |
+| `GET` | `/props` | Model and build metadata, per-slot `n_ctx`, modalities |
+| `GET` | `/v1/models` | The one model, under its alias |
+| `POST` | `/tokenize`, `/detokenize` | Text to token ids and back |
+| `POST` | `/apply-template` | Render a chat prompt without generating |
+| `POST` | `/v1/chat/completions` | Chat, streaming or not, with tools, structured output, logprobs, images |
+| `POST` | `/v1/completions` | Raw text completion |
+| `POST` | `/v1/embeddings` | Pooled embeddings; only with `--embedding` |
+| `POST` | `/v1/systemone` | Typed decisions; only for a decision model |
+
+A process runs in one mode, set at launch, and answers `501` for routes outside it:
+
+![A matrix of the four route groups against text, embedding and decision-model processes](assets/diagrams/svg/route-modes.svg)
+
+Every field, shape and error is in the [API reference](docs/reference/api/README.md).
+
+## The controls
+
+The flags you will touch most. `onyx-engine --help` is the source of truth, and the [command-line reference](docs/reference/cli.md) has the rest.
+
+| Flag | Default | Does |
+|---|---|---|
+| `-m, --model PATH` | required | GGUF, or a safetensors model converted on first load |
+| `-a, --alias NAME` | file stem | The model id the API reports |
+| `--host`, `--port` | `127.0.0.1`, `8080` | Where to listen |
+| `--api-key KEY` | none | Require a bearer token (except `/health`) |
+| `-c, --ctx-size N` | `4096` | Context in tokens; `0` is the model's own. Divided across slots |
+| `-np, --parallel N` | `1` | Concurrent request slots |
+| `-ngl, --n-gpu-layers N` | `-1` | Layers on the GPU (`-1` is all that fit) |
+| `--mmproj PATH` | none | Multimodal projector: images, and audio if it can |
+| `--embedding`, `--pooling TYPE` | off | Serve embeddings (or rerank, with `rank`) |
+| `--context-shift`, `--keep N` | off, `0` | Keep generating when a slot fills, protecting the first `N` tokens |
+| `--cache-reuse N` | `1` | Smallest prefix worth reusing; `0` turns it off |
+| `--reasoning-budget N` | `-1` | Bound a thinking model's `<think>` block |
+
+One rule governs the whole panel: a flag the engine implements is always in `--help`, and a flag that is not in `--help` is never accepted. A caller that probes `--help` before passing a flag, as JX Runtime does, can trust what it finds.
+
+## Tolerances
+
+What it will not do, stated up front rather than found out on a Friday afternoon:
+
+- **One model per process.** A second model is a second process on its own port.
+- **No speculative decoding yet.** Not planned at all: multi-model routing, built-in tools or MCP, a web UI, TTS or realtime.
+- **A narrow converter.** Safetensors means Hugging Face `LlamaForCausalLM` with a byte-level BPE `tokenizer.json`. Anything else is refused with a reason.
+- **Strict about fields.** `logit_bias`, `mirostat`, `dry_*`, `xtc_*`, `typical_p`, `n` above 1 and the like answer `400`; they are never quietly ignored.
+- **Media only inline,** as `data:` URIs or base64. No video.
+- **Plain HTTP.** Terminate TLS in front of it, and read the [security guide](docs/guides/security.md) before binding anything but loopback.
+
+The full list, with the exact error for each, is [compatibility and limits](docs/reference/compatibility.md). Where the design is headed is in the [roadmap](ROADMAP.md).
+
+## The shop manual
+
+| Start with | For |
+|---|---|
+| [Getting started](docs/getting-started.md) | Binary or source, first request, first stream |
+| [Guides](docs/guides/README.md) | Serving, structured output and tools, multimodal, embeddings, decision models, security, troubleshooting |
+| [Reference](docs/reference/README.md) | Command line, every endpoint, compatibility and limits |
+| [Architecture](docs/architecture/README.md) | Concurrency, KV cache, multimodal, decision models, conversion, build layering |
+| [Integration](docs/integration/jx-runtime.md) | The JX Runtime contract |
+| [Development](docs/development/README.md) | Building, testing, vendoring, releasing, maintaining these docs |
+| [Roadmap](ROADMAP.md), [changelog](CHANGELOG.md) | Where it is going, where it has been |
+
+The [documentation home](docs/README.md) has the full index.
+
+## Maintenance schedule
 
 ```bash
-npm run vendor                        # or: bash scripts/vendor.sh
-npm run vendor -- /path/to/llama.cpp  # reuse a checkout you already have
+npm test                  # offline smoke test on tiny generated models: every endpoint, slots,
+                          # context shift, multimodal, logprobs, reasoning budget, decision models
+bash scripts/safetensors-test.sh    # the converter and its cache, end to end
 ```
 
-`scripts/vendor.sh` stages a tarball and extracts it into
-`node_modules/@jxburros/llama-cpp-source`. It needs Bash, Git, npm and tar.
-
-See [`docs/building.md`](docs/building.md#packaging--publishing-the-vendor-source-package)
-for the full packaging/publishing workflow.
-
-## Prebuilt binaries
-
-`.github/workflows/release.yml` publishes prebuilt `onyx-engine` binaries to
-this repo's [GitHub Releases](https://github.com/JX-Holdings-LLC/Onyx-Engine/releases)
-on every `v*` tag push, for `linux-x64`, `darwin-arm64`, `darwin-x64`, and
-`win32-x64`. Each release attaches:
-
-- `onyx-engine-<tag>-<platformKey>.tar.gz` (`.zip` for `win32-x64`) — the
-  binary (`onyx-engine`/`onyx-engine.exe`) plus `LICENSE`,
-  `LICENSE-cpp-httplib`, and `LICENSE-llama.cpp`, flat at the top
-  level of the archive
-- `checksums.txt` — `sha256sum`-style lines for every archive in the release
-
-`<platformKey>` is exactly `linux-x64`, `darwin-arm64`, `darwin-x64`, or
-`win32-x64`, matching Node's `${process.platform}-${process.arch}` — this is
-what JX Runtime's managed downloader uses to pick the right asset. See
-["Release binaries"](docs/building.md#release-binaries) in `docs/building.md`
-for how a release is built and cut.
-
-The upcoming `v0.4.0` release will include archives for all four supported
-platforms, `checksums.txt`, and the packaging changes above.
-
-## Endpoints
-
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/health` | Liveness check; exempt from `--api-key` auth |
-| `GET` | `/props` | Model/build metadata (alias, chat template, context size, etc.) |
-| `GET` | `/v1/models` | OpenAI-style model list (always exactly one model) |
-| `POST` | `/tokenize` | Text → token ids |
-| `POST` | `/detokenize` | Token ids → text |
-| `POST` | `/apply-template` | Render a chat prompt from `messages` without generating |
-| `POST` | `/v1/chat/completions` | Chat completion, streaming or not |
-| `POST` | `/v1/completions` | Text completion, streaming or not |
-| `POST` | `/v1/embeddings` | Pooled embeddings (only when started with `--embedding`) |
-| `POST` | `/v1/systemone` | Typed decisions (only for a decision model, which serves nothing else) |
-
-Full request/response detail, including exactly which JSON fields are read
-and the SSE frame format, is in [`docs/api.md`](docs/api.md).
-
-## CLI flags
-
-`onyx-engine --help` is the source of truth; the flags below mirror
-`src/args.h`/`src/args.cpp`.
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `-m, --model PATH` | (required) | GGUF file, or a safetensors model (HF directory or `.safetensors` file) converted to GGUF on first load |
-| `--mmproj PATH` | — | multimodal projector GGUF (enables image, and audio if the projector supports it) |
-| `--convert-dir DIR` | alongside the source model | cache directory for converted safetensors models |
-| `-a, --alias NAME` | file stem | model id reported by the API |
-| `--chat-template SOURCE` | — | override with Jinja template source |
-| `--chat-template-file F` | — | override with a template read from a file |
-| `--jinja` | on | accepted for compatibility; jinja is always used |
-| `--no-webui` | off | accepted for compatibility; onyx-engine has no web UI |
-| `--host HOST` | `127.0.0.1` | bind address |
-| `--port PORT` | `8080` | listen port |
-| `--api-key KEY` | — | require this bearer token on every endpoint but `/health` |
-| `-c, --ctx-size N` | `4096` | context size in tokens (`0` = model default) |
-| `-b, --batch-size N` | `2048` | logical batch size |
-| `-ub, --ubatch-size N` | `512` | physical batch size |
-| `-ngl, --n-gpu-layers N`, `--gpu-layers N` | `-1` | layers to offload to GPU (`-1` = all) |
-| `-t, --threads N` | `-1` | generation threads (`-1` = auto) |
-| `-tb, --threads-batch N` | — | prompt-processing threads (default: same as `--threads`) |
-| `-np, --parallel N` | `1` | concurrent request slots; splits the context N ways |
-| `-fa, --flash-attn VAL` | `auto` | `on`, `off`, `auto`, `1`, or `0` |
-| `--mlock` | off | lock model memory in RAM |
-| `--no-mmap` | off | do not memory-map the model file |
-| `-s, --seed N` | random | default RNG seed |
-| `--embedding` / `--embeddings` | off | enable `/v1/embeddings` (pooled); forces one slot, disables context shift, and sets physical batch size to logical batch size |
-| `--pooling TYPE` | model default | `none`, `mean`, `cls`, `last`, `rank` |
-| `--cache-reuse N` | `1` | min prefix tokens to reuse from KV cache (`0` disables) |
-| `--context-shift` / `--no-context-shift` | off | drop oldest tokens instead of stopping when a slot's context fills |
-| `--keep N` | `0` | tokens at the front preserved by a context shift (`-1` = whole prompt) |
-| `--reasoning-budget N` | `-1` | thinking-token budget: `-1` unrestricted, `0` suppress thinking, `N > 0` force the end of thinking after `N` tokens |
-| `--reasoning-budget-message MSG` | — | text injected before the forced end-of-thinking tag when the budget runs out |
-| `-v, --verbose` | off | verbose logging |
-| `-h, --help` / `--version` | — | print help / version and exit |
-
-`onyx-engine` follows one rule for its CLI surface: a flag it implements is
-always advertised in `--help`, and a flag not in `--help` is never accepted
-by the parser either (see `src/args.h`'s header comment). This matters to
-JX Runtime's adapter, which probes `--help` before ever passing a flag on a
-real launch (`supportsFlag`) rather than assuming a capability exists. As of
-v2 that probe for `--mmproj`, `--context-shift`, `--reasoning-budget`, and
-`--parallel` comes back `true` — all four are real, not placeholders. See
-[`docs/jx-runtime-integration.md`](docs/jx-runtime-integration.md).
-
-## Roadmap (still out of scope)
-
-Planned work, open issues and decisions still to make are in [`ROADMAP.md`](ROADMAP.md).
-
-- Multi-model per process (run a second `onyx-engine` process instead)
-- Speculative decoding
-- Audio/image input beyond what the loaded `--mmproj` projector supports;
-  video is off by design (`MTMD_VIDEO=OFF` — it would shell out to `ffmpeg`
-  at runtime, a dependency onyx-engine does not take)
-- Fetching remote or local media by URL — only inline `data:`/base64 payloads
-  are accepted, since onyx-engine performs no I/O on a request's behalf
-- Safetensors architectures other than HF `LlamaForCausalLM`, and tokenizers
-  other than a byte-level BPE `tokenizer.json` (e.g. SentencePiece)
+CI builds on Linux, macOS and Windows for every change and runs both tests where it can. Releases are cut by hand from `main` with a dry run first; a failed platform blocks the whole release, so a partial set never ships. See [testing and CI](docs/development/testing-and-ci.md) and [releasing](docs/development/releasing.md).
 
 ## Brand
 
-Logos, the app icon, a favicon and a GitHub social preview are in
-[`assets/logo/`](assets/logo/), with colours and usage in
-[`docs/brand.md`](docs/brand.md).
+The mark is a hex nut seen from above with a cyan-lit bore: a small, solid part that the rest of the machine is bolted to. Logos, the app icon and the colours are in [`assets/logo/`](assets/logo/) and [`docs/brand.md`](docs/brand.md). The documentation diagrams are drawn in the same palette with [Vixl](https://github.com/jxburros/Vixl); [`assets/diagrams/`](assets/diagrams/) has the script.
 
-## License
+## Licence
 
-MIT. See [`LICENSE`](LICENSE). The vendored llama.cpp source
-(`@jxburros/llama-cpp-source`) is its own project, also MIT-licensed,
-copyright the ggml/llama.cpp authors — see its `LICENSE` file under
-`node_modules/@jxburros/llama-cpp-source/` after installing it.
-
-[`third_party/cpp-httplib`](third_party/cpp-httplib) is a verbatim copy of
-[cpp-httplib](https://github.com/yhirose/cpp-httplib) v0.54.1 (MIT, copyright
-Yuji Hirose); its `LICENSE` and provenance notes are in that directory.
-
-## Unified release procedure
-
-`release.json` is the authoritative release manifest. Keep configured embedded versions synchronized and advance affected apps (patch by default) before merging changes into main. The first adoption establishes a baseline; later PRs must pass **Release version validation**.
-
-Use **Actions → Release → Run workflow** from **main**, choose stable or preview, and leave **dry_run** enabled first. Only apps ahead of their published version in their own namespace are selected. Build/test/sign all required packages before publishing. Tag pushes and merges no longer publish migrated apps automatically. After inspecting the dry run, dispatch with dry_run disabled and satisfy configured approvals. Published versions are never overwritten; use a new version for a correction.
-
-See [.release/README.md](.release/README.md) for this repository's inventory, credentials, compatibility, and validation limits. Shared implementation: [JX Holdings release infrastructure](https://github.com/JX-Holdings-LLC/release-infrastructure).
+MIT. See [`LICENSE`](LICENSE). The vendored llama.cpp source (`@jxburros/llama-cpp-source`) is its own project, also MIT-licensed, copyright the ggml/llama.cpp authors; its `LICENSE` file sits under `node_modules/@jxburros/llama-cpp-source/` after `npm ci`. [`third_party/cpp-httplib`](third_party/cpp-httplib) is a verbatim copy of [cpp-httplib](https://github.com/yhirose/cpp-httplib) v0.54.1 (MIT, copyright Yuji Hirose); its licence and provenance notes are in that directory.

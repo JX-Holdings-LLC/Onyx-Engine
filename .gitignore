@@ -13,3 +13,4 @@ models-test/
 .ci-venv/
 .venv/
 venv/
+__pycache__/
