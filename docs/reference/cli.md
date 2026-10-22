@@ -13,7 +13,7 @@ onyx-engine -m MODEL [options]
 Only `-m` is required. Anything unrecognized exits with status 1 and names the argument. `--help` and `--version` exit 0. `--version` prints the engine version and the llama.cpp build it was compiled against:
 
 ```text
-onyx-engine 0.5.2
+onyx-engine 0.6.0
 llama.cpp b11820-d77256999
 ```
 

@@ -17,13 +17,17 @@ This is the shop manual. The [root README](../README.md) tells you what the engi
 |---|---|
 | Get it running in twenty minutes | [Getting started](getting-started.md) |
 | Run it properly: contexts, slots, GPUs, templates | [Serving models](guides/serving-models.md) |
+| Point an OpenAI client at it | [Using it with other clients](guides/clients.md) |
+| Run it in a container | [Docker](guides/docker.md) |
+| Supervise it from my own app | [Supervising Onyx](guides/supervising.md) |
 | Write a client | [API reference](reference/api/README.md) |
+| Know what I can depend on | [Stability](reference/stability.md) |
 | Look up a flag | [Command line](reference/cli.md) |
 | Know what it refuses to do | [Compatibility and limits](reference/compatibility.md) |
 | Understand a `400` or a `501` | [Troubleshooting](guides/troubleshooting.md) |
 | Connect JX Runtime | [JX Runtime integration](integration/jx-runtime.md) |
 | Open the hood | [Architecture](architecture/README.md) |
-| Build, test, vendor or release it | [Development](development/README.md) |
+| Build, test, vendor or release it | [Development](development/README.md), [contributing](../CONTRIBUTING.md) |
 | See where it is going | [Roadmap](../ROADMAP.md) |
 
 ## The sections
@@ -37,6 +41,9 @@ This is the shop manual. The [root README](../README.md) tells you what the engi
 Task first, reasons after. [Index](guides/README.md).
 
 - [Serving models](guides/serving-models.md): formats, aliases, context and slots, GPUs, templates
+- [Using it with other clients](guides/clients.md): the `openai` Python and JS clients, curl, Open WebUI, Continue
+- [Running it in Docker](guides/docker.md): the published image, keys, health checks, building your own
+- [Supervising Onyx from your own app](guides/supervising.md): spawn, readiness, overload, shutdown, with examples
 - [Structured output and tools](guides/structured-output-and-tools.md): schemas, grammars, tool calls
 - [Multimodal input](guides/multimodal.md): images and audio, and what they cost
 - [Embeddings and reranking](guides/embeddings-and-reranking.md)
@@ -51,6 +58,7 @@ Exact and checked against the code. [Index](reference/README.md).
 - [Command line](reference/cli.md)
 - [API reference](reference/api/README.md): [service endpoints](reference/api/service-endpoints.md), [chat completions](reference/api/chat-completions.md), [text completions](reference/api/completions.md), [embeddings](reference/api/embeddings.md), [decision models](reference/api/systemone.md)
 - [Compatibility and limits](reference/compatibility.md)
+- [Stability](reference/stability.md): what can change between versions, and how breaking changes are announced
 
 ### Architecture
 
@@ -67,13 +75,13 @@ How it is built. [Index](architecture/README.md).
 
 ### Integration
 
-- [JX Runtime](integration/jx-runtime.md): the contract the `onyxengine` adapter is built against.
+- [JX Runtime](integration/jx-runtime.md): the first-class integration, and the public behaviour its `onyxengine` adapter relies on.
 
 ### Development
 
 For maintainers. [Index](development/README.md).
 
-- [Building](development/building.md), [Testing and CI](development/testing-and-ci.md), [Vendoring](development/vendoring.md), [Releasing](development/releasing.md), [Documentation](development/documentation.md)
+- [Code map](development/code-map.md), [Building](development/building.md), [Testing and CI](development/testing-and-ci.md), [Vendoring](development/vendoring.md), [Releasing](development/releasing.md), [Documentation](development/documentation.md)
 
 ### Planning and brand
 

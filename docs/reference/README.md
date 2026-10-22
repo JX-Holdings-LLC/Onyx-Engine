@@ -8,6 +8,7 @@ Look-up pages. They state what the code does today, and they are checked against
 |---|---|
 | [Command line](cli.md) | You need a flag, its default, or what a startup error means |
 | [API reference](api/README.md) | You are writing a client: routes, request fields, response and stream shapes |
+| [Stability](stability.md) | You are building on the engine and need to know what can change between versions |
 | [Compatibility and limits](compatibility.md) | A request came back `400` or `501`, or you are checking whether something is in scope |
 
 The API pages:
