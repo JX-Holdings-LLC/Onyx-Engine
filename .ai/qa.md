@@ -72,7 +72,8 @@ levels pass.
 ## 4 - Runtime Health
 
 - This is the runtime surface: start the binary on the tiny model, wait for
-  `GET /health` to answer 200 (it answers 503 while loading), check
+  `GET /health` to answer 200 (the server listens only once the model has
+  loaded, so earlier connections are refused), check
   `GET /v1/models` lists the alias, and make one short chat completion.
 - The output is from a random-weight model, so only the response shape is
   checked, never the text.

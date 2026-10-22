@@ -133,7 +133,7 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
 | [`docs/api.md`](docs/api.md) | Request and response shapes per endpoint | Yes; sample `build_info` still says 0.4.0 |
 | [`docs/building.md`](docs/building.md) | Builds, acceleration, CI, vendor packages, releases | Partly: release section describes the old tag-push flow |
 | [`docs/jx-runtime-integration.md`](docs/jx-runtime-integration.md) | The contract JX Runtime's adapter relies on | Yes |
-| [`.ai/qa.md`](.ai/qa.md), [`.ai/qa.yaml`](.ai/qa.yaml) | QA levels for the nightly runner | Yes, but says `/health` answers 503 while loading, which it does not yet |
+| [`.ai/qa.md`](.ai/qa.md), [`.ai/qa.yaml`](.ai/qa.yaml) | QA levels for the nightly runner | Yes |
 | [`.release/README.md`](.release/README.md) | Unified release setup and what is still unverified | Yes (2026-10-20) |
 | [`README.md`](README.md#roadmap-still-out-of-scope) out-of-scope list | What Onyx won't do | Partly: lists speculative decoding, which both reports recommend |
 | Song Deck [`docs/plans/onyx-engine.md`][SD-onyx] | Structured output, release convention, reusable vendoring, converter | Partly: written at 0.4.0; reusable vendoring is done |

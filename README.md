@@ -101,7 +101,7 @@ mapping this is built against.
   `tokenizer.model`, exotic dtypes — is refused with a clear error rather
   than silently mishandled.
 
-See [Roadmap](#roadmap) for what remains genuinely out of scope.
+See [Roadmap](#roadmap-still-out-of-scope) for what remains genuinely out of scope.
 
 ## Quick Start
 

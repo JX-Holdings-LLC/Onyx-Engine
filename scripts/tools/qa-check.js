@@ -131,7 +131,7 @@ async function runtime() {
 
   let error = null;
   try {
-    // /health answers 503 while the model loads and 200 once it can serve.
+    // The server listens only once the model has loaded; until then connections are refused.
     const deadline = Date.now() + 60_000;
     for (;;) {
       if (exited !== null) throw new Error(`onyx-engine exited (${exited}) before it was ready`);
