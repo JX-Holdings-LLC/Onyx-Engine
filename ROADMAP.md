@@ -4,9 +4,11 @@ What's next for Onyx Engine and what needs an owner decision, as of 2026-10-22. 
 the research reports, docs and open issues, and adds no scope of its own. **R1** is
 [Onyx Engine improvement opportunities][R1] and **R2** is [Replacing llama cpp common code][R2].
 
+![Roadmap at a glance: now, next and later](assets/diagrams/svg/roadmap-map.svg)
+
 ## Where Onyx Engine stands
 
-- **Version 0.5.0;** the last dated CHANGELOG release is 0.3.1, and `.release/README.md` records
+- **Version 0.5.1;** the last dated CHANGELOG release is 0.3.1, and `.release/README.md` records
   no dry run of the new release workflow yet.
 - **llama.cpp pinned at b11820** (`d77256999`, 2026-10-22, the latest release when it moved);
   ggml pinned at `f1aa6a3` to match. `npm ci` fetches the source with Git.
@@ -18,14 +20,14 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
   `LlamaForCausalLM` converter; `--api-key`. Release binaries are CPU-only, for four platforms.
 - **How JX Runtime uses it:** its `onyxengine` adapter spawns one `onyx-engine` per loaded model,
   polls `/health`, proxies chat, completion and embeddings, probes `--help` before passing a
-  flag, and installs release archives ([integration doc](docs/jx-runtime-integration.md)).
+  flag, and installs release archives ([integration doc](docs/integration/jx-runtime.md)).
 
 ## Now
 
 - **`logit_bias` for label tokens** ([#49][i49], optional): would make JX Runtime's chat-model
   decision shim cheaper; `logit_bias` still gets a 400. See [Decisions needed](#decisions-needed).
 - **Decision images for clef, lfm2-d1-omni and vllm-d3:** these answer `501` today; they need media
-  evaluated in the same batch as the text that reads it (`docs/architecture.md`).
+  evaluated in the same batch as the text that reads it ([`docs/architecture/decision-models.md`](docs/architecture/decision-models.md)).
 - **Memory flags:** `--cache-type-k/-v` and MoE offload (`--cpu-moe`, `--n-cpu-moe`, `-ot`), plain
   plumbing onto libllama. ([R1 ranking][R1-rank] #1; [R2 table][R2-table])
 - **Operations:** `/metrics` under llama.cpp's `llamacpp:*` names, an `X-Request-Id` echo,
@@ -41,8 +43,8 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
   for common's new `common_chat_prompt`; the rest still applies. ([R2 stages][R2-stages])
 - **Song Deck structured output (its M1):** run Song Deck's real schemas through `json_schema` →
   GBNF and make truncated JSON fail clearly. ([Song Deck plan][SD-onyx], step 1)
-- **First 0.4.x release:** dry-run the unified workflow, then update the tag-push steps and
-  "upcoming v0.4.0" notes in `README.md` and `docs/building.md`.
+- **First release from the unified workflow:** dry-run it, then publish. The docs already
+  describe the manual, dry-run-first flow ([`docs/development/releasing.md`](docs/development/releasing.md)).
 
 ## Next: weeks
 
@@ -100,7 +102,7 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
 2. **How far to own the chat layer.** Full Stage 3 drops `common/` but loses automatic support for
    new chat templates; keeping upstream's chat layer behind the seam costs 3–5 days once and
    0.5–2 days per pin bump. ([R2 chat layer][R2-chat])
-3. **Speculative decoding.** The README lists it as out of scope; both reports recommend adaptive
+3. **Speculative decoding.** The README lists it as not yet implemented; both reports recommend adaptive
    n-gram drafting, R1 through `common_speculative_*`, R2 through Onyx's own verifier on
    `llama.h`. For MTP: wait for `llama.h` (R2's pick) or write a driver limited to `-np 1` now.
 4. **Converter.** Fix and rebase the numpy converter, fall back to upstream's
@@ -118,8 +120,8 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
 - **[JX Runtime](https://github.com/jxburros/JX-Runtime)** spawns and proxies Onyx Engine and
   installs its release archives by tag and asset name. Responses and Messages routing, 503
   readiness, #49 and the pinned release tag all need changes there too.
-- **[BackTrack](https://github.com/jxburros/BackTrack)** vendors ggml at the same `36da571` with
-  Onyx's scripts. After a llama.cpp bump, run
+- **[BackTrack](https://github.com/jxburros/BackTrack)** vendors ggml with Onyx's scripts (it was
+  last at `36da571`; Onyx now pins `f1aa6a3`). After a llama.cpp bump, run
   `scripts/check-ggml-pin.sh ../BackTrack/packaging/vendor/ggml.conf` and move both pins.
 - **[Song Deck](https://github.com/jxburros/Song-Deck)** reaches local models through JX Runtime,
   so its schema-constrained JSON lands in Onyx's `json_schema` → GBNF path.
@@ -132,13 +134,14 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
 | [R2][R2] | Replace, copy or keep for each `common/` piece; the four-stage plan | Yes (2026-10-21) |
 | `research_notes/Onyx Engine improvement opportunities/` | Five notes: API standards, engineering and security, models and conversion, serving, upstream | Yes; evidence for R1 |
 | `research_notes/Replacing llama cpp common code/` | Four notes: chat and tools, KV-cache state, sampling/grammar/fit, speculative decoding | Yes; evidence for R2 |
-| [`docs/architecture.md`](docs/architecture.md) | Process model, batching loop, prefix reuse, multimodal, build layering | Yes; describes today's `common/` use |
-| [`docs/api.md`](docs/api.md) | Request and response shapes per endpoint | Yes; sample `build_info` still says 0.4.0 |
-| [`docs/building.md`](docs/building.md) | Builds, acceleration, CI, vendor packages, releases | Partly: release section describes the old tag-push flow |
-| [`docs/jx-runtime-integration.md`](docs/jx-runtime-integration.md) | The contract JX Runtime's adapter relies on | Yes |
+| [`docs/`](docs/README.md) | The documentation home: guides, reference, architecture, integration, development | Yes; reorganised 2026-10-22 and checked against `src/args.cpp` and `src/server.cpp` |
+| [`docs/architecture/`](docs/architecture/README.md) | Process model, batching loop, prefix reuse, multimodal, build layering | Yes; describes today's `common/` use |
+| [`docs/reference/api/`](docs/reference/api/README.md) | Request and response shapes per endpoint | Yes |
+| [`docs/development/`](docs/development/README.md) | Builds, acceleration, CI, vendor packages, releases | Yes; the release page describes the unified workflow |
+| [`docs/integration/jx-runtime.md`](docs/integration/jx-runtime.md) | The contract JX Runtime's adapter relies on | Yes |
 | [`.ai/qa.md`](.ai/qa.md), [`.ai/qa.yaml`](.ai/qa.yaml) | QA levels for the nightly runner | Yes |
 | [`.release/README.md`](.release/README.md) | Unified release setup and what is still unverified | Yes (2026-10-20) |
-| [`README.md`](README.md#roadmap-still-out-of-scope) out-of-scope list | What Onyx won't do | Partly: lists speculative decoding, which both reports recommend |
+| [`README.md`](README.md#tolerances) tolerances | What Onyx won't do | Yes |
 | Song Deck [`docs/plans/onyx-engine.md`][SD-onyx] | Structured output, release convention, reusable vendoring, converter | Partly: written at 0.4.0; reusable vendoring is done |
 | Song Deck [`docs/plans/jx-runtime.md`][SD-jx] | JX Runtime as Song Deck's runtime, then audio engines | Context; its M1 is done |
 

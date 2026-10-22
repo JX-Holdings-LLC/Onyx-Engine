@@ -11,6 +11,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Adopt the unified release manifest, version-advance validation, manual main-only planning, complete artifact staging, and verified draft publisher. Preserve local packaging, existing updater trust, and distribution identities.
 - Validation: shared engine tests, workflow lint, and prepared manifest/version checks. Native/hosted consumer release dry runs and publication remain unverified until the migration is merged and credentials/settings are checked.
 
+### Documentation — 2026-10-22
+
+- **Documentation reorganized and expanded** (0.5.1, documentation only). `docs/` now has a
+  documentation home ([`docs/README.md`](docs/README.md)) over five sections: getting started
+  and task-first guides (serving models, structured output and tools, multimodal input,
+  embeddings and reranking, decision models, security, troubleshooting); a reference (the
+  command line, the API split into service endpoints, chat completions, text completions,
+  embeddings and decision models, and a page of compatibility and limits); architecture notes
+  split by mechanism; development pages for building, testing and CI, vendoring, releasing and
+  maintaining the docs; and the JX Runtime integration contract.
+  **Moved pages:** `docs/api.md` is `docs/reference/api/`, `docs/architecture.md` is
+  `docs/architecture/`, `docs/building.md` is split across `docs/development/`, and
+  `docs/jx-runtime-integration.md` is `docs/integration/jx-runtime.md`. Links into the old paths
+  and their anchors need updating.
+- **Diagrams in the logo's palette**, 17 of them, drawn as layered Vixl documents and exported to
+  SVG by `assets/diagrams/build.py` (`assets/diagrams/svg/`), used in the README and across the
+  docs. A rebuild is byte-identical.
+- **README rewritten** with a spec sheet, the request path, the routes and which mode serves
+  them, the main flags and a plain list of limits; the long feature and limits prose moved into
+  the pages above.
+- Stale statements corrected: the release docs described the old tag-push flow and an upcoming
+  v0.4.0 (the Release workflow is manual and dry-run first), `docs/building.md` named a CMake
+  version that no longer exists (the version comes from `package.json`), the QA notes said
+  decision models were unimplemented, and the roadmap pointed at pages that moved. The embeddings
+  reference now states that `dimensions` and non-`float` `encoding_format` are refused.
+- `reports/README.md` indexes the two planning reports.
+
 ### Added
 
 - **Decision models on `POST /v1/systemone`** ([#49](https://github.com/JX-Holdings-LLC/Onyx-Engine/issues/49)).

@@ -57,9 +57,21 @@ Space Grotesk Medium (SIL Open Font License).
 - Don't set the name in another font or add effects (shadows, outlines,
   gradients).
 
+## Diagrams
+
+The documentation diagrams in [`assets/diagrams/svg/`](../assets/diagrams/svg/) use the same palette and type. Each panel is an Onyx tile with a steel edge, a small nut beside the title, graphite parts with steel edges, cyan for the live path, and amber only for what stalls, refuses or stops. They are built by [`assets/diagrams/build.py`](../assets/diagrams/build.py); see [documentation](development/documentation.md#diagrams).
+
+| Role | Colour |
+|---|---|
+| Panel | Onyx `#0E0F12`, edge Steel `#454A57` |
+| Part | Graphite `#2A2E37`, edge `#6B7385` |
+| Live path | Cyan `#4FD1FF` on a dark wash `#0F2B36` |
+| Secondary text | `#9AA3B5` |
+| Stall, refusal | Amber `#F5B14C` |
+
 ## Regenerating
 
-The pack is built from layered, editable [Vixl](https://github.com/jxburros/Vixl)
+The logo pack is built from layered, editable [Vixl](https://github.com/jxburros/Vixl)
 documents by [`assets/logo/build.py`](../assets/logo/build.py). With `vixl`
 on `PATH` (it downloads Space Grotesk on first run):
 

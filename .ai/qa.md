@@ -3,7 +3,7 @@
 Onyx Engine is a C++ binary, not a web app. One `onyx-engine` process loads one
 GGUF model and serves an OpenAI-compatible HTTP API on `127.0.0.1`; JX Runtime
 spawns it per loaded model and proxies callers to it
-([docs/jx-runtime-integration.md](../docs/jx-runtime-integration.md)). It is
+([docs/integration/jx-runtime.md](../docs/integration/jx-runtime.md)). It is
 built with CMake against llama.cpp, vendored at the commit pinned in
 `packaging/vendor/llama.cpp.conf` and fetched by `npm ci`. npm is only the
 installer and task runner; the package has no npm dependencies.
@@ -83,10 +83,10 @@ levels pass.
 - Advisory only. Without `OPENAI_API_KEY` the level is blocked, and findings
   never fail the run.
 - Focus on request parsing and validation in `src/server.cpp`, slot and batch
-  concurrency in `src/engine.cpp`, and agreement with `docs/api.md`.
-- `logit_bias` is rejected with a 400 on purpose. Decision-model support
-  (`/v1/systemone`) is not implemented yet (issue #49). Neither is a defect to
-  report.
+  concurrency in `src/engine.cpp`, and agreement with the API pages in `docs/reference/api/`.
+- `logit_bias` is rejected with a 400 on purpose; it is not a defect to report.
+  `/v1/systemone` is implemented (`src/decision.cpp`) and answers `501` on any
+  process that does not hold a decision model, also by design.
 
 ## 6 - Dependency & Security Audit
 
@@ -96,9 +96,11 @@ levels pass.
 
 ## 7 - Project Documentation Audit
 
-- `README.md`, `docs/api.md`, `docs/building.md` and
-  `docs/jx-runtime-integration.md` are the user-facing documents; they should
-  agree with the flags in `src/args.cpp` and the endpoints in `src/server.cpp`.
+- `README.md` and everything under `docs/` (start at `docs/README.md`) are the
+  user-facing documents; they should agree with the flags in `src/args.cpp` and
+  the endpoints in `src/server.cpp`. Every relative link must resolve (the check
+  is in `docs/development/documentation.md`). `reports/` and `research_notes/`
+  are dated analysis and are not expected to track the code.
 
 ## 12 - Secrets & Workflow Audit
 

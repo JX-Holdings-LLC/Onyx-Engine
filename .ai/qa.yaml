@@ -206,7 +206,7 @@ levels:
         instructions:
           - Can a malformed or hostile JSON request body to src/server.cpp crash the process, hang a slot, or read out of bounds?
           - Is state shared between parallel slots and the engine thread in src/engine.cpp accessed safely?
-          - Do the OpenAI-compatible responses (streaming frames, usage, finish_reason) match what docs/api.md documents?
+          - Do the OpenAI-compatible responses (streaming frames, usage, finish_reason) match what docs/reference/api/ documents?
     pass_when:
       - the AI review report is written and the questions return pass
     fail_when: []
