@@ -9,10 +9,12 @@ Find the message, read the cause. Messages are quoted as the engine prints them.
 | You see | Cause and fix |
 |---|---|
 | `error: --model is required (see --help)` | No `-m`. |
+| `error: invalid --pooling value 'x'` | Use `none`, `mean`, `cls`, `last` or `rank`. |
 | `error: unknown argument '--foo' (see --help)` | The flag is not implemented. The parser accepts only what `--help` lists; see [the CLI reference](../reference/cli.md). |
 | `error: -fa requires a value` | `-fa` needs `on`, `off`, `auto`, `1` or `0`. |
 | `error: --pooling requires --embedding` | Add `--embedding`. |
 | `error: failed to bind to HOST:PORT` | The port is in use, or the address is not on this machine. |
+| `error: model path does not exist: '...'` | The `-m` path is wrong. Relative paths resolve against the directory you launched from. |
 | `error: failed to load model from '...'` | The file is missing, truncated, or not a model llama.cpp can read. Check the path and the file's size. |
 | `error: failed to create inference context (ctx-size N)` | Not enough memory for that context. Lower `-c`, or offload fewer layers. |
 | `error: failed to load multimodal projector from '...' (--mmproj)` | The projector does not match the model, or the path is wrong. |
