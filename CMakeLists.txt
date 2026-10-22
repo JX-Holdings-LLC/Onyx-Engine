@@ -182,6 +182,7 @@ add_executable(onyx-engine
     src/main.cpp
     src/args.cpp
     src/convert.cpp
+    src/decision.cpp
     src/engine.cpp
     src/server.cpp
 )
@@ -196,6 +197,14 @@ target_include_directories(onyx-engine PRIVATE
     ${ONYX_LLAMA_SRC}/common
     ${ONYX_LLAMA_SRC}/tools/mtmd
 )
+
+# llama-ext.h is llama.cpp's staging header for API that is not in llama.h
+# yet. The decision-model support needs two calls from it
+# (llama_batch_ext_set_decision_order, llama_model_decision_label); the
+# directory is added for those two files only, so nothing else picks up
+# llama.cpp's private headers by accident.
+set_source_files_properties(src/decision.cpp src/engine.cpp PROPERTIES
+    INCLUDE_DIRECTORIES ${ONYX_LLAMA_SRC}/src)
 
 # onyx-httplib comes FIRST on purpose. llama-common is built as a shared library
 # with upstream's own cpp-httplib linked into it, and it re-exports ~1200

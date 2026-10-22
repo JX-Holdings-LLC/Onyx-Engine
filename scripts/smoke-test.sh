@@ -11,18 +11,21 @@ cd "$(dirname "$0")/.."
 BIN="${1:-build/onyx-engine}"
 MODEL="models-test/tiny-llama-random.gguf"
 MMPROJ="models-test/tiny-mmproj-random.gguf"
+DEC_MODEL="models-test/tiny-llama-decision.gguf"
 PORT="${ONYX_SMOKE_PORT:-18190}"
 EMB_PORT=$((PORT + 1))
 NP_PORT=$((PORT + 2))
 MM_PORT=$((PORT + 3))
 RB_PORT=$((PORT + 4))
 RK_PORT=$((PORT + 5))
+DEC_PORT=$((PORT + 6))
 BASE="http://127.0.0.1:$PORT"
 EMB_BASE="http://127.0.0.1:$EMB_PORT"
 NP_BASE="http://127.0.0.1:$NP_PORT"
 MM_BASE="http://127.0.0.1:$MM_PORT"
 RB_BASE="http://127.0.0.1:$RB_PORT"
 RK_BASE="http://127.0.0.1:$RK_PORT"
+DEC_BASE="http://127.0.0.1:$DEC_PORT"
 
 PASS=0
 FAIL=0
@@ -61,6 +64,7 @@ http_status() { # expected-status curl-args...
 [ -x "$BIN" ] || { echo "error: binary '$BIN' not found (build first)"; exit 1; }
 [ -f "$MODEL" ]  || python3 scripts/make-tiny-model.py "$MODEL"
 [ -f "$MMPROJ" ] || python3 scripts/make-tiny-mmproj.py "$MMPROJ"
+[ -f "$DEC_MODEL" ] || python3 scripts/make-tiny-model.py --decision "$DEC_MODEL"
 
 echo "== CLI"
 check "--version" bash -c "'$BIN' --version | grep -q onyx-engine"
@@ -86,6 +90,10 @@ echo "== starting multimodal instance on :$MM_PORT"
 "$BIN" -m "$MODEL" --port "$MM_PORT" -c 512 --mmproj "$MMPROJ" --alias tiny-mm > models-test/onyx-multimodal.log 2>&1 &
 PIDS+=($!)
 
+echo "== starting decision-model instance on :$DEC_PORT"
+"$BIN" -m "$DEC_MODEL" --port "$DEC_PORT" -c 512 --alias tiny-decision > models-test/onyx-decision.log 2>&1 &
+PIDS+=($!)
+
 # a deepseek-style template whose generation prompt itself ends inside the
 # thinking block ("...assistant:<think>"), used by the --reasoning-budget
 # tests below; written with printf (not a heredoc) so it carries no trailing
@@ -100,12 +108,14 @@ PIDS+=($!)
 for i in $(seq 1 100); do
     curl -sf "$BASE/health" > /dev/null 2>&1 && curl -sf "$EMB_BASE/health" > /dev/null 2>&1 \
         && curl -sf "$NP_BASE/health" > /dev/null 2>&1 && curl -sf "$MM_BASE/health" > /dev/null 2>&1 \
-        && curl -sf "$RB_BASE/health" > /dev/null 2>&1 && curl -sf "$RK_BASE/health" > /dev/null 2>&1 && break
+        && curl -sf "$RB_BASE/health" > /dev/null 2>&1 && curl -sf "$RK_BASE/health" > /dev/null 2>&1 \
+        && curl -sf "$DEC_BASE/health" > /dev/null 2>&1 && break
     sleep 0.2
 done
 if ! curl -sf "$BASE/health" > /dev/null || ! curl -sf "$EMB_BASE/health" > /dev/null ||
    ! curl -sf "$NP_BASE/health" > /dev/null || ! curl -sf "$MM_BASE/health" > /dev/null ||
-   ! curl -sf "$RB_BASE/health" > /dev/null || ! curl -sf "$RK_BASE/health" > /dev/null; then
+   ! curl -sf "$RB_BASE/health" > /dev/null || ! curl -sf "$RK_BASE/health" > /dev/null ||
+   ! curl -sf "$DEC_BASE/health" > /dev/null; then
     echo "error: one or more test servers did not become ready" >&2
     for log in models-test/onyx-*.log; do [ -f "$log" ] && { echo "== $log"; tail -50 "$log"; }; done
     exit 1
@@ -454,6 +464,58 @@ assert \"[cut]\" not in text, text
 assert \"</think>\" not in text, text
 '"
 rm -f "$RB_TEMPLATE"
+
+echo "== decision models (/v1/systemone)"
+SYSTEMONE_BODY='{"state":"I was charged twice and nobody replied.","questions":{
+  "route":{"type":"choice","instructions":"Which team?","criteria":{"billing":"payments","shipping":null,"technical":null}},
+  "urgency":{"type":"score","instructions":"How urgent?","criteria":["can wait","this week","today","right now"]},
+  "angry":{"type":"noul","instructions":"Is the customer angry?"}}}'
+check "GET /props reports the decision type" json_has 'd["decision_type"] == "openjev"' "$DEC_BASE/props"
+check "GET /props on a text model has no decision type" json_has 'd["decision_type"] is None' "$BASE/props"
+check "POST /v1/systemone answers every question in order" bash -c "
+    curl -sf -X POST '$DEC_BASE/v1/systemone' -d '$SYSTEMONE_BODY' | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+a = d[\"answers\"]
+assert d[\"model\"] == \"tiny-decision\", d
+assert list(a) == [\"route\", \"urgency\", \"angry\"], a
+assert d[\"usage\"][\"input_tokens\"] > 0 and d[\"usage\"][\"output_tokens\"] == 0, d
+r = a[\"route\"]
+assert r[\"type\"] == \"choice\" and list(r[\"probabilities\"]) == [\"billing\", \"shipping\", \"technical\"], r
+assert abs(sum(r[\"probabilities\"].values()) - 1) < 1e-6, r
+assert r[\"choice\"] == max(r[\"probabilities\"], key=r[\"probabilities\"].get), r
+assert 0 <= r[\"confidence\"] <= 1, r
+u = a[\"urgency\"]
+assert u[\"legend\"] == {\"0\": \"can wait\", \"1\": \"this week\", \"2\": \"today\", \"3\": \"right now\"}, u
+assert abs(u[\"score\"] - sum(i * p for i, p in enumerate(u[\"probabilities\"].values()))) < 1e-6, u
+assert 0 <= a[\"angry\"][\"noul\"] <= 1, a
+'"
+# the questions of one request share their prompt prefix, evaluated once; the
+# answer must not depend on that (flash attention may move it by ~1e-4)
+check "a question answers the same alone and with others" bash -c "
+    together=\$(curl -sf -X POST '$DEC_BASE/v1/systemone' -d '$SYSTEMONE_BODY')
+    alone=\$(curl -sf -X POST '$DEC_BASE/v1/systemone' \
+      -d '{\"state\":\"I was charged twice and nobody replied.\",\"questions\":{\"angry\":{\"type\":\"noul\",\"instructions\":\"Is the customer angry?\"}}}')
+    python3 -c '
+import json, sys
+t = json.loads(sys.argv[1])[\"answers\"][\"angry\"][\"noul\"]
+a = json.loads(sys.argv[2])[\"answers\"][\"angry\"][\"noul\"]
+assert abs(t - a) < 1e-3, (t, a)
+' \"\$together\" \"\$alone\""
+check "missing state returns 400" http_status 400 -X POST "$DEC_BASE/v1/systemone" \
+    -d '{"questions":{"q":{"type":"noul","instructions":"x"}}}'
+check "unknown question type returns 400" http_status 400 -X POST "$DEC_BASE/v1/systemone" \
+    -d '{"state":"x","questions":{"q":{"type":"maybe","instructions":"x"}}}'
+check "score with one level returns 400" http_status 400 -X POST "$DEC_BASE/v1/systemone" \
+    -d '{"state":"x","questions":{"q":{"type":"score","instructions":"x","criteria":["one"]}}}'
+check "too many options returns 400" bash -c "
+    body=\$(python3 -c 'import json; print(json.dumps({\"state\":\"x\",\"questions\":{\"q\":{\"type\":\"choice\",\"instructions\":\"x\",\"criteria\":{str(i): None for i in range(53)}}}}))')
+    [ \"\$(curl -s -o /dev/null -w '%{http_code}' -X POST '$DEC_BASE/v1/systemone' -d \"\$body\")\" = 400 ]"
+check "images without a projector return 501" http_status 501 -X POST "$DEC_BASE/v1/systemone" \
+    -d '{"state":"x","images":["data:image/png;base64,iVBORw0KGgo="],"questions":{"q":{"type":"noul","instructions":"x"}}}'
+check "chat completions on a decision model return 501" http_status 501 -X POST "$DEC_BASE/v1/chat/completions" \
+    -d '{"messages":[{"role":"user","content":"Hi"}]}'
+check "/v1/systemone on a text model returns 501" http_status 501 -X POST "$BASE/v1/systemone" -d "$SYSTEMONE_BODY"
 
 echo
 echo "passed: $PASS, failed: $FAIL"

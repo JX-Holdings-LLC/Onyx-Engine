@@ -6,7 +6,11 @@ The tokenizer is copied from llama.cpp's checked-in test vocab
 generates gibberish. It exists so onyx-engine's endpoints can be exercised
 offline in CI without downloading a real model.
 
-Usage: python3 scripts/make-tiny-model.py [output.gguf]
+With --decision it builds a tiny openjev-type decision model instead
+("llama.decision.type" plus a "systemone" chat template), for the
+/v1/systemone smoke tests.
+
+Usage: python3 scripts/make-tiny-model.py [--decision] [output.gguf]
 """
 import sys
 from pathlib import Path
@@ -51,8 +55,23 @@ CHAT_TEMPLATE = (
 )
 
 
+# openjev layout: the options are lettered A, B, ... and the answer is read
+# from the logits of those letters at the last prompt token
+SYSTEMONE_TEMPLATE = (
+    "{% set letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz' %}"
+    "State: {{ state if state is string else state | tojson }}\n"
+    "Question: {{ instructions if instructions is string else instructions | tojson }}\n"
+    "{% for o in options %}[{{ letters[loop.index0] }}] {{ o.key }}"
+    "{% if o.description %}: {{ o.description if o.description is string else o.description | tojson }}{% endif %}\n"
+    "{% endfor %}Answer:"
+)
+
+
 def main() -> None:
-    out_path = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / "models-test" / "tiny-llama-random.gguf"
+    args = [a for a in sys.argv[1:] if a != "--decision"]
+    decision = len(args) != len(sys.argv) - 1
+    default_name = "tiny-llama-decision.gguf" if decision else "tiny-llama-random.gguf"
+    out_path = Path(args[0]) if args else REPO / "models-test" / default_name
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     reader = gguf.GGUFReader(str(VOCAB_SRC))
@@ -92,7 +111,16 @@ def main() -> None:
     w.add_unk_token_id(0)
     w.add_add_bos_token(True)
     w.add_add_eos_token(False)
-    w.add_chat_template(CHAT_TEMPLATE)
+    if decision:
+        w.add_chat_template([
+            {"name": "default", "template": CHAT_TEMPLATE},
+            {"name": "systemone", "template": SYSTEMONE_TEMPLATE},
+        ])
+        w.add_string("llama.decision.type", "openjev")
+        w.add_float32("llama.decision.temperature.choice", 0.85)
+        w.add_float32("llama.decision.temperature.noul", 1.5)
+    else:
+        w.add_chat_template(CHAT_TEMPLATE)
 
     rng = np.random.default_rng(42)
 

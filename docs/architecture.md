@@ -23,6 +23,7 @@ does not duplicate that bookkeeping.
 |---|---|
 | `src/args.h` / `src/args.cpp` | `onyx_args` struct, `argv` parsing, `--help`/`--version` text |
 | `src/convert.h` / `src/convert.cpp` | `onyx_resolve_model()`: GGUF passthrough vs. safetensors detection/conversion/caching (see [Safetensors resolution and conversion](#safetensors-resolution-and-conversion)) |
+| `src/decision.h` / `src/decision.cpp` | `onyx_decision`: decision-model ("System One") support behind `/v1/systemone` — family detection from `<arch>.decision.type`, request parsing, prompt rendering with the model's `systemone` template, and turning raw outputs into answers (see [Decision models](#decision-models-v1systemone)) |
 | `src/engine.h` / `src/engine.cpp` | `onyx_engine`: owns the llama.cpp model + context (+ optional mtmd context), runs the batching loop, generation and embedding, tokenize/detokenize helpers |
 | `src/server.h` / `src/server.cpp` | HTTP layer built on `cpp-httplib`: request parsing, response/SSE-frame construction, all route handlers |
 | `src/main.cpp` | Entry point: parse args, resolve the model (`onyx_resolve_model`), init the llama.cpp backend, load the model, run the server, tear down |
@@ -170,6 +171,62 @@ per-tick `llama_batch`: it **serializes the engine loop** for the duration of
 one slot's media prefill (other slots' KV and the request queue are
 otherwise unaffected — this is a momentary stall, not a global lock).
 
+## Decision models (`/v1/systemone`)
+
+A GGUF with `<arch>.decision.type` in its metadata is a decision model: it
+answers typed questions (`choice`, `score`, `noul`) about a state from one
+prefill per question, with no generation. llama.cpp added this as
+llama-server's `/v1/systemone` after the old pin (#29818); onyx-engine
+re-implements the handler on its own HTTP layer, following llama-server's
+`server-decision.cpp` at the vendored pin. The model graphs (decision heads,
+labels) are libllama's.
+
+- **Load.** `onyx_engine::load` reads the family with
+  `onyx_decision_type_of()` (its own metadata read, not common's) before
+  creating the context. A decision model gets **decision mode**: one request
+  at a time, no batching loop, `n_seq_max = 2` with a unified KV cache (both
+  sequences see the whole `-c`). Families that answer from embeddings rows
+  (laya, kev, clef, lfm2-d1-omni, vllm-decision2) get `embeddings = true`,
+  no pooling, and `n_ubatch = n_batch`; the label families get
+  `n_outputs_max = n_seq_max`, as llama-server sizes it. `--embedding` with a
+  decision model is a load error. An unknown family, or a model without a
+  `systemone` chat template, fails the load.
+- **Prompts.** `onyx_decision` (`src/decision.cpp`) parses the request,
+  renders each question with the model's `systemone` template (common's
+  Jinja engine), tokenizes it with special tokens parsed, as llama-server
+  does, and records where its answer is read: label logits at the last
+  token, embeddings rows at marker positions, or a joint head's first rows
+  with `llama_batch_ext_set_decision_order` marking its spans. lev shows a
+  choice's options in both orders and averages them. clef puts every
+  question of a request in one prompt.
+- **Evaluation.** `onyx_engine::decide()` uses `llama_batch_ext` and
+  `llama_process()`. Everything before the first position read goes in
+  `--batch-size` chunks; from there to the end is one batch, so the outputs
+  sit together (non-causal families: the whole prompt in one batch). For
+  causal families the questions of a request share their prompt prefix:
+  it is evaluated once into seq 0, then each question runs in seq 1 from a
+  `llama_memory_seq_cp` copy, which works for recurrent and hybrid memory
+  too. Seq 0 keeps that prefix for the next request (longest common prefix,
+  falling back to a fresh start when the memory cannot be cut back);
+  `--cache-reuse 0` turns this off.
+- **Images.** For the label families (openjev, pplx-decider, lfm2-d1,
+  h2o-lightning) a prompt with images is tokenized and prefilled by mtmd
+  into a cleared seq 0, and the labels are read from the last row. clef,
+  lfm2-d1-omni and vllm-d3 read positions after the media or need the whole
+  prompt in one non-causal batch, which mtmd's chunk-by-chunk prefill does
+  not give; they answer image requests with `501`.
+- **Answers.** Softmax over each prompt's outputs at the family's stored
+  temperature (by question type and option count), averaged across
+  variants, then the TypeSafe confidence formulas.
+
+Checked against llama-server built from the same pin on ggml-org's
+tinyopenjev (with its projector) and tinylaya test models: with `-fa off`
+the answers are identical; with flash attention they agree to about 1e-3,
+since the kernel's accumulation order follows the batch layout, which
+differs between the two servers (and between llama-server's own `-np 1` and
+`-np 2`). `scripts/smoke-test.sh` covers the openjev path offline with a
+generated tiny model (`make-tiny-model.py --decision`).
+
 ## Safetensors resolution and conversion
 
 `main.cpp` calls `onyx_resolve_model(args, err)` (`src/convert.cpp`) before
@@ -285,8 +342,12 @@ being reimplemented in `onyx-engine`:
   `response_format`, `chat_template_kwargs`), and
   `common_chat_templates_apply(engine.chat_templates(), inputs)` renders it
   to a `common_chat_params` (`cp`), which carries the final prompt text
-  (`cp.prompt`) plus any grammar the template itself wants applied for tool
-  calling.
+  (`cp.prompt`, a `common_chat_prompt` split into template parts and
+  request-input parts) plus any grammar the template itself wants applied
+  for tool calling. `onyx_engine::tokenize_prompt()` parses special tokens
+  in the template parts only, so a message that spells out a control token
+  such as `<|im_end|>` gets plain text, not the token. With media the prompt
+  goes to mtmd as one string (`cp.prompt.str()`), as before.
 - **Grammar / structured output.** `apply_grammar()` in `server.cpp` takes
   whatever `common_chat_params` produced (from `tools`/`tool_choice`, from a
   caller-supplied `grammar` string, or from `json_schema`/`response_format`)
@@ -309,9 +370,9 @@ being reimplemented in `onyx-engine`:
   not reimplemented here.
 - **Parsing generated text back into a structured message.** For chat
   completions, `common_chat_parse()` turns the raw generated text back into a
-  `common_chat_msg` (content, tool calls, reasoning content per
-  `COMMON_REASONING_FORMAT_AUTO`), using the parser the template selected
-  (`cp.parser`, loaded into `common_chat_parser_params`). Streaming diffs
+  `common_chat_msg` (content, tool calls, reasoning content), using the
+  parser the template selected (`cp.parser`, copied into
+  `common_chat_parser_params` with the tokenized generation prompt). Streaming diffs
   this against the previous partial parse (`common_chat_msg_diff::compute_diffs`)
   to emit only the incremental delta each step.
 

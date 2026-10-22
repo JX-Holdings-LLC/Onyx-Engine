@@ -468,8 +468,9 @@ static onyx_reasoning_budget build_reasoning_budget(const common_json & body, co
     // with the start tag (e.g. "...Assistant:<think>"); detect that
     // textually rather than by token match, since prompt-context tokenization
     // of the tag can differ from tokenizing it standalone.
-    rb.start_in_prompt = cp.prompt.size() >= start_tag.size() &&
-        cp.prompt.compare(cp.prompt.size() - start_tag.size(), start_tag.size(), start_tag) == 0;
+    const std::string prompt = cp.prompt.str();
+    rb.start_in_prompt = prompt.size() >= start_tag.size() &&
+        prompt.compare(prompt.size() - start_tag.size(), start_tag.size(), start_tag) == 0;
 
     return rb;
 }
@@ -665,6 +666,8 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         props["n_ctx_train"]                 = (int64_t) engine.n_ctx_train();
         props["n_embd"]                      = (int64_t) engine.n_embd();
         props["embedding_mode"]              = engine.embedding_mode();
+        props["decision_type"]               = engine.decision_mode()
+            ? common_json(onyx_decision_type_name(engine.decision().type())) : common_json(nullptr);
         props["model_desc"]                  = engine.model_desc();
         props["model_size_bytes"]            = engine.model_size_bytes();
         props["model_n_params"]              = engine.model_n_params();
@@ -747,7 +750,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
             const auto inputs = parse_chat_inputs(body);
             const auto cp     = common_chat_templates_apply(engine.chat_templates(), inputs);
             common_json out = common_json::object();
-            out["prompt"] = cp.prompt;
+            out["prompt"] = cp.prompt.str();
             res.set_content(out.dump(), "application/json; charset=utf-8");
         } catch (const std::exception & e) {
             send_error(res, 400, e.what(), "invalid_request_error");
@@ -767,6 +770,10 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         }
         if (engine.embedding_mode()) {
             send_error(res, 501, "this instance serves embeddings only (started with --embedding)", "not_supported_error");
+            return;
+        }
+        if (engine.decision_mode()) {
+            send_error(res, 501, "this instance serves a decision model; use /v1/systemone", "not_supported_error");
             return;
         }
 
@@ -817,11 +824,11 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         gp.n_probs       = top_logprobs;
         gp.reasoning     = build_reasoning_budget(body, args, cp, engine);
         if (media.empty()) {
-            gp.prompt_tokens = engine.tokenize(cp.prompt, /* add_special */ true, /* parse_special */ true);
+            gp.prompt_tokens = engine.tokenize_prompt(cp.prompt);
         } else {
             // mtmd tokenizes the rendered text itself, splitting it on the
             // markers it now contains
-            gp.prompt_text = cp.prompt;
+            gp.prompt_text = cp.prompt.str();
             gp.media       = std::move(media);
         }
         gp.n_predict     = parse_max_tokens(body);
@@ -848,10 +855,8 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         }
 
         common_chat_parser_params parser_params(cp);
-        parser_params.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
-        if (!cp.parser.empty()) {
-            parser_params.parser.load(cp.parser);
-        }
+        parser_params.generation_prompt = common_chat_input_tokenize(engine.vocab(), cp.generation_prompt);
+        parser_params.parser            = cp.parser;
 
         const std::string request_id = gen_request_id("chatcmpl");
         const std::time_t created    = std::time(nullptr);
@@ -867,7 +872,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
 
             common_chat_msg msg;
             try {
-                msg = common_chat_parse(r.text, /* is_partial */ false, parser_params);
+                msg = common_chat_parse(common_chat_input(r.text), /* is_partial */ false, parser_params);
             } catch (const std::exception & e) {
                 msg = {};
                 msg.role    = "assistant";
@@ -938,7 +943,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
                 st->accumulated += piece;
                 std::vector<common_chat_msg_diff> diffs;
                 try {
-                    common_chat_msg cur = common_chat_parse(st->accumulated, /* is_partial */ true, st->parser_params);
+                    common_chat_msg cur = common_chat_parse(common_chat_input(st->accumulated), /* is_partial */ true, st->parser_params);
                     if (cur.role.empty()) {
                         cur.role = "assistant";
                     }
@@ -979,7 +984,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
 
             // flush any tail withheld by the partial parser
             try {
-                common_chat_msg final_msg = common_chat_parse(r.text, /* is_partial */ false, st->parser_params);
+                common_chat_msg final_msg = common_chat_parse(common_chat_input(r.text), /* is_partial */ false, st->parser_params);
                 if (final_msg.role.empty()) {
                     final_msg.role = "assistant";
                 }
@@ -1032,6 +1037,10 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
             "dry_penalty_last_n", "xtc_probability", "xtc_threshold"})) return;
         if (engine.embedding_mode()) {
             send_error(res, 501, "this instance serves embeddings only (started with --embedding)", "not_supported_error");
+            return;
+        }
+        if (engine.decision_mode()) {
+            send_error(res, 501, "this instance serves a decision model; use /v1/systemone", "not_supported_error");
             return;
         }
         if (!body.contains("prompt")) {
@@ -1285,6 +1294,105 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
         res.set_content(out.dump(), "application/json; charset=utf-8");
     });
 
+    // ---- decision models -------------------------------------------------
+
+    // TypeSafe-compatible System One API: typed questions about a state,
+    // answered from one prefill per question (see decision.h).
+    svr.Post("/v1/systemone", [&](const httplib::Request & req, httplib::Response & res) {
+        const common_json body = common_json::parse(req.body);
+        if (!engine.decision_mode()) {
+            send_error(res, 501, "this model is not a decision model", "not_supported_error");
+            return;
+        }
+        const onyx_decision & decision = engine.decision();
+
+        std::vector<onyx_decision_question> questions;
+        std::vector<onyx_media_buffer>      files;
+        common_json                         state;
+        try {
+            questions = decision.parse_questions(body);
+            state     = decision.prepare_state(decision.parse_state(body, files, [](const std::string & url) {
+                try {
+                    reject_media_url(url, "image");
+                    return decode_media_payload(url, "image");
+                } catch (const std::runtime_error & e) {
+                    throw std::invalid_argument(e.what());
+                }
+            }));
+        } catch (const std::invalid_argument & e) {
+            send_error(res, 400, e.what(), "invalid_request_error");
+            return;
+        }
+        if (!files.empty() && (!decision.can_use_images() || !engine.has_mmproj())) {
+            send_error(res, 501, "this server does not support image input for decisions; for a model that "
+                       "supports it, start onyx-engine with --mmproj", "not_supported_error");
+            return;
+        }
+        if (!files.empty() && !decision.onyx_supports_media()) {
+            send_error(res, 501, std::string("image input for ") + onyx_decision_type_name(decision.type()) +
+                       " decision models is not supported by onyx-engine yet", "not_supported_error");
+            return;
+        }
+
+        // one prompt per variant of each question, or one for all of them
+        std::vector<onyx_decision_prompt> prompts;
+        try {
+            if (decision.is_joint()) {
+                prompts.push_back(decision.fill_prompt_joint(state, questions, files));
+            } else {
+                for (const auto & question : questions) {
+                    for (size_t variant = 0; variant < decision.n_variants(question); variant++) {
+                        prompts.push_back(decision.fill_prompt(state, questions, question, variant, files));
+                    }
+                }
+            }
+        } catch (const std::invalid_argument & e) {
+            send_error(res, 400, e.what(), "invalid_request_error");
+            return;
+        }
+
+        std::vector<std::vector<float>> scores;
+        int32_t     n_tokens = 0;
+        std::string err;
+        if (!engine.decide(prompts, decision.can_share_prompt(), scores, n_tokens, err)) {
+            const bool client_error = err.rfind("prompt", 0) == 0;
+            send_error(res, client_error ? 400 : 500, err, client_error ? "invalid_request_error" : "server_error");
+            return;
+        }
+
+        common_json answers = common_json::object();
+        size_t i_prompt = 0;
+        size_t i_score  = 0;
+        for (const auto & question : questions) {
+            std::vector<std::vector<float>> question_scores;
+            if (decision.is_joint()) {
+                // one result with the scores of all the questions, in order
+                const auto & all = scores[0];
+                if (i_score + question.options.size() > all.size()) {
+                    send_error(res, 500, "decision result does not match the number of options", "server_error");
+                    return;
+                }
+                question_scores.emplace_back(all.begin() + i_score, all.begin() + i_score + question.options.size());
+                i_score += question.options.size();
+            } else {
+                for (size_t variant = 0; variant < decision.n_variants(question); variant++) {
+                    question_scores.push_back(scores[i_prompt++]);
+                }
+            }
+            answers[question.id] = decision.format_answer(question, question_scores, !files.empty());
+        }
+
+        common_json usage = common_json::object();
+        usage["input_tokens"]  = (int64_t) n_tokens;
+        usage["output_tokens"] = 0;
+
+        common_json out = common_json::object();
+        out["model"]   = engine.alias();
+        out["answers"] = answers;
+        out["usage"]   = usage;
+        res.set_content(out.dump_safe(), "application/json; charset=utf-8");
+    });
+
     // ---------------------------------------------------------------------
 
     svr.set_read_timeout(600);
@@ -1297,7 +1405,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args) {
 
     fprintf(stderr, "onyx-engine listening on http://%s:%d (model: %s, ctx: %u%s)\n",
             args.host.c_str(), args.port, engine.alias().c_str(), engine.n_ctx(),
-            engine.embedding_mode() ? ", embedding mode" : "");
+            engine.embedding_mode() ? ", embedding mode" : engine.decision_mode() ? ", decision model" : "");
 
     if (!svr.listen_after_bind()) {
         fprintf(stderr, "error: server terminated unexpectedly\n");

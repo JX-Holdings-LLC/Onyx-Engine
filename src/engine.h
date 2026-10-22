@@ -15,6 +15,10 @@
 //
 // Embedding mode keeps the v1 shape: one sequence, serialized on a mutex.
 //
+// Decision mode (a model with "<arch>.decision.type", see decision.h) is
+// like embedding mode: no batching loop, and decide() runs one request at a
+// time on a mutex.
+//
 // Multimodal requests (--mmproj) are the one exception to the batching loop:
 // their prompt is prefilled through mtmd at admission time, which runs the
 // vision/audio encoder and its own llama_decode calls inline (see
@@ -22,6 +26,7 @@
 #pragma once
 
 #include "args.h"
+#include "decision.h"
 
 #include "chat.h"
 #include "common.h"
@@ -213,6 +218,10 @@ struct onyx_slot {
     size_t     rb_end_match   = 0;   // rolling match progress against end_tag
 };
 
+void onyx_batch_clear(llama_batch & batch);
+void onyx_batch_add(llama_batch & batch, llama_token id, llama_pos pos,
+                    const std::vector<llama_seq_id> & seq_ids, bool logits);
+
 class onyx_engine {
 public:
     onyx_engine() = default;
@@ -239,6 +248,8 @@ public:
     uint64_t model_n_params()       const;
     std::string model_desc()        const;
     bool embedding_mode()           const { return embedding_mode_; }
+    bool decision_mode()            const { return decision_.type() != ONYX_DECISION_NONE; }
+    const onyx_decision & decision() const { return decision_; }
 
     // --- multimodal (--mmproj) ---
     bool has_mmproj()      const { return mctx_ != nullptr; }
@@ -264,8 +275,20 @@ public:
     // sets err. Only valid in embedding mode (serialized on a mutex).
     std::vector<float> embed(const std::vector<llama_token> & tokens, std::string & err);
 
+    // Decision models: evaluates the prompts of one /v1/systemone request in
+    // order; scores[i] gets the raw outputs of prompts[i] (see
+    // onyx_decision_prompt for which outputs). With share_prefix the prefix
+    // the prompts have in common is evaluated once. n_tokens is the prompt
+    // tokens of all prompts, cached or not. Returns false and sets err on
+    // failure; an err starting with "prompt" is the request's fault.
+    bool decide(const std::vector<onyx_decision_prompt> & prompts, bool share_prefix,
+                std::vector<std::vector<float>> & scores, int32_t & n_tokens, std::string & err);
+
     // Tokenization helpers (thread-safe; vocab is immutable after load).
     std::vector<llama_token> tokenize(const std::string & text, bool add_special, bool parse_special = true) const;
+    // Rendered chat prompt: special tokens are parsed in template text only,
+    // never in request input parts. Adds BOS if the vocab wants one.
+    std::vector<llama_token> tokenize_prompt(const common_chat_prompt & prompt) const;
     std::string detokenize(const std::vector<llama_token> & tokens, bool special = false) const;
 
 private:
@@ -280,6 +303,13 @@ private:
     bool context_shift(onyx_slot & slot);       // returns false if it cannot shift
     void emit(onyx_slot & slot, std::string piece, std::vector<onyx_token_probs> probs = {});
     void finish(onyx_slot & slot, onyx_finish_reason reason, const std::string & error = "");
+
+    // --- decision mode (callers hold mutex_) ---
+    int32_t decision_reuse(const std::vector<llama_token> & tokens, int32_t n_max);
+    bool decision_eval(const onyx_decision_prompt & p, llama_seq_id seq, int32_t from,
+                       std::vector<float> * out, std::string & err);
+    bool decision_eval_media(const onyx_decision_prompt & p, std::vector<float> & scores,
+                             int32_t & n_tokens, std::string & err);
 
     llama_model *   model_ = nullptr;
     llama_context * ctx_   = nullptr;
@@ -309,6 +339,12 @@ private:
     uint64_t                      tick_ = 0;
     std::thread                   loop_thread_;
 
-    // embedding mode only
+    // embedding and decision mode only
     std::mutex mutex_;
+
+    // decision mode: seq 0 keeps the last evaluated prefix (decision_cache_),
+    // seq 1 runs one prompt on top of a shared prefix copied from seq 0
+    onyx_decision            decision_;
+    std::vector<llama_token> decision_cache_;
+    bool                     decision_reuse_on_ = true; // --cache-reuse 0 turns prefix reuse off
 };
