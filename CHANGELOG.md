@@ -13,6 +13,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- NVIDIA developer workflow implementation plan (2026-10-21), with ranked Nsight/NVTX,
+  optional CUDA build and scheduler work packages, links to the coordinated Studio and
+  JX plans, and explicit contract/release checkpoints. Documentation only; no engine
+  behavior, binary, version or managed-runtime pin changed.
+  Validation: new-plan Markdown lint, local-link checks and whitespace checks passed;
+  native builds and hardware benchmarks were not run for documentation-only changes.
+  Cross-repository links target the corresponding GitHub documentation branches for online navigation before merge.
+
 - Research reports in `reports/` with their notes in `research_notes/`:
   improvement opportunities for Onyx Engine, and a staged plan for
   replacing llama.cpp's `common/` library with Onyx code on `llama.h`.

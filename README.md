@@ -247,6 +247,8 @@ v2 that probe for `--mmproj`, `--context-shift`, `--reasoning-budget`, and
 
 ## Roadmap (still out of scope)
 
+Accepted engineering work is tracked in the [NVIDIA developer workflow implementation plan](docs/nvidia-developer-workflows-plan.md): optional profiling, execution observations, CUDA build tuning and measured scheduler improvements, with explicit JX/Studio contract checkpoints. These are planned changes, not shipped capabilities. The broader exclusions below remain in effect.
+
 - Multi-model per process (run a second `onyx-engine` process instead)
 - Speculative decoding
 - Audio/image input beyond what the loaded `--mmproj` projector supports;
