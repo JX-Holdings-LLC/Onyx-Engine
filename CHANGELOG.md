@@ -61,6 +61,10 @@ See the [stability page](docs/reference/stability.md) for the rule this follows.
   publisher looked up the draft it had just created with `GET releases/tags/<tag>`, which never
   returns drafts. The `v0.4.1` and `v0.5.1` runs failed there with a 404 and left empty drafts
   and tags behind. Both pins now point at `d7f42f9`, which reads the release list.
+- **Vendor packages advanced without a source change** to `0.7.0-b11820.gd77256999.1` and
+  `0.27.0-gf1aa6a346.1`: the shared release policy requires every app to advance when a workflow
+  or `.release/config.json` changes, which the pin fix above already does. The `.1` suffix marks
+  a rebuild of the same commit; nothing publishes them unless the preview channel is dispatched.
 
 #### Validation
 
