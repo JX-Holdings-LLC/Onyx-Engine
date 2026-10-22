@@ -10,6 +10,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Python decodes stdin with the locale's code page on Windows (cp1252), which
+# garbles the UTF-8 JSON piped into the checks; UTF-8 mode fixes that.
+export PYTHONUTF8=1
+
 # Windows Python installs (and venvs) provide python.exe but no python3.exe.
 # Exported so the `bash -c` checks below inherit it.
 if ! command -v python3 > /dev/null 2>&1 && command -v python > /dev/null 2>&1; then

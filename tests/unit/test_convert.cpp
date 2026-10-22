@@ -4,7 +4,7 @@
 #include "args.h"
 #include "convert.h"
 
-#include <cstdint>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -16,8 +16,11 @@ namespace {
 struct temp_dir {
     fs::path path;
     temp_dir() {
-        path = fs::temp_directory_path() / ("onyx-unit-" + std::to_string((unsigned long long) (uintptr_t) this) +
-                                            "-" + std::to_string(fs::file_time_type::clock::now().time_since_epoch().count()));
+        // libc++'s file clock counts in a 128-bit type, which std::to_string
+        // does not take; steady_clock's count is a plain integer everywhere
+        static int n = 0;
+        const long long now = (long long) std::chrono::steady_clock::now().time_since_epoch().count();
+        path = fs::temp_directory_path() / ("onyx-unit-" + std::to_string(now) + "-" + std::to_string(++n));
         fs::create_directories(path);
     }
     ~temp_dir() {
