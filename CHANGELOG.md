@@ -6,7 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-### Documentation — 2026-10-25
+## [0.6.1] — 2026-10-25
+
+### Documentation — 2026-10-25 (0.6.1)
 
 Corrections from a cross-repository audit of what these docs say about JX Runtime. Documentation
 only; the binary is unchanged. Agent: Claude Code (Claude).
@@ -30,7 +32,7 @@ only; the binary is unchanged. Agent: Claude Code (Claude).
   or in JX Runtime used them.
 - Validation: the link check in `docs/development/documentation.md` reports the same 7 entries
   before and after this change (percent-encoded and absolute paths under `reports/` and
-  `research_notes/`), none in the pages changed here. The version is not advanced here.
+  `research_notes/`), none in the pages changed here. The version advances to 0.6.1 (patch: documentation only, no behaviour on the stability page changes).
 
 ## [0.6.0] — 2026-10-22
 
