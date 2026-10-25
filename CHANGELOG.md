@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-10-25
+
+### Release pipeline — 2026-10-25 (0.6.2)
+
+Agent: Claude Code (Claude). Release pipeline only; the binary is unchanged from 0.6.1.
+
+- **Vendor package publish path:** `publish-vendor-llama-cpp` and `publish-vendor-ggml` in
+  `.github/workflows/release.yml` passed `npm publish` a bare `package-output/<name>.tgz`. npm 11
+  reads that as GitHub `owner/repo` shorthand and runs `git ls-remote` against it, which is how AI
+  Nugget's 0.7.1 and 0.7.2 publishes failed. Both steps now pass `./package-output/<name>.tgz`.
+  Neither vendor package has been published yet, so this has not failed here; the vendor jobs only
+  run when a vendor version advances.
+- Version advances to 0.6.2 under the every-main-change policy.
+- **Vendor packages advanced without a source change** to `0.7.0-b11820.gd77256999.2` and
+  `0.27.0-gf1aa6a346.2`: the shared release policy requires every app to advance when a workflow
+  changes. The `.2` suffix marks a rebuild of the same commit; nothing publishes them unless the
+  preview channel is dispatched.
+- Validation: reproduced the npm 11.19.0 behaviour with a dry-run publish of a bare
+  `package-output/x.tgz` (same `git ls-remote` error) and confirmed `./package-output/x.tgz`
+  dry-runs a publish; the workflow still parses as YAML. Not exercised by a vendor release yet.
+
 ## [0.6.1] — 2026-10-25
 
 ### Documentation — 2026-10-25 (0.6.1)
