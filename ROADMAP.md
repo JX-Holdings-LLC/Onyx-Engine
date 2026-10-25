@@ -8,7 +8,7 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
 
 ## Where Onyx Engine stands
 
-- **Version 0.6.1;** the last dated CHANGELOG release is 0.6.0, and `.release/README.md` records
+- **Version 0.6.2;** the last dated CHANGELOG release is 0.6.1, and `.release/README.md` records
   no dry run of the new release workflow yet.
 - **llama.cpp pinned at b11820** (`d77256999`, 2026-10-22, the latest release when it moved);
   ggml pinned at `f1aa6a3` to match. CMake (or `npm ci`) fetches the source with Git; no Node is

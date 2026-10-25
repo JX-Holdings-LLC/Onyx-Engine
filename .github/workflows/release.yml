@@ -402,7 +402,8 @@ jobs:
         PACKAGE_NAME: '@jxburros/llama-cpp-source'
         PACKAGE_VERSION: ${{ fromJSON(needs.plan.outputs.apps)['vendor-llama-cpp'].version }}
       run: |
-        file=$(find package-output -name '*.tgz' -print -quit)
+        # ./ prefix: npm 11 reads a bare "dir/file.tgz" as GitHub owner/repo shorthand.
+        file=$(find ./package-output -name '*.tgz' -print -quit)
         if [ "$DRY_RUN" = true ]; then npm publish "$file" --ignore-scripts --access public --dry-run; exit 0; fi
         if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version >/dev/null 2>&1; then echo 'Package already exists; refusing an ambiguous overwrite/retry.'; exit 1; fi
         npm publish "$file" --ignore-scripts --access public --provenance --tag next
@@ -485,7 +486,8 @@ jobs:
         PACKAGE_NAME: '@jxburros/ggml-source'
         PACKAGE_VERSION: ${{ fromJSON(needs.plan.outputs.apps)['vendor-ggml'].version }}
       run: |
-        file=$(find package-output -name '*.tgz' -print -quit)
+        # ./ prefix: npm 11 reads a bare "dir/file.tgz" as GitHub owner/repo shorthand.
+        file=$(find ./package-output -name '*.tgz' -print -quit)
         if [ "$DRY_RUN" = true ]; then npm publish "$file" --ignore-scripts --access public --dry-run; exit 0; fi
         if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version >/dev/null 2>&1; then echo 'Package already exists; refusing an ambiguous overwrite/retry.'; exit 1; fi
         npm publish "$file" --ignore-scripts --access public --provenance --tag next
