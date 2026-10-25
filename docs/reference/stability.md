@@ -31,7 +31,7 @@ without that announcement. It does not mean it will never change.
 | **Request fields** | Every documented field keeps its meaning. A field Onyx refuses today (`400`, listed in [compatibility](compatibility.md)) may become accepted later; an accepted field never becomes refused without a breaking release. |
 | **Response shapes** | Documented fields keep their names, types and meaning. New fields can appear in any release, so clients must ignore fields they do not know. |
 | **Errors** | The envelope `{"error":{"message","type","code"}}` and the status code for each condition. `type` is one of `invalid_request_error`, `authentication_error`, `not_supported_error`, `unavailable_error` or `server_error`. |
-| **`/health`** | Exempt from `--api-key`. `503` with `{"error":{"code":503,"message":"Loading model","type":"unavailable_error"}}` from the moment the port opens until the model is loaded; `200 {"status":"ok"}` after that. A refused connection means the process is not running. |
+| **`/health`** | Exempt from `--api-key`. `503` with `{"error":{"code":503,"message":"Loading model","type":"unavailable_error"}}` from the moment the port opens until the model is loaded; `200 {"status":"ok"}` after that. A refused connection means the port is not open: before the first `503` or `200` the process may still be parsing its arguments and starting up, so it means "not yet" while the process is alive; after one, the process has exited or is exiting. |
 | **Readiness of other routes** | Every other route answers `503` with the same body while the model loads (after any API-key check). |
 | **Streaming** | `data: {...}` frames, then a final frame with top-level `usage` (`prompt_tokens`, `completion_tokens`, `total_tokens`) and `timings` (`cache_n`, `prompt_n`, `prompt_ms`, `prompt_per_second`, `predicted_n`, `predicted_ms`, `predicted_per_second`) and an empty `choices` for chat, then `data: [DONE]`. Non-streaming responses carry the same `usage` and `timings` objects. |
 | **`/props`** | The fields documented in [service endpoints](api/service-endpoints.md#get-props), including the per-slot `n_ctx` (equal to `default_generation_settings.n_ctx`), `n_ctx_total` and `port`. |
@@ -65,8 +65,8 @@ These can change in any release, with a changelog line but no breaking announcem
 
 - Probe `--help` for a flag before passing it, and `--version` for the build. That works across
   versions without knowing which release added what.
-- Treat `503` from `/health` as "keep waiting", `200` as ready, and a refused connection or a
-  process exit as failure. The [supervisor guide](../guides/supervising.md) has worked examples.
+- Treat `503` from `/health` as "keep waiting", `200` as ready, a refused connection as "not
+  yet" while the process is alive, and a process exit as failure. The [supervisor guide](../guides/supervising.md) has worked examples.
 - Ignore unknown JSON fields and unknown `/metrics` series.
 - Read the changelog's **Breaking** headings before moving to a new minor version.
 

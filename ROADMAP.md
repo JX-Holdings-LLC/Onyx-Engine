@@ -8,7 +8,7 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
 
 ## Where Onyx Engine stands
 
-- **Version 0.6.0;** the last dated CHANGELOG release is 0.3.1, and `.release/README.md` records
+- **Version 0.6.1;** the last dated CHANGELOG release is 0.6.0, and `.release/README.md` records
   no dry run of the new release workflow yet.
 - **llama.cpp pinned at b11820** (`d77256999`, 2026-10-22, the latest release when it moved);
   ggml pinned at `f1aa6a3` to match. CMake (or `npm ci`) fetches the source with Git; no Node is
@@ -24,13 +24,13 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
 - **Independent-tool plan:** items 1 to 8 of [`reports/independent-tool-plan.md`](reports/independent-tool-plan.md)
   landed in 0.6.0; item 9 (conformance suite, benchmarks, real-model nightly, sanitizers) is open.
 - **How JX Runtime uses it:** its `onyxengine` adapter spawns one `onyx-engine` per loaded model,
-  polls `/health`, proxies chat, completion and embeddings, probes `--help` before passing a
+  polls `/health`, proxies chat, completion, embeddings and `/v1/systemone`, probes `--help` before passing a
   flag, and installs release archives ([integration doc](docs/integration/jx-runtime.md)).
 
 ## Now
 
-- **`logit_bias` for label tokens** ([#49][i49], optional): would make JX Runtime's chat-model
-  decision shim cheaper; `logit_bias` still gets a 400. See [Decisions needed](#decisions-needed).
+- **`logit_bias` for label tokens** ([#49][i49], optional): would let a caller constrain a chat
+  model to a fixed set of label tokens; `logit_bias` still gets a 400. See [Decisions needed](#decisions-needed).
 - **Decision images for clef, lfm2-d1-omni and vllm-d3:** these answer `501` today; they need media
   evaluated in the same batch as the text that reads it ([`docs/architecture/decision-models.md`](docs/architecture/decision-models.md)).
 - **Memory flags:** `--cache-type-k/-v` and MoE offload (`--cpu-moe`, `--n-cpu-moe`, `-ot`), plain
@@ -102,8 +102,8 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
 
 1. **#49, `logit_bias` for label tokens.** Option (a) is done (0.5.0): llama.cpp at b11820 and
    `/v1/systemone` in Onyx code. BackTrack's ggml pin should move to `f1aa6a3` with it. Still open:
-   whether to accept `logit_bias` restricted to label tokens, so a chat model can serve the
-   decision shim with an enum constraint plus logprobs.
+   whether to accept `logit_bias` restricted to label tokens, so a chat model can answer label
+   decisions with an enum constraint plus logprobs.
 2. **How far to own the chat layer.** Full Stage 3 drops `common/` but loses automatic support for
    new chat templates; keeping upstream's chat layer behind the seam costs 3–5 days once and
    0.5–2 days per pin bump. ([R2 chat layer][R2-chat])
@@ -119,7 +119,9 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
    €8.60 a month) and macOS notarization.
 6. **JX Runtime:** 503-while-loading readiness and the non-loopback `--host` refusal shipped in
    0.6.0 without needing a JX change (its `_waitReady()` treats only `200` as ready, and it binds
-   `127.0.0.1`). Still open: whether JX's idle unload makes `--sleep-idle-seconds` moot.
+   `127.0.0.1`). JX Runtime already unloads an idle model itself (`resources.idleUnloadMinutes`,
+   default 10, which stops the engine process), so it does not need `--sleep-idle-seconds`; the flag
+   is still useful to supervisors that have no idle unload of their own.
 7. **llguidance for faster grammars.** R1 defers a build with it; R2 rules it out (Rust toolchain).
 
 ## Cross-repo dependencies

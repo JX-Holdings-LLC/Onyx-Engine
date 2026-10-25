@@ -14,7 +14,6 @@ The [documentation home](../README.md) is organized by what the reader is trying
 | `docs/architecture/` | understanding or changing the engine | mechanism, with the source files named |
 | `docs/integration/` | connecting a caller | the contract, from the engine's side |
 | `docs/development/` | building, testing, vendoring, releasing | maintainer to maintainer |
-| `docs/api.md`, `architecture.md`, `building.md`, `jx-runtime-integration.md` | old links | one-line stubs pointing to the new pages; keep them |
 | `ROADMAP.md`, `reports/`, `research_notes/` | planning | evidence and decisions |
 
 The root [README](../../README.md) is the front door and carries the shop-talk. Everything under `docs/` stays plain and exact.

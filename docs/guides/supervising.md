@@ -24,7 +24,8 @@ So there are three readiness answers, and each means one thing:
 - **`200`**: ready.
 - **Connection refused** before you have seen `503` or `200`: the port is not open yet, or the
   process has already exited. Check whether the process is still alive. Once you have seen a
-  `503`, a refused connection means the process is gone.
+  `503`, a refused connection means the process has exited or is exiting (a failed load closes the
+  port, then exits `1`).
 
 ## Spawn arguments
 
