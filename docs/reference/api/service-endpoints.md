@@ -13,8 +13,9 @@ Exempt from `--api-key`. The answer depends on whether the model has loaded:
 | Loading (or converting a safetensors model) | `503` | `{"error":{"code":503,"message":"Loading model","type":"unavailable_error"}}` |
 | Ready | `200` | `{"status":"ok"}` |
 
-The server binds and answers from the moment the process starts, so a refused connection means
-the process is not running (or has not bound yet), never "still loading". A load that fails
+The server binds as soon as it has parsed its arguments and started its backends, before it loads
+the model, so a refused connection means the port is not open yet (while the process is alive) or
+the process has exited, never "still loading". A load that fails
 closes the port and the process exits 1. The loading body is llama-server's, so a supervisor
 written for llama-server reads it unchanged. Every other route answers `503` with the same body
 while loading (after the `--api-key` check). See [supervising](../../guides/supervising.md).

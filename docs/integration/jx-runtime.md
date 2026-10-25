@@ -53,7 +53,7 @@ until then.
 The adapter's `_waitReady()` already treats only `res.ok` as ready and retries on any other
 status or a refused connection, while checking whether the process has exited. It therefore works
 unchanged against both behaviours, and against `llama-server`, which answers the same `503`.
-JX Runtime's next release also records when the engine first answered `503`
+From 1.5.3, JX Runtime also records when the engine first answered `503`
 (`stages.firstHealthLoadingMs`), separating "process started and port open" from "model loaded" in
 its load telemetry.
 
@@ -70,7 +70,7 @@ JX Runtime passes `--alias <registry model id>` to the engine so that OpenAI-com
 The adapter never assumes a capability; it probes for it.
 
 - **`detectSupport()`** runs `<binary> --version` with a 5 s timeout to confirm the binary starts and to read a version string. It distinguishes "could not spawn" and loader or library failures from "answered but exited non-zero", and treats the latter leniently. `onyx-engine --version` prints `onyx-engine <version>`, then `llama.cpp <build>-<commit>`, and exits `0`.
-- **`supportsJinja()`, `supportsMmproj()` and the generic `supportsFlag(flag)`** run `<binary> --help` once (cached per binary) and search the output for a flag name before ever passing that flag on a real launch. An older `llama-server` exits during argument parsing on an unrecognized flag, which would turn "we tried a newer feature" into "the model failed to load".
+- **`supportsJinja()`, `supportsMmproj()` and the generic `supportsFlag(flag)`** run `<binary> --help` once (cached per binary) and search the output for a flag name before ever passing that flag on a real launch. An older `llama-server` exits during argument parsing on an unrecognized flag, which would turn "we tried a newer feature" into "the model failed to load". The `onyxengine` adapter overrides `supportsJinja()` to answer `true` without spawning `--help`, and its `buildArgs()` always adds `--jinja` to a launch that is not embedding-only, because the engine always accepts it.
 
 That is why the engine's `--help` is curated rather than generated: **the parser and `--help` move together, always.** A flag never appears in one without the other (see the header comment in `src/args.h`). `supportsFlag('--mmproj')`, `('--context-shift')`, `('--reasoning-budget')` and `('--parallel')` all come back `true`, because all four are real, and the adapter's own "only pass a flag the build advertised" logic then sends them without special-casing Onyx. Any future flag must be added to `--help` and the parser together so the same probe picks it up with no adapter change.
 
@@ -83,7 +83,7 @@ What passing each one buys:
 
 Two probe details matter to correctness, not just capability:
 
-- **`--flash-attn` takes a value, never a bare toggle.** The adapter's `flashAttnStyle()` probe tells `-fa on|off|auto` (value form) from a bare `-fa` toggle by matching the help line against `/on\|off\|auto|'on'/`. The engine accepts only the value form, and a bare `-fa` exits with `error: -fa requires a value`, so a probe that classified it as a toggle would break every launch with flash attention on. The help line therefore reads `on|off|auto` with pipes, not commas, which is what the regex needs. The `onyxengine` adapter also overrides the probe outright (`async flashAttnStyle() { return 'value'; }`), so the pipe form matters for anything that runs the generic probe: the `llamacpp` adapter pointed at an engine binary, or a future adapter that drops the override.
+- **`--flash-attn` takes a value, never a bare toggle.** The adapter's `flashAttnStyle()` probe tells `-fa on|off|auto` (value form) from a bare `-fa` toggle by matching the help line against `/on\|off\|auto|'on'/`. The engine accepts only the value form, and a bare `-fa` exits with `error: -fa requires a value`, so a probe that classified it as a toggle would break every launch with flash attention on. The help line therefore reads `on|off|auto` with pipes, not commas, which is what the regex needs. The `onyxengine` adapter also overrides the probe outright (`async flashAttnStyle() { return 'value'; }`), as it does `supportsJinja()`, so the pipe form matters for anything that runs the generic probe: the `llamacpp` adapter pointed at an engine binary, or a future adapter that drops the override.
 - **`--no-webui` is accepted and ignored.** The `llamacpp` adapter passes it on every launch; the engine accepts it as a compatibility no-op so a hand-configured launch that reuses `llama-server` arguments does not fail at parsing. The `onyxengine` adapter strips it instead of relying on that.
 
 ## Usage and timing accounting

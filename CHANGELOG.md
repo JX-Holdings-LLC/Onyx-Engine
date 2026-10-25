@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Documentation — 2026-10-25
+
+Corrections from a cross-repository audit of what these docs say about JX Runtime. Documentation
+only; the binary is unchanged. Agent: Claude Code (Claude).
+
+- **This changelog** files 0.6.0 under its own heading, and the 0.4.0 to 0.5.2 entries under
+  theirs, instead of under Unreleased.
+- **JX Runtime facts:** `stages.firstHealthLoadingMs` shipped in JX Runtime 1.5.3, not "its next
+  release"; JX Runtime 1.5.8's managed downloader does not yet know the `linux-arm64` archive
+  (releases after 1.5.8 add it); the `onyxengine` adapter always passes `--jinja` without probing
+  `--help`; JX Runtime also proxies `/v1/systemone`, and it has no chat-model decision shim (the
+  roadmap's `logit_bias` item no longer cites one); JX Runtime's idle unload
+  (`resources.idleUnloadMinutes`, default 10) answers the open question about
+  `--sleep-idle-seconds`.
+- **Refused connections:** the stability page and service endpoints said a refused connection
+  means the process is not running. The engine parses its arguments and starts its backends before
+  it binds, so a refused connection before the first `503` or `200` means "not yet" while the
+  process is alive; the stability page, service endpoints and the supervising guide now say so.
+- **Moved-page stubs removed:** `docs/api.md`, `docs/architecture.md`, `docs/building.md` and
+  `docs/jx-runtime-integration.md` (they pointed to `docs/reference/api/`, `docs/architecture/`,
+  `docs/development/building.md` and `docs/integration/jx-runtime.md`). No link in this repository
+  or in JX Runtime used them.
+- Validation: the link check in `docs/development/documentation.md` reports the same 7 entries
+  before and after this change (percent-encoded and absolute paths under `reports/` and
+  `research_notes/`), none in the pages changed here. The version is not advanced here.
+
+## [0.6.0] — 2026-10-22
+
 ### Independent tool — 2026-10-22 (0.6.0)
 
 Items 1 to 8 of [`reports/independent-tool-plan.md`](reports/independent-tool-plan.md), and the
@@ -21,7 +49,7 @@ See the [stability page](docs/reference/stability.md) for the rule this follows.
 - **The port opens before the model loads.** `/health` and every other route answer
   `503 {"error":{"code":503,"message":"Loading model","type":"unavailable_error"}}` until it is
   ready (llama-server's body); a failed load closes the port and exits 1. JX Runtime's
-  `_waitReady()` already treats only `200` as ready, so it needs no change; its next release also
+  `_waitReady()` already treats only `200` as ready, so it needs no change; JX Runtime 1.5.3 also
   records the first `503` as `stages.firstHealthLoadingMs`.
 
 #### Added
@@ -78,6 +106,11 @@ See the [stability page](docs/reference/stability.md) for the rule this follows.
   npm).
 - Not verified yet: the arm64, Windows Vulkan and macOS release legs, the CUDA image and the GHCR
   push. Those need a Release dry run.
+
+## 0.4.0 to 0.5.2 — 2026-09-27 to 2026-10-22
+
+These releases were recorded together; each one's own summary is in
+[`.release/notes/onyx-engine/`](.release/notes/onyx-engine/).
 
 ### Release infrastructure migration — 2026-10-20
 
