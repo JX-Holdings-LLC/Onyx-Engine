@@ -65,7 +65,7 @@ jobs:
         # steps below are shared verbatim with release.yml.
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Verify every tool this job needs in one pass and fail with the
       # complete list — instant on GitHub-hosted runners, and the provisioning
@@ -189,7 +189,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: ccache
         uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2
         with:

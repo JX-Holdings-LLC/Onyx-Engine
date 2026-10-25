@@ -92,7 +92,7 @@ jobs:
       run:
         shell: bash
     steps:
-    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         ref: ${{ needs.plan.outputs.sha }}
         fetch-depth: 0
@@ -226,7 +226,7 @@ jobs:
     permissions:
       contents: read
     steps:
-    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         ref: ${{ needs.plan.outputs.sha }}
         fetch-depth: 0
@@ -248,7 +248,7 @@ jobs:
         cd dist
         sha256sum onyx-engine-* > checksums.txt
         cat checksums.txt
-    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         repository: JX-Holdings-LLC/release-infrastructure
         ref: d7f42f9910c075ef34915fa2b95cf28dd2be534a
@@ -305,7 +305,7 @@ jobs:
       DRY_RUN: ${{ inputs.dry_run }}
       CHANNEL: ${{ inputs.channel }}
     steps:
-    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         ref: ${{ needs.plan.outputs.sha }}
         persist-credentials: false
@@ -347,7 +347,7 @@ jobs:
     env:
       RELEASE_SOURCE_SHA: ${{ needs.plan.outputs.sha }}
     steps:
-    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         ref: ${{ needs.plan.outputs.sha }}
         persist-credentials: false
@@ -356,7 +356,7 @@ jobs:
       with:
         node-version: 24
     - run: bash packaging/make-vendor-package.sh --spec llama.cpp
-    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         repository: JX-Holdings-LLC/release-infrastructure
         ref: d7f42f9910c075ef34915fa2b95cf28dd2be534a
@@ -430,7 +430,7 @@ jobs:
     env:
       RELEASE_SOURCE_SHA: ${{ needs.plan.outputs.sha }}
     steps:
-    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         ref: ${{ needs.plan.outputs.sha }}
         persist-credentials: false
@@ -439,7 +439,7 @@ jobs:
       with:
         node-version: 24
     - run: bash packaging/make-vendor-package.sh --spec ggml
-    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         repository: JX-Holdings-LLC/release-infrastructure
         ref: d7f42f9910c075ef34915fa2b95cf28dd2be534a
