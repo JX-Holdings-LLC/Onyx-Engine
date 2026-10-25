@@ -17,7 +17,7 @@ only; the binary is unchanged. Agent: Claude Code (Claude).
   theirs, instead of under Unreleased.
 - **JX Runtime facts:** `stages.firstHealthLoadingMs` shipped in JX Runtime 1.5.3, not "its next
   release"; JX Runtime 1.5.8's managed downloader does not yet know the `linux-arm64` archive
-  (releases after 1.5.8 add it); the `onyxengine` adapter always passes `--jinja` without probing
+  (JX Runtime 1.5.9 adds it, and picks `-baseline` on a Linux x64 CPU without AVX2); the `onyxengine` adapter always passes `--jinja` without probing
   `--help`; JX Runtime also proxies `/v1/systemone`, and it has no chat-model decision shim (the
   roadmap's `logit_bias` item no longer cites one); JX Runtime's idle unload
   (`resources.idleUnloadMinutes`, default 10) answers the open question about
