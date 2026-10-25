@@ -19,6 +19,10 @@ Agent: Claude Code (Claude). Release pipeline only; the binary is unchanged from
   Neither vendor package has been published yet, so this has not failed here; the vendor jobs only
   run when a vendor version advances.
 - Version advances to 0.6.2 under the every-main-change policy.
+- **Vendor packages advanced without a source change** to `0.7.0-b11820.gd77256999.2` and
+  `0.27.0-gf1aa6a346.2`: the shared release policy requires every app to advance when a workflow
+  changes. The `.2` suffix marks a rebuild of the same commit; nothing publishes them unless the
+  preview channel is dispatched.
 - Validation: reproduced the npm 11.19.0 behaviour with a dry-run publish of a bare
   `package-output/x.tgz` (same `git ls-remote` error) and confirmed `./package-output/x.tgz`
   dry-runs a publish; the workflow still parses as YAML. Not exercised by a vendor release yet.

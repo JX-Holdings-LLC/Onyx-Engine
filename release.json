@@ -7,11 +7,11 @@
     },
     "vendor-llama-cpp": {
       "title": "@jxburros/llama-cpp-source",
-      "version": "0.7.0-b11820.gd77256999.1"
+      "version": "0.7.0-b11820.gd77256999.2"
     },
     "vendor-ggml": {
       "title": "@jxburros/ggml-source",
-      "version": "0.27.0-gf1aa6a346.1"
+      "version": "0.27.0-gf1aa6a346.2"
     }
   }
 }
