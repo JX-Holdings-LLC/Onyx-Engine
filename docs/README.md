@@ -29,6 +29,7 @@ This is the shop manual. The [root README](../README.md) tells you what the engi
 | Open the hood | [Architecture](architecture/README.md) |
 | Build, test, vendor or release it | [Development](development/README.md), [contributing](../CONTRIBUTING.md) |
 | See where it is going | [Roadmap](../ROADMAP.md) |
+| Implement the remaining work and identify dependencies | [Consolidated implementation plan](../reports/consolidated-implementation-plan.md) |
 
 ## The sections
 

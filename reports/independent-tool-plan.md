@@ -1,5 +1,7 @@
 # Making Onyx Engine an independent tool
 
+> For current sequencing, completion status and cross-repo dependencies, use the [consolidated implementation plan](consolidated-implementation-plan.md). This report remains source evidence; its optional proposals are not automatically approved.
+
 A plan to make Onyx Engine easy to develop around and easy to use outside the JX ecosystem, while
 keeping JX Runtime as the best-supported integration. Written 2026-10-22 from a review of the repo
 (README, ROADMAP, CHANGELOG, `docs/`, `src/`, `packaging/`, `.github/`). It adds to
