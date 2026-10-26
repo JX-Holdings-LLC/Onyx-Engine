@@ -3,7 +3,7 @@
   "apps": {
     "onyx-engine": {
       "title": "Onyx Engine",
-      "version": "0.6.2"
+      "version": "0.6.3"
     },
     "vendor-llama-cpp": {
       "title": "@jxburros/llama-cpp-source",

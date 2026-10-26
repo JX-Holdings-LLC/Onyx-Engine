@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.6.3] — 2026-10-26
+
+### Planning consolidation — 2026-10-26
+
+- Replaced the fragmented future-work index with a consolidated roadmap and detailed implementation plan covering remaining issues, reports, research and branch-only NVIDIA packages. Archived the previous roadmap and linked the combined owner decision register.
+- Labeled JX, Song Deck, BackTrack, QAI-ality, shared-release and upstream dependencies with exact producer deliverables and integration waits. JX #327 no longer blocks retirement of old Onyx doc stubs; other consumers still require checking.
+- Closed #66 as a stale QA source finding: catch(error) already rethrows error. Remaining QA findings are retained for evidence-based triage; no engine behavior changed.
+- Validation: new planning Markdown, local links, complete audit-ID coverage and diff whitespace checks passed. `ctest` is unavailable in this environment; the smoke attempt was stopped after identifying the existing binary as stale 0.4.0, so it is not current-engine validation.
+
 ## [0.6.2] — 2026-10-25
 
 ### Release pipeline — 2026-10-25 (0.6.2)
