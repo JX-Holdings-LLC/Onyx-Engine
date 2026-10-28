@@ -16,6 +16,8 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
 struct onyx_args {
     // model
@@ -44,6 +46,17 @@ struct onyx_args {
     bool    mlock           = false;
     bool    no_mmap         = false;
     uint32_t seed           = 0xFFFFFFFF; // LLAMA_DEFAULT_SEED
+    int32_t queue_timeout   = 0;     // seconds a request may wait for a slot; 0 = no limit
+
+    // memory: KV cache element types (llama-server's names, validated by the
+    // parser; the engine maps them onto ggml types) and MoE/tensor placement
+    std::string cache_type_k = "f16";
+    std::string cache_type_v = "f16";
+    bool        cpu_moe      = false; // keep every MoE expert tensor in host memory
+    int32_t     n_cpu_moe    = 0;     // keep the expert tensors of the first N layers in host memory
+    // --override-tensor PATTERN=BUFFER_TYPE pairs, in command-line order; the
+    // buffer type name is resolved against the loaded backends at load time
+    std::vector<std::pair<std::string, std::string>> tensor_overrides;
 
     // features
     bool        embedding    = false; // enable embeddings endpoint (pooled)
@@ -78,6 +91,16 @@ struct onyx_args {
 // Parses argv. Returns false (after printing an error to stderr) on invalid
 // input. On --help/--version, sets the corresponding flag and returns true.
 bool onyx_args_parse(int argc, char ** argv, onyx_args & out);
+
+// KV cache types --cache-type-k/-v accept (llama-server's spelling).
+bool onyx_cache_type_is_valid(const std::string & name);
+// True for a type other than f32/f16/bf16; a quantized V cache needs flash attention.
+bool onyx_cache_type_is_quantized(const std::string & name);
+
+// Splits one --override-tensor value ("PATTERN=BUFT[,PATTERN=BUFT...]") into
+// pairs appended to `out`. Returns false on an empty pattern or buffer type.
+bool onyx_parse_tensor_overrides(const std::string & value,
+                                 std::vector<std::pair<std::string, std::string>> & out);
 
 // True for a --host that only accepts connections from this machine.
 bool onyx_host_is_loopback(const std::string & host);

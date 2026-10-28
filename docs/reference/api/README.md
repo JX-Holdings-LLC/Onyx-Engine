@@ -63,4 +63,6 @@ exception's `what()` as `message`.
 
 A request that carries an `Origin` header is refused with `403` (`browser-origin requests are disabled`) on every route, `/health` included, and before the API-key check. `OPTIONS` also returns `403`. There is no CORS configuration: put a proxy you control in front if a browser must call the engine.
 
-Responses carry `Server: onyx-engine/<version>`. Read and write socket timeouts are 600 seconds; an HTTP worker waits on its own request, so a long generation holds one worker thread, not the engine.
+Responses carry `Server: onyx-engine/<version>`. The read timeout is 30 seconds: a client that sends nothing for that long while its request is incomplete (cpp-httplib v0.62 also bounds the whole request line and headers by it) is disconnected, so slow or idle clients cannot hold the worker threads. The write timeout stays at 600 seconds, since a stream can go quiet while a long prompt is processed. An HTTP worker waits on its own request, so a long generation holds one worker thread, not the engine.
+
+The HTTP layer is cpp-httplib v0.62.0, which parses requests strictly: an HTTP/1.1 request without a `Host` header, or with a malformed request line, gets `400` before any route sees it. A request body that nests arrays and objects deeper than 64 levels is refused with `400` (`invalid_request_error`) before it is parsed.

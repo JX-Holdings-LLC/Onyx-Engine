@@ -58,7 +58,7 @@ On success the process prints four lines on stderr and then sits and serves:
 
 ```text
 onyx-engine listening on http://127.0.0.1:8080 (loading)
-onyx-engine 0.6.2: loading model './models/your-model.gguf'
+onyx-engine 0.7.0: loading model './models/your-model.gguf'
 onyx-engine: model loaded (<description>, <size> MiB)
 onyx-engine ready on http://127.0.0.1:8080 (model: my-model, ctx: 4096)
 ```

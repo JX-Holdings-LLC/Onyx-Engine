@@ -44,6 +44,7 @@ DEC_PORT=$((PORT + 6))
 OPS_PORT=$((PORT + 7))
 TT_PORT=$((PORT + 8))
 LOAD_PORT=$((PORT + 9))
+MEM_PORT=$((PORT + 10))
 BASE="http://127.0.0.1:$PORT"
 EMB_BASE="http://127.0.0.1:$EMB_PORT"
 NP_BASE="http://127.0.0.1:$NP_PORT"
@@ -54,6 +55,7 @@ DEC_BASE="http://127.0.0.1:$DEC_PORT"
 OPS_BASE="http://127.0.0.1:$OPS_PORT"
 TT_BASE="http://127.0.0.1:$TT_PORT"
 LOAD_BASE="http://127.0.0.1:$LOAD_PORT"
+MEM_BASE="http://127.0.0.1:$MEM_PORT"
 OPS_KEY="sk-smoke"
 
 PASS=0
@@ -102,13 +104,25 @@ check "--help lists --parallel" bash -c "'$BIN' --help | grep -q -- --parallel"
 check "--help lists --context-shift" bash -c "'$BIN' --help | grep -q -- --context-shift"
 check "--help lists --mmproj" bash -c "'$BIN' --help | grep -q -- --mmproj"
 check "--help lists --no-webui" bash -c "'$BIN' --help | grep -q -- --no-webui"
-for flag in --max-queue --tick-tokens --metrics --allow-unauthenticated; do
+for flag in --max-queue --tick-tokens --metrics --allow-unauthenticated --queue-timeout \
+            --cache-type-k --cache-type-v --cpu-moe --n-cpu-moe --override-tensor; do
     check "--help lists $flag" bash -c "'$BIN' --help | grep -q -- $flag"
 done
 check "a non-loopback --host without --api-key is refused" bash -c "
     ! '$BIN' -m '$MODEL' --host 0.0.0.0 --port $LOAD_PORT > models-test/refuse.out 2>&1 &&
     grep -q -- '--allow-unauthenticated' models-test/refuse.out"
 check "--port -1 is refused" bash -c "! '$BIN' -m '$MODEL' --port -1 2> /dev/null"
+check "a quantized --cache-type-v with -fa off is refused" bash -c "
+    ! '$BIN' -m '$MODEL' -ctv q8_0 -fa off --port $LOAD_PORT > models-test/refuse.out 2>&1 &&
+    grep -q 'needs flash attention' models-test/refuse.out"
+# the tiny model's 16-wide heads do not divide q8_0's 32-wide blocks, so the
+# type reaching libllama shows as a clear load failure
+check "a KV cache type the model cannot hold fails the load and names the types" bash -c "
+    ! '$BIN' -m '$MODEL' -ctk q8_0 -ctv q8_0 --port $LOAD_PORT > models-test/refuse.out 2>&1 &&
+    grep -q 'cache types q8_0/q8_0' models-test/refuse.out"
+check "-ot with an unknown buffer type fails the load and lists the known ones" bash -c "
+    ! '$BIN' -m '$MODEL' -ot 'exps=NO_SUCH_BUFFER' --port $LOAD_PORT > models-test/refuse.out 2>&1 &&
+    grep -q 'unknown buffer type .NO_SUCH_BUFFER. (available: .*CPU' models-test/refuse.out"
 
 echo "== starting generation instance on :$PORT"
 "$BIN" -m "$MODEL" --port "$PORT" -c 512 --alias tiny-test > models-test/onyx-generation.log 2>&1 &
@@ -134,6 +148,11 @@ echo "== starting 2-slot tick-budget instance on :$TT_PORT (--tick-tokens 16)"
 "$BIN" -m "$MODEL" --port "$TT_PORT" -c 1024 -np 2 --tick-tokens 16 --alias tiny-tt > models-test/onyx-tick.log 2>&1 &
 PIDS+=($!)
 
+echo "== starting memory-flags instance on :$MEM_PORT (-ctk f32 -ctv bf16, MoE/-ot overrides, --queue-timeout 1)"
+"$BIN" -m "$MODEL" --port "$MEM_PORT" -c 512 -np 1 -ctk f32 -ctv bf16 --cpu-moe -ncmoe 2 -ot 'token_embd=CPU' \
+    --queue-timeout 1 --metrics --alias tiny-mem > models-test/onyx-memory.log 2>&1 &
+PIDS+=($!)
+
 echo "== starting decision-model instance on :$DEC_PORT"
 "$BIN" -m "$DEC_MODEL" --port "$DEC_PORT" -c 512 --alias tiny-decision > models-test/onyx-decision.log 2>&1 &
 PIDS+=($!)
@@ -154,14 +173,14 @@ for i in $(seq 1 100); do
         && curl -sf "$NP_BASE/health" > /dev/null 2>&1 && curl -sf "$MM_BASE/health" > /dev/null 2>&1 \
         && curl -sf "$RB_BASE/health" > /dev/null 2>&1 && curl -sf "$RK_BASE/health" > /dev/null 2>&1 \
         && curl -sf "$DEC_BASE/health" > /dev/null 2>&1 && curl -sf "$OPS_BASE/health" > /dev/null 2>&1 \
-        && curl -sf "$TT_BASE/health" > /dev/null 2>&1 && break
+        && curl -sf "$TT_BASE/health" > /dev/null 2>&1 && curl -sf "$MEM_BASE/health" > /dev/null 2>&1 && break
     sleep 0.2
 done
 if ! curl -sf "$BASE/health" > /dev/null || ! curl -sf "$EMB_BASE/health" > /dev/null ||
    ! curl -sf "$NP_BASE/health" > /dev/null || ! curl -sf "$MM_BASE/health" > /dev/null ||
    ! curl -sf "$RB_BASE/health" > /dev/null || ! curl -sf "$RK_BASE/health" > /dev/null ||
    ! curl -sf "$DEC_BASE/health" > /dev/null || ! curl -sf "$OPS_BASE/health" > /dev/null ||
-   ! curl -sf "$TT_BASE/health" > /dev/null; then
+   ! curl -sf "$TT_BASE/health" > /dev/null || ! curl -sf "$MEM_BASE/health" > /dev/null; then
     echo "error: one or more test servers did not become ready" >&2
     for log in models-test/onyx-*.log; do [ -f "$log" ] && { echo "== $log"; tail -50 "$log"; }; done
     exit 1
@@ -197,6 +216,65 @@ check "chat timings present" \
     -X POST "$BASE/v1/chat/completions" -d '{"messages":[{"role":"user","content":"Hi"}],"max_tokens":4}'
 check "json_schema constrained output is valid JSON" \
     bash -c "curl -sf -X POST '$BASE/v1/chat/completions' -d '{\"messages\":[{\"role\":\"user\",\"content\":\"person\"}],\"max_tokens\":40,\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"schema\":{\"type\":\"object\",\"properties\":{\"age\":{\"type\":\"integer\"}},\"required\":[\"age\"],\"additionalProperties\":false}}}}' | python3 -c 'import json,sys; d=json.load(sys.stdin); json.loads(d[\"choices\"][0][\"message\"][\"content\"])'"
+# Structured output cut by max_tokens is an error, never half an object
+# (Song Deck's M1). The tiny model keeps writing keys, so a small budget
+# always cuts it.
+JSON_RF='"response_format":{"type":"json_schema","json_schema":{"schema":{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}}}'
+check "json_schema output cut by max_tokens answers 400" bash -c "
+    curl -s -o models-test/trunc.json -w '%{http_code}' -X POST '$BASE/v1/chat/completions' \
+      -d '{\"messages\":[{\"role\":\"user\",\"content\":\"x\"}],\"max_tokens\":2,$JSON_RF}' | grep -q '^400$' &&
+    python3 -c 'import json; e = json.load(open(\"models-test/trunc.json\"))[\"error\"]; assert e[\"type\"] == \"invalid_request_error\" and \"max_tokens\" in e[\"message\"], e'"
+check "json_schema output cut by max_tokens ends the stream on an error frame" bash -c "
+    curl -sN -X POST '$BASE/v1/chat/completions' \
+      -d '{\"messages\":[{\"role\":\"user\",\"content\":\"x\"}],\"max_tokens\":2,\"stream\":true,$JSON_RF}' > models-test/trunc.sse
+    tail -n 2 models-test/trunc.sse | grep -q '\"code\":400' && ! grep -q 'DONE' models-test/trunc.sse"
+check "response_format json_object cut by max_tokens answers 400" http_status 400 -X POST "$BASE/v1/chat/completions" \
+    -d '{"messages":[{"role":"user","content":"x"}],"max_tokens":2,"response_format":{"type":"json_object"}}'
+check "completions json_schema cut by max_tokens answers 400" http_status 400 -X POST "$BASE/v1/completions" \
+    -d '{"prompt":"x","max_tokens":1,"json_schema":{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}}'
+# Song Deck's own schemas (tests/schemas/song-deck/: deep nesting, enums,
+# integer enums, nullable unions, arrays of objects, additionalProperties
+# false, strict) must convert to a grammar, and the grammar must hold the
+# output to the schema's shape: an object that opens with its first key.
+song_deck_schema() { # schema-file first-key
+    python3 - "$BASE" "$1" "$2" <<'SDEOF'
+import json, sys, urllib.error, urllib.request
+base, path, first_key = sys.argv[1:4]
+schema = json.load(open(path))
+body = {"messages": [{"role": "user", "content": "Write the plan."}], "max_tokens": 24, "stream": True,
+        "response_format": {"type": "json_schema", "json_schema": {"name": "song_deck", "strict": True, "schema": schema}}}
+req = urllib.request.Request(base + "/v1/chat/completions", data=json.dumps(body).encode(), method="POST")
+text, error, done = "", None, False
+for raw in urllib.request.urlopen(req):
+    line = raw.decode().strip()
+    if line == "data: [DONE]":
+        done = True
+    elif line.startswith("data: "):
+        frame = json.loads(line[6:])
+        if "error" in frame:
+            error = frame["error"]
+        for choice in frame.get("choices", []):
+            text += choice["delta"].get("content") or ""
+head = text.lstrip()
+assert head.startswith("{") and head[1:].lstrip().startswith('"%s"' % first_key), text
+if done:
+    json.loads(text)          # it finished: the whole answer must parse
+else:
+    assert error and error["code"] == 400 and "max_tokens" in error["message"], (error, text)
+SDEOF
+}
+check "Song Deck composition-plan schema (openai-strict) constrains chat output" \
+    song_deck_schema tests/schemas/song-deck/composition-plan.openai-strict.json key
+check "Song Deck blueprint schema (json-schema, constraints kept) constrains chat output" \
+    song_deck_schema tests/schemas/song-deck/blueprint.json-schema.json title
+python3 -c 'print("{\"content\":" + "[" * 65 + "]" * 65 + "}")' > models-test/deep.json
+check "a request body nested deeper than 64 levels answers 400" http_status 400 -X POST "$BASE/tokenize" \
+    --data-binary @models-test/deep.json
+check "an HTTP/1.1 request without Host answers 400" python3 -c "
+import socket
+s = socket.create_connection(('127.0.0.1', $PORT))
+s.sendall(b'GET /health HTTP/1.1\\r\\nConnection: close\\r\\n\\r\\n')
+assert s.recv(64).startswith(b'HTTP/1.1 400'), 'expected 400'"
 check "KV prefix reuse reports cache_n" bash -c "
     curl -sf -X POST '$BASE/v1/completions' -d '{\"prompt\":\"The quick brown fox jumps over\",\"max_tokens\":4}' > /dev/null
     curl -sf -X POST '$BASE/v1/completions' -d '{\"prompt\":\"The quick brown fox jumps over\",\"max_tokens\":4}' \
@@ -675,6 +753,27 @@ check "--max-queue answers 503 with Retry-After when the queue is full" bash -c 
     grep -q unavailable_error \$(grep -l '^HTTP/1.1 503' models-test/mq/h* | head -1 | sed 's|/h|/b|')"
 check "/metrics counts refused requests" bash -c "
     curl -sf -H 'Authorization: Bearer $OPS_KEY' '$OPS_BASE/metrics' | awk '/^onyx:requests_rejected_total /{exit !(\$2 >= 1)}'"
+echo "== memory flags and --queue-timeout"
+check "f32/bf16 KV cache and tensor overrides: generation works" \
+    json_has 'd["usage"]["completion_tokens"] == 4' -X POST "$MEM_BASE/v1/completions" -d '{"prompt":"Once upon a time","max_tokens":4}'
+# One slot and --queue-timeout 1: six requests of 400 tokens take well over
+# a second one after another, so the last ones wait past it and get the 503.
+check "--queue-timeout answers 503 with Retry-After after waiting for a slot" bash -c "
+    rm -rf models-test/qt && mkdir -p models-test/qt
+    for i in 1 2 3 4 5 6; do
+        curl -s -D models-test/qt/h\$i -o models-test/qt/b\$i \
+          -X POST '$MEM_BASE/v1/completions' -d '{\"prompt\":\"Once upon a time\",\"max_tokens\":400}' &
+    done
+    wait
+    ok=\$(grep -l '^HTTP/1.1 200' models-test/qt/h* | wc -l)
+    busy=\$(grep -l '^HTTP/1.1 503' models-test/qt/h* | wc -l)
+    retry=\$(grep -il '^retry-after: 1' models-test/qt/h* | wc -l)
+    echo \"200: \$ok, 503: \$busy, Retry-After: \$retry\"
+    [ \$ok -ge 1 ] && [ \$busy -ge 1 ] && [ \$retry -eq \$busy ] &&
+    grep -q 'queue-timeout' \$(grep -l '^HTTP/1.1 503' models-test/qt/h* | head -1 | sed 's|/h|/b|')"
+check "/metrics counts timed-out requests" bash -c "
+    curl -sf '$MEM_BASE/metrics' | awk '/^onyx:requests_timed_out_total /{exit !(\$2 >= 1)}'"
+
 LONG_PROMPT=$(python3 -c 'print(" ".join(["word"] * 120))')
 check "--tick-tokens 16: two concurrent long prompts still complete" bash -c "
     for i in 1 2; do

@@ -22,13 +22,14 @@ curl http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/jso
 }'
 ```
 
-The accepted forms of `response_format` are `{"type":"json_object"}` (optionally with a `schema`), `{"type":"json_schema","json_schema":{"schema":...}}` and `{"type":"text"}`; any other `type` is a `400`. A bare `json_schema` object at the top level of the request also works, and `/v1/completions` accepts `json_schema` the same way. The schema is converted to a grammar with llama.cpp's `json_schema_to_grammar`.
+The accepted forms of `response_format` are `{"type":"json_object"}` (optionally with a `schema`; without one the output is held to a JSON object), `{"type":"json_schema","json_schema":{"schema":...}}` and `{"type":"text"}`; any other `type` is a `400`. A bare `json_schema` object at the top level of the request also works, and `/v1/completions` accepts `json_schema` the same way. The schema is converted to a grammar with llama.cpp's `json_schema_to_grammar`.
 
 Things to know:
 
 - **A schema constrains the shape, not the truth.** A model can still write a wrong `born` year, as a valid integer.
-- **A length cut can truncate valid JSON.** If generation stops at `max_tokens` or the slot's context, you receive half an object. Check `finish_reason`: `"length"` means the JSON is incomplete. Leave generous room in `max_tokens`.
+- **A length cut is an error, not half an object.** If generation stops at `max_tokens` or the slot's context before the JSON is complete, the request fails with `400` (`invalid_request_error`) and a message naming which limit was hit, instead of a `200` carrying invalid JSON. A streaming request has already sent the partial deltas; its stream ends with that error as the last `data:` frame and no `[DONE]`. Leave generous room in `max_tokens`. (Before 0.7.0 the response was a `200` with `finish_reason: "length"` and the partial text.)
 - **A schema llama.cpp cannot convert** comes back as a `400` with the reason.
+- **Song Deck's schemas are a regression check.** `tests/schemas/song-deck/` holds two of Song Deck's schemas in the dialects it sends to local servers (OpenAI strict: every property required, optional ones as nullable unions; and plain JSON schema with numeric and array constraints kept). The smoke test runs both through `response_format` and checks that the output opens as the schema's object.
 
 ## A grammar
 

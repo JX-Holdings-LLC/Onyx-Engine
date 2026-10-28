@@ -114,3 +114,18 @@ TEST(http, loopback_host_headers) {
     CHECK(!host_header_is_loopback("192.168.1.2"));
     CHECK(!host_header_is_loopback(""));
 }
+
+TEST(http, json_nesting_depth) {
+    CHECK_EQ(json_nesting_depth(""), (size_t) 0);
+    CHECK_EQ(json_nesting_depth("42"), (size_t) 0);
+    CHECK_EQ(json_nesting_depth("{}"), (size_t) 1);
+    CHECK_EQ(json_nesting_depth("{\"a\":[1,{\"b\":[]}]}"), (size_t) 4);
+    CHECK_EQ(json_nesting_depth("[[],[[]],[]]"), (size_t) 3);
+    // brackets inside strings, escaped quotes included, do not count
+    CHECK_EQ(json_nesting_depth("{\"a\":\"[[[{{{\"}"), (size_t) 1);
+    CHECK_EQ(json_nesting_depth("{\"a\":\"x\\\"[[[\"}"), (size_t) 1);
+    CHECK_EQ(json_nesting_depth("[\"\\\\\",[]]"), (size_t) 2);   // an escaped backslash ends before the quote
+    // a stray closer does not go negative
+    CHECK_EQ(json_nesting_depth("]]][]"), (size_t) 1);
+    CHECK_EQ(json_nesting_depth(std::string(500, '[') + std::string(500, ']')), (size_t) 500);
+}

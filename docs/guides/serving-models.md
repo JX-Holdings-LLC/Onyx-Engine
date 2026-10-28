@@ -46,7 +46,7 @@ By default the request finishes with `finish_reason: "length"`. With `--context-
 
 ### Repeated prefixes
 
-Each slot remembers the tokens it last decoded. A new request that starts with the same tokens (a growing chat, or one system prompt across many calls) decodes only the part that differs. The response's `timings.cache_n` says how many tokens were reused. `--cache-reuse N` sets the minimum prefix worth reusing; `0` turns it off.
+Each slot remembers the tokens it last decoded. A new request that starts with the same tokens (a growing chat, or one system prompt across many calls) decodes only the part that differs. The response's `timings.cache_n` says how many tokens were reused. `--cache-reuse N` sets the minimum prefix worth reusing; `0` turns it off. Sliding-window models (Gemma, gpt-oss) reuse prefixes like dense ones; recurrent and hybrid models (Mamba, Granite 4, Qwen3.5 hybrids) reuse the cache when a new prompt extends the previous one exactly, as the next chat turn does.
 
 ## GPUs
 
@@ -63,6 +63,17 @@ cmake --build build --target onyx-engine -j 8
 ## Threads and memory
 
 `-t` sets generation threads and `-tb` prompt-processing threads; leave both at `-1` unless you have measured. `--mlock` pins the weights in RAM so the OS cannot page them out, and `--no-mmap` reads the file into memory instead of mapping it.
+
+### Fitting a bigger model
+
+Two kinds of memory decide what fits: the KV cache, which grows with `-c`, and the weights.
+
+- **The KV cache.** `-ctk q8_0 -ctv q8_0` stores it at 8 bits, about half of the default `f16`, with very little quality loss on most models. A quantized V cache needs flash attention, which `-fa auto` turns on. Treat the 4-bit types (`q4_0`, `iq4_nl`, ...) with care: some models, sliding-window ones especially, lose a lot of quality with them.
+- **MoE experts.** A Mixture-of-Experts model reads only a few experts per token, so keeping the expert tensors in system RAM and the rest on the GPU costs much less speed than offloading whole layers. `--cpu-moe` keeps them all on the CPU; `--n-cpu-moe N` keeps only the first `N` layers' experts there, so raise `N` until the model fits. `-ot PATTERN=BUFFER` places any tensor by name for finer control, for example `-ot 'blk\.(1[0-9])\.ffn_.*_exps=CPU'`.
+
+```bash
+./build/onyx-engine -m qwen3-30b-a3b-q4_k_m.gguf -ngl 99 --n-cpu-moe 24 -ctk q8_0 -ctv q8_0 -c 32768
+```
 
 ## Chat templates
 

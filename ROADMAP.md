@@ -1,6 +1,6 @@
 # Onyx Engine roadmap
 
-What's next for Onyx Engine and what needs an owner decision, as of 2026-10-22. It summarises
+What's next for Onyx Engine and what needs an owner decision, as of 2026-10-28. It summarises
 the research reports, docs and open issues, and adds no scope of its own. **R1** is
 [Onyx Engine improvement opportunities][R1] and **R2** is [Replacing llama cpp common code][R2].
 
@@ -8,7 +8,7 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
 
 ## Where Onyx Engine stands
 
-- **Version 0.6.2;** the last dated CHANGELOG release is 0.6.1, and `.release/README.md` records
+- **Version 0.7.0;** the last published release predates it, and `.release/README.md` records
   no dry run of the new release workflow yet.
 - **llama.cpp pinned at b11820** (`d77256999`, 2026-10-22, the latest release when it moved);
   ggml pinned at `f1aa6a3` to match. CMake (or `npm ci`) fetches the source with Git; no Node is
@@ -19,7 +19,9 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
   logprobs; reasoning budget; image and audio via `--mmproj`; per-slot prefix reuse; decision
   models on `/v1/systemone` ([#49][i49]); a numpy-only
   `LlamaForCausalLM` converter; `--api-key`; `503` while loading and `--port 0`; `/metrics`,
-  `X-Request-Id`, `--max-queue` and `--tick-tokens`; base64 embeddings. Release binaries for
+  `X-Request-Id`, `--max-queue`, `--queue-timeout` and `--tick-tokens`; base64 embeddings; KV cache
+  types and MoE offload (`-ctk`/`-ctv`, `--cpu-moe`, `--n-cpu-moe`, `-ot`); prefix reuse on
+  sliding-window and recurrent models; structured output that fails with `400` when cut by length. Release binaries for
   nine platform variants (CPU, baseline x64, arm64 Linux, Vulkan) and a CPU Docker image.
 - **Independent-tool plan:** items 1 to 8 of [`reports/independent-tool-plan.md`](reports/independent-tool-plan.md)
   landed in 0.6.0; item 9 (conformance suite, benchmarks, real-model nightly, sanitizers) is open.
@@ -33,20 +35,27 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
   model to a fixed set of label tokens; `logit_bias` still gets a 400. See [Decisions needed](#decisions-needed).
 - **Decision images for clef, lfm2-d1-omni and vllm-d3:** these answer `501` today; they need media
   evaluated in the same batch as the text that reads it ([`docs/architecture/decision-models.md`](docs/architecture/decision-models.md)).
-- **Memory flags:** `--cache-type-k/-v` and MoE offload (`--cpu-moe`, `--n-cpu-moe`, `-ot`), plain
-  plumbing onto libllama. ([R1 ranking][R1-rank] #1; [R2 table][R2-table])
-- **Operations:** done in 0.6.0 (`/metrics`, `X-Request-Id`, `--max-queue`, `--tick-tokens`).
-  Still open: a queue-wait timeout. ([R1 ranking][R1-rank] #2–3)
-- **Hardening:** the loopback Host allowlist, constant-time key compare, the explicit payload
-  cap and the non-loopback `--host` refusal are done (0.6.0). Still open: a shorter read timeout
-  and cpp-httplib v0.54.1 → v0.62. ([R1 hardening][R1-hard])
-- **Stage 1 of the `common/` plan:** Onyx-owned tokenize, batch and log helpers and sampler,
-  nlohmann JSON with a depth cap, a narrower SWA/recurrent reuse gate (`src/engine.cpp` line 113)
-  and a thin chat seam. 1–1.5 weeks. The b11820 bump already brought Onyx batch helpers
-  (`onyx_batch_add`, since upstream removed `common_batch_add`) and a part-aware prompt tokenizer
-  for common's new `common_chat_prompt`; the rest still applies. ([R2 stages][R2-stages])
-- **Song Deck structured output (its M1):** run Song Deck's real schemas through `json_schema` →
-  GBNF and make truncated JSON fail clearly. ([Song Deck plan][SD-onyx], step 1)
+- **Memory flags:** done in 0.7.0: `-ctk`/`-ctv` (`--cache-type-k/-v`) and MoE offload
+  (`--cpu-moe`, `--n-cpu-moe`, `-ot`), plumbed onto libllama. ([R1 ranking][R1-rank] #1;
+  [R2 table][R2-table]) Auto-fit (`--fit`) is under Next.
+- **Operations:** done in 0.6.0 (`/metrics`, `X-Request-Id`, `--max-queue`, `--tick-tokens`) and
+  0.7.0 (`--queue-timeout`, `onyx:requests_timed_out_total`). ([R1 ranking][R1-rank] #2–3)
+- **Hardening:** done in 0.6.0 (loopback Host allowlist, constant-time key compare, explicit
+  payload cap, non-loopback `--host` refusal) and 0.7.0 (a 30 s read timeout, cpp-httplib
+  v0.54.1 → v0.62.0, a 64-level JSON nesting cap). ([R1 hardening][R1-hard])
+- **Stage 1 of the `common/` plan:** partly done in 0.7.0: Onyx-owned tokenize, detokenize,
+  token-to-piece, batch and log helpers (`src/llama_util.*`); the narrower SWA/recurrent reuse
+  gate (llama-server's `pos_min` rule per request instead of a load-time disable); and the
+  request depth cap, as a pre-parse check. Still open: the Onyx sampler (the piece Stage 4 needs),
+  swapping `common_json` for nlohmann (100–160 call sites), the memory-capability probe and the
+  thin chat seam. The exit test (same greedy output, grammar and tool tests) applies to the
+  sampler work. ([R2 stages][R2-stages])
+- **Song Deck structured output (its M1):** done in 0.7.0 on Onyx's side: two of Song Deck's
+  schemas (OpenAI-strict and plain JSON-schema dialects) are a smoke-test regression check through
+  `response_format` → GBNF; a length cut under `json_schema`/`response_format` answers `400`
+  instead of half an object; `json_object` without a schema is held to an object. Still open:
+  Song Deck's "done when" (its roles working through JX Runtime with `onyxengine`), which needs a
+  real model and Song Deck's own run. ([Song Deck plan][SD-onyx], step 1)
 - **First release from the unified workflow:** dry-run it, then publish. The publisher bug that
   failed the v0.4.1 and v0.5.1 runs is fixed by the infrastructure pin in 0.6.0; delete their
   empty drafts and tags. The docs describe the manual, dry-run-first flow

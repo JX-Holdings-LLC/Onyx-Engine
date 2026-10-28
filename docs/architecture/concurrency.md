@@ -38,6 +38,17 @@ refusal is an HTTP status rather than an error frame. A request that loses the r
 check and the queue gets a single `503` error frame instead. `/metrics` reports the queue length
 (`llamacpp:requests_deferred`) and the refusals (`onyx:requests_rejected_total`).
 
+`--queue-timeout S` bounds the wait instead of the length. Each request records when it joined
+the queue, and every tick of the engine loop sweeps the whole queue (`sweep_queue()`, called from
+`admit_queued()`): a request queued for `S` seconds or more is removed and finished with the
+same `503` and `Retry-After: 1`, counted by `onyx:requests_timed_out_total`. The sweep also drops
+requests whose client disconnected while they waited, wherever they sit, rather than only when
+they reach the head. Only the engine thread removes requests, so it erases them by identity while
+HTTP threads go on appending. A streaming request has already sent its `200` and role frame when
+it times out, so its stream ends with a single `503` error frame. A request waits only while every
+slot is busy, and the loop ticks continuously then, so the timeout is checked once per decode;
+it can fire up to one tick late when a long prompt chunk is being decoded.
+
 ## Slots and context
 
 ![Eight thousand tokens of context split four ways gives four slots of 2048](../../assets/diagrams/svg/context-slots.svg)

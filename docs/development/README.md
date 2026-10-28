@@ -29,7 +29,7 @@ For people building, testing, vendoring or releasing the engine.
 | `cmake/` | `fetch-llama.cmake`, the Node-free llama.cpp fetch |
 | `scripts/` | Build, vendor, test-model generators, the safetensors converter, QA checks |
 | `packaging/` | Vendor specs and the source-package builder |
-| `third_party/cpp-httplib/` | A verbatim copy of cpp-httplib v0.54.1 (MIT) with its provenance notes |
+| `third_party/cpp-httplib/` | A verbatim copy of cpp-httplib v0.62.0 (MIT) with its provenance notes |
 | `.github/workflows/` | `ci.yml`, `release.yml`, `release-validation.yml`, `publish-vendor.yml` |
 | `.github/ISSUE_TEMPLATE/`, `.github/pull_request_template.md` | Bug, feature and question templates; the PR checklist |
 | `Dockerfile` | The CPU and CUDA container images ([Docker](../guides/docker.md)) |

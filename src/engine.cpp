@@ -1,4 +1,5 @@
 #include "engine.h"
+#include "llama_util.h"
 
 #include "log.h"
 #include "sampling.h"
@@ -62,6 +63,80 @@ static enum llama_pooling_type pick_pooling(const std::string & name, bool embed
     return LLAMA_POOLING_TYPE_UNSPECIFIED;
 }
 
+static enum ggml_type pick_cache_type(const std::string & name) {
+    // the parser accepts exactly these names (onyx_cache_type_is_valid)
+    if (name == "f32")    return GGML_TYPE_F32;
+    if (name == "bf16")   return GGML_TYPE_BF16;
+    if (name == "q8_0")   return GGML_TYPE_Q8_0;
+    if (name == "q4_0")   return GGML_TYPE_Q4_0;
+    if (name == "q4_1")   return GGML_TYPE_Q4_1;
+    if (name == "iq4_nl") return GGML_TYPE_IQ4_NL;
+    if (name == "q5_0")   return GGML_TYPE_Q5_0;
+    if (name == "q5_1")   return GGML_TYPE_Q5_1;
+    return GGML_TYPE_F16;
+}
+
+// The MoE expert tensors, as llama-server names them (common.h's
+// LLM_FFN_EXPS_REGEX); libllama matches each pattern with std::regex_search.
+static const char * const ONYX_FFN_EXPS_REGEX = "\\.ffn_(up|down|gate|gate_up)_(ch|)exps";
+
+bool onyx_engine::build_tensor_overrides(const onyx_args & args) {
+    tensor_override_patterns_.clear();
+    tensor_overrides_.clear();
+    if (args.tensor_overrides.empty() && !args.cpu_moe && args.n_cpu_moe <= 0) {
+        return true;
+    }
+
+    // buffer types by name, from every registered device (llama-server's
+    // -ot lookup); "CPU" is the host's
+    std::vector<std::pair<std::string, ggml_backend_buffer_type_t>> bufts;
+    for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+        ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(ggml_backend_dev_get(i));
+        if (buft) {
+            bufts.emplace_back(ggml_backend_buft_name(buft), buft);
+        }
+    }
+
+    // command-line order, then the MoE flags: libllama takes the first
+    // pattern that matches a tensor, so an explicit -ot wins
+    std::vector<ggml_backend_buffer_type_t> targets;
+    for (const auto & [pattern, name] : args.tensor_overrides) {
+        ggml_backend_buffer_type_t buft = nullptr;
+        for (const auto & [n, b] : bufts) {
+            if (n == name) {
+                buft = b;
+            }
+        }
+        if (!buft) {
+            std::string known;
+            for (const auto & entry : bufts) {
+                known += (known.empty() ? "" : ", ") + entry.first;
+            }
+            load_error_ = "--override-tensor: unknown buffer type '" + name + "' (available: " + known + ")";
+            return false;
+        }
+        tensor_override_patterns_.push_back(pattern);
+        targets.push_back(buft);
+    }
+    if (args.cpu_moe) {
+        tensor_override_patterns_.push_back(ONYX_FFN_EXPS_REGEX);
+        targets.push_back(ggml_backend_cpu_buffer_type());
+    } else {
+        for (int32_t il = 0; il < args.n_cpu_moe; il++) {
+            tensor_override_patterns_.push_back("blk\\." + std::to_string(il) + ONYX_FFN_EXPS_REGEX);
+            targets.push_back(ggml_backend_cpu_buffer_type());
+        }
+    }
+
+    // the strings above live as long as the engine; libllama reads the
+    // null-terminated array during the load
+    for (size_t i = 0; i < tensor_override_patterns_.size(); i++) {
+        tensor_overrides_.push_back({ tensor_override_patterns_[i].c_str(), targets[i] });
+    }
+    tensor_overrides_.push_back({ nullptr, nullptr });
+    return true;
+}
+
 bool onyx_engine::load(const onyx_args & args) {
     alias_          = args.alias;
     embedding_mode_ = args.embedding;
@@ -73,6 +148,12 @@ bool onyx_engine::load(const onyx_args & args) {
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = args.n_gpu_layers < 0 ? 999 : args.n_gpu_layers;
     mparams.load_mode    = pick_load_mode(args.no_mmap, args.mlock);
+    if (!build_tensor_overrides(args)) {
+        return false;
+    }
+    if (!tensor_overrides_.empty()) {
+        mparams.tensor_buft_overrides = tensor_overrides_.data();
+    }
 
     model_ = llama_model_load_from_file(args.model_path.c_str(), mparams);
     if (!model_) {
@@ -120,6 +201,11 @@ bool onyx_engine::load(const onyx_args & args) {
         args.flash_attn > 0 ? LLAMA_FLASH_ATTN_TYPE_ENABLED
                             : LLAMA_FLASH_ATTN_TYPE_DISABLED;
 
+    // KV cache element types; libllama turns flash attention on for a
+    // quantized V cache under -fa auto (the parser refuses it with -fa off)
+    cparams.type_k = pick_cache_type(args.cache_type_k);
+    cparams.type_v = pick_cache_type(args.cache_type_v);
+
     if (embedding_mode_) {
         cparams.embeddings   = true;
         cparams.pooling_type = pick_pooling(args.pooling, true);
@@ -139,7 +225,12 @@ bool onyx_engine::load(const onyx_args & args) {
 
     ctx_ = llama_init_from_model(model_, cparams);
     if (!ctx_) {
-        load_error_ = "failed to create inference context (ctx-size " + std::to_string(args.n_ctx) + ")";
+        load_error_ = "failed to create inference context (ctx-size " + std::to_string(args.n_ctx);
+        if (cparams.type_k != GGML_TYPE_F16 || cparams.type_v != GGML_TYPE_F16) {
+            // the usual cause: the head size is not a multiple of the type's block size
+            load_error_ += ", cache types " + args.cache_type_k + "/" + args.cache_type_v;
+        }
+        load_error_ += ")";
         return false;
     }
     n_ctx_      = llama_n_ctx(ctx_);
@@ -147,10 +238,13 @@ bool onyx_engine::load(const onyx_args & args) {
     n_batch_    = (int32_t) cparams.n_batch;
     tick_tokens_ = args.tick_tokens > 0 ? std::min(args.tick_tokens, n_batch_) : 0;
     max_queue_   = std::max<int32_t>(0, args.max_queue);
-    if (cache_reuse_ > 0 && (llama_model_n_swa(model_) > 0 || !llama_memory_can_shift(llama_get_memory(ctx_)))) {
-        cache_reuse_ = 0;
-        fprintf(stderr, "warning: cache reuse is disabled for sliding-window or recurrent memory\n");
-    }
+    queue_timeout_us_ = (int64_t) std::max<int32_t>(0, args.queue_timeout) * 1000000;
+    // Prefix reuse stays on for sliding-window and recurrent memory: whether a
+    // slot's state can be cut back to a shared prefix is decided per request
+    // in admit_queued() (llama-server's rule). With swa_full (llama.cpp's
+    // default, kept here) the SWA cache holds every position, so the window
+    // never limits reuse.
+    n_swa_ = cparams.swa_full ? 0 : llama_model_n_swa(model_);
 
     if (!args.mmproj_path.empty()) {
         mtmd_context_params mparams_mtmd = mtmd_context_params_default();
@@ -249,28 +343,8 @@ std::string onyx_engine::chat_template_source() const {
     return chat_templates_ ? common_chat_templates_source(chat_templates_.get()) : "";
 }
 
-// llama_batch fill helpers. upstream's common_batch_add/common_batch_clear
-// went away when common moved to llama_batch_ext; onyx-engine keeps the plain
-// llama_batch and fills it itself.
-void onyx_batch_clear(llama_batch & batch) {
-    batch.n_tokens = 0;
-}
-
-void onyx_batch_add(llama_batch & batch, llama_token id, llama_pos pos,
-                    const std::vector<llama_seq_id> & seq_ids, bool logits) {
-    const int32_t i = batch.n_tokens;
-    batch.token[i]    = id;
-    batch.pos[i]      = pos;
-    batch.n_seq_id[i] = (int32_t) seq_ids.size();
-    for (size_t k = 0; k < seq_ids.size(); k++) {
-        batch.seq_id[i][k] = seq_ids[k];
-    }
-    batch.logits[i] = logits;
-    batch.n_tokens++;
-}
-
 std::vector<llama_token> onyx_engine::tokenize(const std::string & text, bool add_special, bool parse_special) const {
-    return common_tokenize(vocab_, text, add_special, parse_special);
+    return onyx_tokenize(vocab_, text, add_special, parse_special);
 }
 
 std::vector<llama_token> onyx_engine::tokenize_prompt(const common_chat_prompt & prompt) const {
@@ -280,18 +354,18 @@ std::vector<llama_token> onyx_engine::tokenize_prompt(const common_chat_prompt &
     std::vector<llama_token> out;
     bool first = true;
     for (const auto & part : prompt.parts) {
-        const auto toks = common_tokenize(vocab_, part.text, /* add_special */ first, /* parse_special */ !part.is_input);
+        const auto toks = onyx_tokenize(vocab_, part.text, /* add_special */ first, /* parse_special */ !part.is_input);
         out.insert(out.end(), toks.begin(), toks.end());
         first = false;
     }
     if (first) {
-        out = common_tokenize(vocab_, "", true, true);
+        out = onyx_tokenize(vocab_, "", true, true);
     }
     return out;
 }
 
 std::string onyx_engine::detokenize(const std::vector<llama_token> & tokens, bool special) const {
-    return common_detokenize(vocab_, tokens, special);
+    return onyx_detokenize(vocab_, tokens, special);
 }
 
 // longest suffix of `text` that is a prefix of any stop word (text held back
@@ -339,7 +413,7 @@ static onyx_token_probs compute_token_probs(llama_context * ctx, const llama_voc
     };
 
     out.sampled.token   = token;
-    out.sampled.piece   = common_token_to_piece(ctx, token, preserved_tokens.count(token) > 0);
+    out.sampled.piece   = onyx_token_to_piece(vocab, token, preserved_tokens.count(token) > 0);
     out.sampled.logprob = logprob_of(token);
 
     const int32_t n_top = std::max<int32_t>(0, std::min(n_probs, n_vocab));
@@ -355,7 +429,7 @@ static onyx_token_probs compute_token_probs(llama_context * ctx, const llama_voc
         for (int32_t i = 0; i < n_top; i++) {
             onyx_prob_entry e;
             e.token   = (llama_token) idx[(size_t) i];
-            e.piece   = common_token_to_piece(ctx, e.token, preserved_tokens.count(e.token) > 0);
+            e.piece   = onyx_token_to_piece(vocab, e.token, preserved_tokens.count(e.token) > 0);
             e.logprob = logprob_of(e.token);
             out.top.push_back(std::move(e));
         }
@@ -475,6 +549,7 @@ onyx_gen_result onyx_engine::generate(const onyx_gen_params & params, const onyx
             res.queue_full = true;
             return res;
         }
+        req->t_queued = ggml_time_us();
         queue_.push_back(req);
     }
     q_cv_.notify_all();
@@ -691,8 +766,66 @@ void onyx_engine::loop() {
     }
 }
 
+// Finishes every queued request whose caller gave up, and with
+// --queue-timeout every one that has waited too long for a slot, wherever it
+// sits in the queue. Only the engine thread removes requests, so erasing by
+// identity is safe while HTTP threads keep appending.
+void onyx_engine::sweep_queue() {
+    std::vector<onyx_gen_request_ptr> waiting;
+    {
+        std::lock_guard<std::mutex> lock(q_mutex_);
+        if (queue_.empty()) {
+            return;
+        }
+        waiting.assign(queue_.begin(), queue_.end());
+    }
+
+    const int64_t now = ggml_time_us();
+    std::vector<onyx_gen_request_ptr> done;
+    for (auto & req : waiting) {
+        std::lock_guard<std::mutex> lock(req->mu);
+        if (req->cancelled) {
+            req->result.finish = ONYX_FINISH_CANCEL;
+        } else if (queue_timeout_us_ > 0 && now - req->t_queued >= queue_timeout_us_) {
+            req->result.error = "server is busy: no slot became free within " +
+                                std::to_string(queue_timeout_us_ / 1000000) + " s (--queue-timeout)";
+            req->result.queue_timeout = true;
+        } else {
+            continue;
+        }
+        done.push_back(req);
+    }
+    if (done.empty()) {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(q_mutex_);
+        for (const auto & req : done) {
+            queue_.erase(std::remove(queue_.begin(), queue_.end(), req), queue_.end());
+        }
+    }
+    for (auto & req : done) {
+        if (req->result.queue_timeout) {
+            std::lock_guard<std::mutex> m_lock(metrics_mutex_);
+            metrics_.requests_timed_out++;
+        }
+        if (req->smpl) {
+            common_sampler_free(req->smpl);
+            req->smpl = nullptr;
+        }
+        {
+            std::lock_guard<std::mutex> lock(req->mu);
+            req->finished = true;
+        }
+        req->cv.notify_all();
+    }
+}
+
 bool onyx_engine::admit_queued() {
     bool admitted = false;
+
+    sweep_queue();
 
     while (true) {
         onyx_gen_request_ptr req;
@@ -788,8 +921,17 @@ bool onyx_engine::admit_queued() {
             prefix = best_lcp;
         }
         if (prefix > 0) {
-            if (!llama_memory_seq_rm(mem, slot.seq_id, (llama_pos) prefix, -1) ||
-                llama_memory_seq_pos_min(mem, slot.seq_id) > 0) {
+            // llama-server's test of whether the state can serve this prefix:
+            // the first new token (at position `prefix`) attends to the
+            // positions after prefix - n_swa, so a sliding-window cache that
+            // still starts at or before prefix - n_swa + 1 is enough; any
+            // other memory (recurrent state, or a pruned window) must not
+            // reach past the prefix. Plain KV caches keep position 0.
+            const llama_pos pos_min   = llama_memory_seq_pos_min(mem, slot.seq_id);
+            const llama_pos pos_eval  = (llama_pos) prefix;
+            const llama_pos pos_thold = std::max<llama_pos>(0, n_swa_ > 0 ? pos_eval - n_swa_ + 2 : pos_eval);
+            if (pos_min < 0 || pos_min >= pos_thold ||
+                !llama_memory_seq_rm(mem, slot.seq_id, (llama_pos) prefix, -1)) {
                 llama_memory_seq_rm(mem, slot.seq_id, -1, -1);
                 slot.cache_tokens.clear();
                 prefix = 0;
@@ -1134,7 +1276,7 @@ void onyx_engine::on_sampled(onyx_slot & slot, const onyx_token_probs * probs) {
         return;
     }
 
-    res.text += common_token_to_piece(ctx_, slot.sampled, req.params.sampling.preserved_tokens.count(slot.sampled) > 0);
+    res.text += onyx_token_to_piece(vocab_, slot.sampled, req.params.sampling.preserved_tokens.count(slot.sampled) > 0);
     if (probs) {
         res.probs.push_back(*probs);
     }

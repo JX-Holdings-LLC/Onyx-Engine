@@ -1,0 +1,167 @@
+{
+ "type": "object",
+ "properties": {
+  "key": {
+   "type": "object",
+   "properties": {
+    "tonic": {
+     "type": "string",
+     "description": "Tonic note name without octave, e.g. \"E\", \"F#\", \"Bb\""
+    },
+    "mode": {
+     "type": "string",
+     "enum": [
+      "major",
+      "minor",
+      "dorian",
+      "phrygian",
+      "lydian",
+      "mixolydian",
+      "locrian",
+      "harmonic-minor",
+      "melodic-minor"
+     ]
+    }
+   },
+   "required": [
+    "tonic",
+    "mode"
+   ],
+   "additionalProperties": false
+  },
+  "tempo": {
+   "type": "number",
+   "description": "Tempo in BPM (quarter notes per minute)"
+  },
+  "meter": {
+   "type": "object",
+   "properties": {
+    "numerator": {
+     "type": "integer",
+     "description": "Beats per bar"
+    },
+    "denominator": {
+     "type": "integer",
+     "description": "Beat unit (4 = quarter note, 8 = eighth note)",
+     "enum": [
+      1,
+      2,
+      4,
+      8,
+      16
+     ]
+    }
+   },
+   "required": [
+    "numerator",
+    "denominator"
+   ],
+   "additionalProperties": false
+  },
+  "sections": {
+   "type": "array",
+   "description": "Sections in playing order",
+   "items": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string",
+      "description": "Display name, e.g. \"Verse 1\", \"Final Chorus\""
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "intro",
+       "verse",
+       "pre-chorus",
+       "chorus",
+       "post-chorus",
+       "bridge",
+       "breakdown",
+       "build",
+       "drop",
+       "solo",
+       "interlude",
+       "final-chorus",
+       "outro",
+       "custom"
+      ]
+     },
+     "bars": {
+      "type": "integer",
+      "description": "Length in bars"
+     },
+     "harmony": {
+      "type": "array",
+      "description": "Chord symbols in order, one per harmonic-rhythm slot (they repeat to fill the section)",
+      "items": {
+       "type": "string",
+       "description": "Chord symbol such as \"Em\", \"C\", \"G/B\", \"D7sus4\""
+      }
+     },
+     "energy": {
+      "type": "number",
+      "description": "Energy 0..100 at the start of the section"
+     },
+     "energy_end": {
+      "type": [
+       "number",
+       "null"
+      ],
+      "description": "Energy 0..100 at the end (for ramps)"
+     },
+     "purpose": {
+      "type": "string",
+      "description": "Musical purpose, e.g. \"Rising tension\""
+     },
+     "feel": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "enum": [
+       "normal",
+       "half-time",
+       "double-time",
+       null
+      ]
+     }
+    },
+    "required": [
+     "name",
+     "kind",
+     "bars",
+     "harmony",
+     "energy",
+     "energy_end",
+     "purpose",
+     "feel"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "notes": {
+   "type": [
+    "string",
+    "null"
+   ],
+   "description": "Short notes about the plan (motifs, contrast, arrangement ideas)"
+  },
+  "confidence": {
+   "type": [
+    "number",
+    "null"
+   ],
+   "description": "Your confidence that this answer is musically correct and complete, 0..1"
+  }
+ },
+ "required": [
+  "key",
+  "tempo",
+  "meter",
+  "sections",
+  "notes",
+  "confidence"
+ ],
+ "additionalProperties": false
+}

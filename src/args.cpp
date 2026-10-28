@@ -72,6 +72,9 @@ void onyx_args_print_help() {
         "                               (default: 0)\n"
         "       --tick-tokens N         tokens per batching tick, decode rows first,\n"
         "                               0 = --batch-size (default: 0)\n"
+        "       --queue-timeout N       seconds a request may wait for a slot; beyond\n"
+        "                               it, answer 503 with Retry-After, 0 = no limit\n"
+        "                               (default: 0)\n"
         // "on|off|auto" (pipes), not "on, off, auto": supervisors probe this
         // line to choose between `-fa <value>` and a bare `-fa` (JX Runtime's
         // llama.cpp adapter matches /on\|off\|auto|'on'/ against it), and the
@@ -82,6 +85,17 @@ void onyx_args_print_help() {
         "       --mlock                 lock model memory in RAM\n"
         "       --no-mmap               do not memory-map the model file\n"
         "  -s,  --seed N                default RNG seed (default: random)\n"
+        "\n"
+        "memory:\n"
+        "  -ctk, --cache-type-k TYPE    KV cache type for K: f32, f16, bf16, q8_0, q4_0,\n"
+        "                               q4_1, iq4_nl, q5_0, q5_1 (default: f16)\n"
+        "  -ctv, --cache-type-v TYPE    KV cache type for V, same values (default: f16);\n"
+        "                               a quantized V cache needs flash attention\n"
+        "  -cmoe, --cpu-moe             keep all MoE expert weights in host memory (CPU)\n"
+        "  -ncmoe, --n-cpu-moe N        keep the MoE expert weights of the first N layers\n"
+        "                               in host memory (CPU) (default: 0)\n"
+        "  -ot, --override-tensor P=B   place tensors whose name matches regex P in buffer\n"
+        "                               type B (e.g. CPU); comma-separated, repeatable\n"
         "\n"
         "features:\n"
         "       --embedding             enable pooled embeddings (/v1/embeddings)\n"
@@ -104,6 +118,46 @@ void onyx_args_print_help() {
         "misc:\n"
         "  -h,  --help                  show this help and exit\n"
         "       --version               show version and exit\n");
+}
+
+static const char * const ONYX_CACHE_TYPES[] = {
+    "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1",
+};
+
+bool onyx_cache_type_is_valid(const std::string & name) {
+    for (const char * t : ONYX_CACHE_TYPES) {
+        if (name == t) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool onyx_cache_type_is_quantized(const std::string & name) {
+    return onyx_cache_type_is_valid(name) && name != "f32" && name != "f16" && name != "bf16";
+}
+
+bool onyx_parse_tensor_overrides(const std::string & value,
+                                 std::vector<std::pair<std::string, std::string>> & out) {
+    // llama-server's form: PATTERN=BUFT, comma-separated. A pattern can hold
+    // '=' itself only before the last one, so split each item on its last '='.
+    size_t start = 0;
+    while (start <= value.size()) {
+        size_t comma = value.find(',', start);
+        if (comma == std::string::npos) {
+            comma = value.size();
+        }
+        const std::string item = value.substr(start, comma - start);
+        const size_t eq = item.rfind('=');
+        if (eq == std::string::npos || eq == 0 || eq + 1 == item.size()) {
+            fprintf(stderr, "error: invalid --override-tensor value '%s' (expected PATTERN=BUFFER_TYPE)\n",
+                    item.c_str());
+            return false;
+        }
+        out.emplace_back(item.substr(0, eq), item.substr(eq + 1));
+        start = comma + 1;
+    }
+    return true;
 }
 
 bool onyx_host_is_loopback(const std::string & host) {
@@ -157,6 +211,22 @@ bool onyx_args_parse(int argc, char ** argv, onyx_args & out) {
         if (is("--mmproj"))                   { if (!(val = need_value(i, argv[i]))) return false; out.mmproj_path = val; continue; }
         if (is("--convert-dir"))              { if (!(val = need_value(i, argv[i]))) return false; out.convert_dir = val; continue; }
         if (is("--reasoning-budget-message")) { if (!(val = need_value(i, argv[i]))) return false; out.reasoning_budget_message = val; continue; }
+        if (is("-cmoe", "--cpu-moe"))         { out.cpu_moe = true; continue; }
+
+        if (is("-ctk", "--cache-type-k", "-ctv") || is("--cache-type-v")) {
+            if (!(val = need_value(i, argv[i]))) return false;
+            if (!onyx_cache_type_is_valid(val)) {
+                fprintf(stderr, "error: invalid %s value '%s' (expected f32, f16, bf16, q8_0, q4_0, q4_1, "
+                                "iq4_nl, q5_0 or q5_1)\n", arg.c_str(), val);
+                return false;
+            }
+            (arg == "-ctk" || arg == "--cache-type-k" ? out.cache_type_k : out.cache_type_v) = val;
+            continue;
+        }
+        if (is("-ot", "--override-tensor")) {
+            if (!(val = need_value(i, argv[i])) || !onyx_parse_tensor_overrides(val, out.tensor_overrides)) return false;
+            continue;
+        }
 
         if (is("-fa", "--flash-attn")) {
             if (!(val = need_value(i, argv[i]))) return false;
@@ -184,6 +254,8 @@ bool onyx_args_parse(int argc, char ** argv, onyx_args & out) {
         if (is("--cache-reuse"))              { if (!(val = need_value(i, argv[i])) || !parse_int(val, n)) return false; out.cache_reuse = n; continue; }
         if (is("--keep"))                     { if (!(val = need_value(i, argv[i])) || !parse_int(val, n)) return false; out.n_keep = n; continue; }
         if (is("--reasoning-budget"))         { if (!(val = need_value(i, argv[i])) || !parse_int(val, n)) return false; out.reasoning_budget = n; continue; }
+        if (is("--queue-timeout"))            { if (!(val = need_value(i, argv[i])) || !parse_int(val, n)) return false; out.queue_timeout = n; continue; }
+        if (is("-ncmoe", "--n-cpu-moe"))      { if (!(val = need_value(i, argv[i])) || !parse_int(val, n)) return false; out.n_cpu_moe = n; continue; }
         if (is("-s", "--seed"))               { if (!(val = need_value(i, argv[i])) || !parse_int(val, n)) return false; out.seed = (uint32_t) n; continue; }
 
         fprintf(stderr, "error: unknown argument '%s' (see --help)\n", arg.c_str());
@@ -195,8 +267,14 @@ bool onyx_args_parse(int argc, char ** argv, onyx_args & out) {
         return false;
     }
     if (out.port < 0 || out.port > 65535 || out.n_parallel < 1 || out.cache_reuse < 0 ||
-        out.n_batch < 1 || out.n_ubatch < 1 || out.n_ctx < 0 || out.max_queue < 0 || out.tick_tokens < 0) {
-        fprintf(stderr, "error: invalid port, parallel, max-queue, tick-tokens, cache-reuse, batch or context value\n");
+        out.n_batch < 1 || out.n_ubatch < 1 || out.n_ctx < 0 || out.max_queue < 0 || out.tick_tokens < 0 ||
+        out.queue_timeout < 0 || out.n_cpu_moe < 0) {
+        fprintf(stderr, "error: invalid port, parallel, max-queue, queue-timeout, tick-tokens, n-cpu-moe, "
+                        "cache-reuse, batch or context value\n");
+        return false;
+    }
+    if (onyx_cache_type_is_quantized(out.cache_type_v) && out.flash_attn == 0) {
+        fprintf(stderr, "error: --cache-type-v %s needs flash attention; drop -fa off\n", out.cache_type_v.c_str());
         return false;
     }
     if (!onyx_host_is_loopback(out.host) && out.api_key.empty() && !out.allow_unauthenticated) {

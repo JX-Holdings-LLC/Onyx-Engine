@@ -13,7 +13,7 @@ onyx-engine -m MODEL [options]
 Only `-m` is required. Anything unrecognized exits with status 1 and names the argument. `--help` and `--version` exit 0. `--version` prints the engine version and the llama.cpp build it was compiled against:
 
 ```text
-onyx-engine 0.6.2
+onyx-engine 0.7.0
 llama.cpp b11820-d77256999
 ```
 
@@ -63,11 +63,26 @@ A failure to bind prints `error: failed to bind to HOST:PORT` and exits 1. A fai
 | `-tb, --threads-batch N` | same as `-t` | Prompt-processing threads. |
 | `-np, --parallel N` | `1` | Concurrent request slots. Requests beyond `N` queue, first in first out. See [slots and context](../architecture/concurrency.md#slots-and-context). |
 | `--max-queue N` | `0` | Requests allowed to wait for a slot. When `N` are already waiting, a new generation request gets `503` (`unavailable_error`) with `Retry-After: 1`. `0` means no limit. Applies to chat and text completions. |
+| `--queue-timeout N` | `0` | Seconds a generation request may wait for a slot. A request still queued after `N` seconds gets `503` (`unavailable_error`) with `Retry-After: 1`, the same answer as `--max-queue`; a streaming request that already opened its stream gets that error as its last `data:` frame instead. `0` means wait as long as it takes. Counted by `onyx:requests_timed_out_total` in `/metrics`. |
 | `--tick-tokens N` | `0` | Tokens per batching tick, decode rows included. Generating slots always get their next token first; prompt chunks share what is left, at least one token per tick. `0` uses `--batch-size`; a larger value is capped at it. See [the tick budget](../architecture/concurrency.md#the-tick-budget). |
 | `-fa, --flash-attn VAL` | `auto` | `on`, `off`, `auto`, `1` or `0`. A value is mandatory: a bare `-fa` exits with `-fa requires a value`. |
 | `--mlock` | off | Lock the model's memory in RAM. |
 | `--no-mmap` | off | Do not memory-map the model file. |
 | `-s, --seed N` | random | Default RNG seed. A request's `seed` overrides it. |
+
+## Memory
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-ctk, --cache-type-k TYPE` | `f16` | Element type of the K cache: `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_1`, `iq4_nl`, `q5_0` or `q5_1` (llama-server's names, lower case). |
+| `-ctv, --cache-type-v TYPE` | `f16` | Element type of the V cache, same values. A quantized V cache needs flash attention: under `-fa auto` llama.cpp turns it on, and `-fa off` with a quantized V type exits 1. |
+| `-cmoe, --cpu-moe` | off | Keep every Mixture-of-Experts expert tensor in host memory, so only the dense weights and the KV cache take GPU memory. |
+| `-ncmoe, --n-cpu-moe N` | `0` | Keep the expert tensors of the first `N` layers in host memory. `--cpu-moe` covers all of them. |
+| `-ot, --override-tensor P=B` | none | Place every tensor whose name matches the regular expression `P` in the buffer type `B` (`CPU`, or a device's own type such as `CUDA0` or `Vulkan0`). Comma-separate several pairs, or repeat the flag; the first matching pattern wins, and explicit `-ot` pairs come before the ones `--cpu-moe` and `--n-cpu-moe` add. An unknown buffer type fails the load and lists the known ones. |
+
+`q8_0` for both K and V roughly halves KV memory against `f16` with very little quality loss on most models; it is the type to reach for first. `q4_0` and the other 4-bit types save more but hurt some models badly, sliding-window models (Gemma) in particular. A quantized type also needs the model's head size to be a multiple of its block size (32 for `q8_0`); when it is not, the load fails with `failed to create inference context (... cache types K/V)`.
+
+The MoE flags match tensors named `blk.N.ffn_{up,down,gate,gate_up}_{ch,}exps`, llama-server's pattern, so they do nothing on a dense model. Expert tensors kept on the CPU are read through the memory map unless `--no-mmap` is set; llama.cpp prints a warning suggesting it.
 
 ## Features
 
@@ -87,10 +102,11 @@ A failure to bind prints `error: failed to bind to HOST:PORT` and exits 1. A fai
 The parser refuses, with a one-line `error:` on stderr and exit status 1:
 
 - a missing `-m`;
-- a port outside 0 to 65535, `-np` below 1, `-b` or `-ub` below 1, a negative `--cache-reuse`, `--max-queue`, `--tick-tokens` or `-c`;
+- a port outside 0 to 65535, `-np` below 1, `-b` or `-ub` below 1, a negative `--cache-reuse`, `--max-queue`, `--queue-timeout`, `--tick-tokens`, `--n-cpu-moe` or `-c`;
+- a `--cache-type-k` or `--cache-type-v` outside the list above, a quantized `--cache-type-v` with `-fa off`, or an `--override-tensor` item that is not `PATTERN=BUFFER_TYPE`;
 - a non-loopback `--host` without `--api-key` or `--allow-unauthenticated`;
 - an unknown `--pooling` value, or `--pooling` without `--embedding`;
-- `--embedding` together with a decision model (found at load time);
+- `--embedding` together with a decision model, or an `--override-tensor` buffer type no device provides (both found at load time);
 - a `--chat-template` value that is not Jinja source or `chatml` (use `--chat-template-file` for a path).
 
 ## Environment variables

@@ -1,4 +1,5 @@
 #include "decision.h"
+#include "llama_util.h"
 
 #include "chat.h"
 #include "common.h"
@@ -144,7 +145,7 @@ onyx_decision::onyx_decision()  = default;
 onyx_decision::~onyx_decision() = default;
 
 std::vector<llama_token> onyx_decision::tokenize(const std::string & text, bool parse_special) const {
-    return common_tokenize(vocab_, text, /* add_special */ false, parse_special);
+    return onyx_tokenize(vocab_, text, /* add_special */ false, parse_special);
 }
 
 void onyx_decision::init(const llama_model * model, const std::string & media_marker) {
@@ -255,7 +256,7 @@ void onyx_decision::init(const llama_model * model, const std::string & media_ma
             if (token_marker_ == LLAMA_TOKEN_NULL || token_sep_ == LLAMA_TOKEN_NULL) {
                 throw std::runtime_error("decision model has no mask or sep token");
             }
-            text_marker_     = common_token_to_piece(vocab_, token_marker_, true);
+            text_marker_     = onyx_token_to_piece(vocab_, token_marker_, true);
             max_head_tokens_ = std::strtoul(meta_str(model, prefix + "max_head_tokens").c_str(), nullptr, 10);
             if (max_head_tokens_ == 0) {
                 throw std::runtime_error("decision model has no valid max_head_tokens");
@@ -909,7 +910,7 @@ std::string onyx_decision::h2o_cut_state(const std::string & text) const {
     auto text_of = [&](std::vector<llama_token>::const_iterator begin, std::vector<llama_token>::const_iterator end) {
         std::string out;
         for (auto it = begin; it != end; ++it) {
-            out += common_token_to_piece(vocab_, *it, true);
+            out += onyx_token_to_piece(vocab_, *it, true);
         }
         return json::parse(json::make(out).dump_safe()).get<std::string>();
     };

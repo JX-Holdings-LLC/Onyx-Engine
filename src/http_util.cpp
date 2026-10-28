@@ -186,3 +186,31 @@ onyx_media_buffer decode_media_payload(const std::string & url, const char * wha
     }
     return data;
 }
+
+size_t json_nesting_depth(const std::string & text) {
+    size_t depth = 0;
+    size_t deepest = 0;
+    bool in_string = false;
+    bool escaped = false;
+    for (const char c : text) {
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (c == '"') {
+            in_string = true;
+        } else if (c == '[' || c == '{') {
+            depth++;
+            deepest = std::max(deepest, depth);
+        } else if ((c == ']' || c == '}') && depth > 0) {
+            depth--;
+        }
+    }
+    return deepest;
+}
