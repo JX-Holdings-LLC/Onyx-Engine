@@ -173,8 +173,10 @@ check "GET /health" curl -sf "$BASE/health"
 # 2-slot instance below is what pins them apart.
 check "GET /props reports n_ctx" \
     json_has 'd["n_ctx"] == 512 and d["default_generation_settings"]["n_ctx"] == 512 and d["n_ctx_total"] == 512 and "chat_template" in d' "$BASE/props"
-check "GET /v1/models echoes alias" \
-    json_has 'd["data"][0]["id"] == "tiny-test"' "$BASE/v1/models"
+check "GET /v1/models reports alias, context and modalities" \
+    json_has 'd["data"][0]["id"] == "tiny-test" and d["data"][0]["meta"]["n_ctx"] == 512 and isinstance(d["data"][0]["meta"]["modalities"]["vision"], bool) and isinstance(d["data"][0]["meta"]["modalities"]["audio"], bool)' "$BASE/v1/models"
+check "GET /v1/models reports per-slot context" \
+    json_has 'd["data"][0]["meta"]["n_ctx"] == 256' "$NP_BASE/v1/models"
 check "POST /tokenize" \
     json_has 'len(d["tokens"]) > 0' -X POST "$BASE/tokenize" -d '{"content":"Hello world"}'
 check "POST /detokenize round trip" \

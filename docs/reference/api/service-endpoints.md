@@ -118,7 +118,12 @@ requests are not counted, and a multimodal prefill's own decode calls are not in
         "n_ctx_train": 32768,
         "n_embd": 4096,
         "size": 4661211648,
-        "n_params": 8030261248
+        "n_params": 8030261248,
+        "n_ctx": 4096,
+        "modalities": {
+          "vision": false,
+          "audio": false
+        }
       }
     }
   ]
