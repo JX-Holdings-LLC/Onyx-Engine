@@ -756,11 +756,13 @@ check "/metrics counts refused requests" bash -c "
 echo "== memory flags and --queue-timeout"
 check "f32/bf16 KV cache and tensor overrides: generation works" \
     json_has 'd["usage"]["completion_tokens"] == 4' -X POST "$MEM_BASE/v1/completions" -d '{"prompt":"Once upon a time","max_tokens":4}'
-# One slot and --queue-timeout 1: six requests of 400 tokens take well over
-# a second one after another, so the last ones wait past it and get the 503.
+# One slot and --queue-timeout 1: 32 requests of 400 tokens take several
+# seconds one after another even on a fast runner (about 0.2 s each on a
+# laptop; six were not enough on CI), so the last ones wait past it and get
+# the 503.
 check "--queue-timeout answers 503 with Retry-After after waiting for a slot" bash -c "
     rm -rf models-test/qt && mkdir -p models-test/qt
-    for i in 1 2 3 4 5 6; do
+    for i in \$(seq 1 32); do
         curl -s -D models-test/qt/h\$i -o models-test/qt/b\$i \
           -X POST '$MEM_BASE/v1/completions' -d '{\"prompt\":\"Once upon a time\",\"max_tokens\":400}' &
     done
