@@ -710,6 +710,12 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
         meta["n_embd"]      = (int64_t) engine.n_embd();
         meta["size"]        = engine.model_size_bytes();
         meta["n_params"]    = engine.model_n_params();
+        meta["n_ctx"]       = (int64_t) engine.n_ctx_slot();
+
+        common_json modalities = common_json::object();
+        modalities["vision"] = engine.supports_vision();
+        modalities["audio"]  = engine.supports_audio();
+        meta["modalities"]   = modalities;
 
         common_json model = common_json::object();
         model["id"]       = engine.alias();
