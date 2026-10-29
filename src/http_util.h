@@ -34,3 +34,9 @@ bool onyx_is_ipv4_loopback(const std::string & s);
 // True when a Host header names this machine: localhost, *.localhost,
 // 127.x.x.x or [::1], with or without a port.
 bool host_header_is_loopback(const std::string & host);
+
+// Deepest nesting of arrays and objects in a JSON text, counting only
+// brackets outside strings. It does not validate the text; the JSON parser
+// does that afterwards. Used to refuse a request body nested deeper than the
+// parser and the schema converter can recurse into safely.
+size_t json_nesting_depth(const std::string & text);

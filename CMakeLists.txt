@@ -200,6 +200,7 @@ add_executable(onyx-engine
     src/decision.cpp
     src/engine.cpp
     src/http_util.cpp
+    src/llama_util.cpp
     src/server.cpp
 )
 

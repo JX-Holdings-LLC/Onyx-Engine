@@ -15,7 +15,7 @@ Everything used here is on the [stability page](../reference/stability.md).
 | Listening | Binds the port, then starts loading (and converting, for safetensors) | stderr `onyx-engine listening on http://HOST:PORT (loading)`; `/health` → `503` |
 | Ready | The model is loaded and requests are served | stderr `onyx-engine ready on http://HOST:PORT (...)`; `/health` → `200 {"status":"ok"}` |
 | Failed load | Prints `error: ...`, closes the port, exits `1` | Process exits `1`; connections are refused |
-| Running | Serves until signalled | Normal responses; `503` + `Retry-After` when `--max-queue` is full |
+| Running | Serves until signalled | Normal responses; `503` + `Retry-After` when `--max-queue` is full or `--queue-timeout` passes |
 | Stop | `SIGTERM` or `SIGINT` ends the process at once | Exit by signal; in-flight requests are cut off |
 
 So there are three readiness answers, and each means one thing:
@@ -48,6 +48,9 @@ onyx-engine -m MODEL --alias ID --host 127.0.0.1 --port PORT -c CTX -np SLOTS
 - **`--max-queue N`** bounds how many requests wait for a slot. Beyond it the engine answers
   `503` with `Retry-After: 1` instead of queueing without limit, which gives you a clear overload
   signal.
+- **`--queue-timeout S`** bounds how long a request waits for a slot. A request still queued
+  after `S` seconds gets the same `503` with `Retry-After: 1`, so a client never waits behind a
+  stuck backlog longer than you chose.
 - **`--metrics`** turns on `GET /metrics` (Prometheus text, llama.cpp's `llamacpp:*` names).
 
 Probe before you pass anything newer than this page: `onyx-engine --help` lists every flag the
@@ -61,6 +64,7 @@ binary.
 | `-np N` | `N` requests run at once, one continuous-batching loop. Request `N + 1` waits, first in first out. |
 | `-c C` | Total context. Each slot gets `C / N` tokens, so raise `-c` when you raise `-np`. |
 | `--max-queue Q` | At most `Q` requests wait. Request `N + Q + 1` gets `503`. `0` (default) means no limit. |
+| `--queue-timeout S` | A request that waits `S` seconds without a slot gets `503`. `0` (default) means no limit. |
 | `--tick-tokens T` | Caps the tokens per batching tick. Generating slots always get their one token first; long prompts are fed in the rest. A smaller `T` keeps streaming smooth while others prefill, at some cost to prompt throughput. |
 | `--cache-reuse N` | Each slot reuses the KV of a shared prompt prefix of at least `N` tokens. `timings.cache_n` reports how many tokens were reused. |
 
@@ -255,7 +259,7 @@ async function startOnyx({ bin, model, alias, ctx = 4096, slots = 1 }) {
 | `403` | The request carried `Origin`, or a `Host` that is not loopback on a loopback bind | Call it from your server process, by `127.0.0.1` or `localhost` |
 | `413` | Body over 100 MiB | Send smaller media |
 | `501` | The route is outside this process's mode (for example chat on an embedding model) | Start an engine in the right mode |
-| `503` | Still loading, or `--max-queue` is full (with `Retry-After`) | Wait and retry |
+| `503` | Still loading, `--max-queue` is full, or `--queue-timeout` passed (both with `Retry-After`) | Wait and retry |
 | `500` | The engine failed the request | Retry once; keep the stderr tail if it repeats |
 
 A streaming request that fails after the stream has started gets one `data: {"error": {...}}`

@@ -6,6 +6,97 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-10-28
+
+### Memory, queue timeout, hardening, Stage 1 helpers, Song Deck M1 — 2026-10-28 (0.7.0)
+
+The engineering items in the roadmap's "Now" section, except `logit_bias` (owner decision
+pending), decision images and the release itself. Agent: Claude Code (Claude).
+
+#### Breaking
+
+See the [stability page](docs/reference/stability.md) for the rule this follows.
+
+- **Structured output cut by length is a `400`.** Under `json_schema` or `response_format`
+  (`json_object` or `json_schema`), a response that reaches `max_tokens` or the context limit used
+  to come back as a `200` with `finish_reason: "length"` and half an object. It now answers `400`
+  (`invalid_request_error`) with a message naming the limit; a stream ends on that error frame,
+  with no finish, usage or `[DONE]` frames. Callers that parsed the partial text must raise
+  `max_tokens` instead. Song Deck's plan asked for exactly this ("a truncated JSON answer must fail
+  clearly").
+- **`{"type":"json_object"}` without a `schema` is held to a JSON object.** It was sent to
+  `common/` as the empty schema `{}`, for which no grammar is built, so the output was not
+  constrained at all.
+- **Stricter HTTP parsing from cpp-httplib v0.62.0:** an HTTP/1.1 request without `Host` (or with
+  a malformed request line) gets `400`. curl, browsers, the OpenAI clients and Node's `http`
+  always send `Host`.
+- **A new limit:** request bodies nested deeper than 64 levels of arrays and objects get `400`
+  before parsing (the JSON parser and the schema converter recurse once per level).
+
+#### Added
+
+- **KV cache types:** `-ctk, --cache-type-k` and `-ctv, --cache-type-v` (`f32`, `f16`, `bf16`,
+  `q8_0`, `q4_0`, `q4_1`, `iq4_nl`, `q5_0`, `q5_1`; default `f16`), onto
+  `llama_context_params.type_k/type_v`. A quantized V cache with `-fa off` exits 1; under
+  `-fa auto` libllama enables flash attention for it. A load that fails names the cache types.
+- **MoE offload and tensor placement:** `-cmoe, --cpu-moe`, `-ncmoe, --n-cpu-moe N` and
+  `-ot, --override-tensor PATTERN=BUFFER_TYPE[,...]` (repeatable), built into libllama's
+  null-terminated `tensor_buft_overrides` with llama-server's expert pattern; explicit `-ot`
+  pairs come first. An unknown buffer type fails the load and lists the available ones.
+- **`--queue-timeout N`:** a request still waiting for a slot after `N` seconds gets `503` with
+  `Retry-After: 1` (an error frame on a stream that already opened), counted by the new
+  `onyx:requests_timed_out_total` metric. The engine loop now sweeps the whole queue each tick,
+  which also drops a disconnected client's request wherever it waits, not only at the head.
+- **Song Deck regression schemas:** `tests/schemas/song-deck/` holds Song Deck's composition-plan
+  schema in its OpenAI-strict dialect and its blueprint schema in its plain JSON-schema dialect
+  (constraints kept), built from Song Deck's `canonical.ts` and `dialects.ts`. The smoke test runs
+  both through `response_format` and checks the output opens as the schema's object.
+- **`src/llama_util.*`** (Stage 1 of the `common/` plan): Onyx-owned tokenize, detokenize,
+  token-to-piece, `llama_batch` and log helpers on `llama.h`. Every `common_tokenize`,
+  `common_detokenize` and `common_token_to_piece` call is gone; the quiet log filter now covers
+  mtmd too.
+
+#### Changed
+
+- **Prefix reuse on sliding-window and recurrent models** (the R1/R2 "line 113" gate): the
+  load-time disable for any model with SWA or non-shiftable memory is gone. Admission applies
+  llama-server's per-request rule instead: the state's lowest position must be below
+  `prefix - n_swa + 2` for a pruned window, or below `prefix` otherwise, and `seq_rm` must
+  succeed. With llama.cpp's default `swa_full` the SWA cache is never pruned, so Gemma-style
+  models reuse prefixes like dense ones; recurrent and hybrid models reuse an exact extension
+  of the cached tokens (the next chat turn).
+- **Read timeout 600 s → 30 s;** the write timeout stays 600 s for long streams.
+- **cpp-httplib v0.54.1 → v0.62.0** (`split.py` output of the tag, the same version b11820
+  vendors): request-smuggling, chunk-size, Host and slow-header fixes; the request head is now
+  bounded by the read timeout as a whole.
+- Docs: CLI reference (Memory section, `--queue-timeout`, startup validation), chat and
+  completion API pages, API errors and timeouts, stability limits and operations, service
+  endpoints, supervising, troubleshooting, serving (fitting a bigger model), structured output,
+  KV-cache and concurrency architecture, code map, README and ROADMAP "Now". The smoke test uses
+  one more port (18190 to 18200). The roadmap diagram (`assets/diagrams/svg/roadmap-map.svg`) was
+  not regenerated.
+
+#### Not completed
+
+- **Stage 1 remainder:** the Onyx sampler (replacing `common_sampler`), the `common_json` →
+  nlohmann swap, the memory-capability probe and the thin chat seam. The sampler changes every
+  generated token and its grammar path, and its exit test (same greedy output, grammar and tool
+  tests on real templates) is better done as its own change; the depth cap landed as a pre-parse
+  check rather than through the JSON swap.
+- **Song Deck M1's "done when"** (its LLM roles working through JX Runtime with `onyxengine`)
+  needs a real model and a Song Deck run.
+- Skipped as asked: `logit_bias` (owner decision), decision images, the release publish.
+
+#### Validation
+
+- Linux x64, CMake + Ninja Release build of the pinned b11820: unit tests 3/3 suites pass;
+  `scripts/smoke-test.sh` 123/123 (20 new: the new flags, cache-type and `-ot` load failures, a
+  memory-flags instance, `--queue-timeout`, truncated JSON on chat, stream and completions, the two
+  Song Deck schemas, the depth cap and the missing-`Host` `400`); `scripts/safetensors-test.sh`
+  14/14. Not exercised: GPU offload with `-ot`/MoE flags on a real MoE model, quantized KV on a
+  model whose heads fit the block size, and the reuse gate on real SWA, recurrent or hybrid models
+  (the tiny test models are dense Llama).
+
 ## [0.6.2] — 2026-10-25
 
 ### Release pipeline — 2026-10-25 (0.6.2)

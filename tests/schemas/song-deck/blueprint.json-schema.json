@@ -1,0 +1,306 @@
+{
+ "type": "object",
+ "properties": {
+  "title": {
+   "type": "string",
+   "description": "Working title"
+  },
+  "tempo": {
+   "type": "number",
+   "description": "Tempo in BPM",
+   "minimum": 30,
+   "maximum": 300
+  },
+  "meter": {
+   "type": "object",
+   "properties": {
+    "numerator": {
+     "type": "integer",
+     "description": "Beats per bar",
+     "minimum": 1,
+     "maximum": 32
+    },
+    "denominator": {
+     "type": "integer",
+     "description": "Beat unit (4 = quarter note, 8 = eighth note)",
+     "enum": [
+      1,
+      2,
+      4,
+      8,
+      16
+     ]
+    }
+   },
+   "required": [
+    "numerator",
+    "denominator"
+   ],
+   "additionalProperties": false
+  },
+  "key": {
+   "type": "object",
+   "properties": {
+    "tonic": {
+     "type": "string",
+     "description": "Tonic note name without octave, e.g. \"E\", \"F#\", \"Bb\""
+    },
+    "mode": {
+     "type": "string",
+     "enum": [
+      "major",
+      "minor",
+      "dorian",
+      "phrygian",
+      "lydian",
+      "mixolydian",
+      "locrian",
+      "harmonic-minor",
+      "melodic-minor"
+     ]
+    }
+   },
+   "required": [
+    "tonic",
+    "mode"
+   ],
+   "additionalProperties": false
+  },
+  "styles": {
+   "type": "array",
+   "description": "Style labels, e.g. [\"Emo\", \"Pop-punk\"]",
+   "items": {
+    "type": "string"
+   }
+  },
+  "genre_blend": {
+   "type": "array",
+   "description": "Genre blend, e.g. 50% pop-punk / 30% emo / 20% cinematic",
+   "items": {
+    "type": "object",
+    "properties": {
+     "genre_id": {
+      "type": "string",
+      "description": "Genre profile id (use the provided ids when given)"
+     },
+     "weight": {
+      "type": "number",
+      "description": "Relative weight",
+      "minimum": 0
+     }
+    },
+    "required": [
+     "genre_id",
+     "weight"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "moods": {
+   "type": "array",
+   "description": "Mood statements, e.g. \"Melancholy verses\", \"Cathartic chorus\"",
+   "items": {
+    "type": "string"
+   }
+  },
+  "instrumentation": {
+   "type": "array",
+   "description": "Tracks of the arrangement",
+   "minItems": 1,
+   "items": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string",
+      "description": "Track name"
+     },
+     "instrument_id": {
+      "type": "string",
+      "description": "Instrument profile id (use the provided ids when given)"
+     },
+     "role": {
+      "type": "string",
+      "enum": [
+       "drums",
+       "percussion",
+       "bass",
+       "rhythm-guitar",
+       "lead-guitar",
+       "keys",
+       "strings",
+       "synth-pad",
+       "synth-arp",
+       "synth-lead",
+       "synth-seq",
+       "vocal",
+       "custom"
+      ]
+     },
+     "function": {
+      "type": "string",
+      "enum": [
+       "melody",
+       "counter-melody",
+       "harmony",
+       "accompaniment",
+       "bass-line",
+       "rhythm",
+       "pad",
+       "hook",
+       "fills",
+       "solo",
+       "texture"
+      ]
+     },
+     "lowest": {
+      "type": "string",
+      "description": "Lowest allowed note, e.g. \"E2\""
+     },
+     "highest": {
+      "type": "string",
+      "description": "Highest allowed note, e.g. \"A5\""
+     },
+     "complexity": {
+      "type": "string",
+      "enum": [
+       "low",
+       "medium",
+       "high"
+      ]
+     }
+    },
+    "required": [
+     "name",
+     "instrument_id",
+     "role"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "structure": {
+   "type": "array",
+   "description": "Song structure in order",
+   "minItems": 1,
+   "items": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string",
+      "description": "Section name"
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "intro",
+       "verse",
+       "pre-chorus",
+       "chorus",
+       "post-chorus",
+       "bridge",
+       "breakdown",
+       "build",
+       "drop",
+       "solo",
+       "interlude",
+       "final-chorus",
+       "outro",
+       "custom"
+      ]
+     },
+     "bars": {
+      "type": "integer",
+      "description": "Length in bars",
+      "minimum": 1,
+      "maximum": 128
+     },
+     "energy": {
+      "type": "number",
+      "description": "Energy 0..100",
+      "minimum": 0,
+      "maximum": 100
+     },
+     "purpose": {
+      "type": "string",
+      "description": "Musical purpose"
+     },
+     "mood": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "harmony": {
+      "type": "array",
+      "description": "Chord symbols or roman numerals for the progression",
+      "items": {
+       "type": "string"
+      }
+     },
+     "feel": {
+      "type": "string",
+      "enum": [
+       "normal",
+       "half-time",
+       "double-time"
+      ]
+     }
+    },
+    "required": [
+     "name",
+     "kind",
+     "bars"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "vocal": {
+   "type": "object",
+   "properties": {
+    "voice_type": {
+     "type": "string",
+     "enum": [
+      "soprano",
+      "mezzo",
+      "alto",
+      "tenor",
+      "baritone",
+      "bass"
+     ]
+    },
+    "description": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "voice_type"
+   ],
+   "additionalProperties": false
+  },
+  "lyrics_theme": {
+   "type": "string",
+   "description": "What the lyrics are about"
+  },
+  "explanation": {
+   "type": "string",
+   "description": "One or two sentences explaining the choices"
+  },
+  "confidence": {
+   "type": "number",
+   "description": "Your confidence that this answer is musically correct and complete, 0..1",
+   "minimum": 0,
+   "maximum": 1
+  }
+ },
+ "required": [
+  "title",
+  "tempo",
+  "meter",
+  "key",
+  "styles",
+  "genre_blend",
+  "moods",
+  "instrumentation",
+  "structure"
+ ],
+ "additionalProperties": false
+}

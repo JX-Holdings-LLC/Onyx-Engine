@@ -48,6 +48,24 @@ queued request (`onyx_engine::admit_queued`):
    (`llama_memory_seq_rm(mem, seq, -1, -1)`) and the whole prompt is decoded
    from scratch.
 
+Whether a slot's state can be cut back to that prefix depends on the memory
+type, and is decided per request with llama-server's rule rather than once per
+process. Before trimming, the engine reads the sequence's lowest position
+(`llama_memory_seq_pos_min`). The first new token sits at position `prefix`;
+with a pruned sliding-window cache it attends to the positions after
+`prefix - n_swa`, so the state is usable when it still starts at or before
+`prefix - n_swa + 1`. Any other memory must not reach past the prefix at all:
+a recurrent (Mamba, RWKV) or hybrid state holds only its last position, so it
+is reused only when the new prompt extends the cached tokens exactly, as the
+next turn of a chat does. If the test fails, or `llama_memory_seq_rm` refuses
+the cut, the slot starts from scratch. The engine keeps llama.cpp's default
+`swa_full`, a full-size sliding-window cache that is never pruned, so on
+sliding-window models (Gemma, gpt-oss) prefix reuse works as it does on dense
+ones, at the cost of a KV cache sized like a dense model's. Until 0.7.0 the
+engine turned reuse off for every sliding-window or recurrent model at load.
+Restoring an older point of a recurrent state (context checkpoints) is Stage 2
+of the [`common/` plan](../../reports/Replacing%20llama%20cpp%20common%20code.md).
+
 This is a plain longest-common-prefix match against the most recently decoded
 prompt *of each slot* — not a cache of multiple past prompts per slot, no
 similarity/fuzzy matching, and no RAM tier. It exists to make repeated calls

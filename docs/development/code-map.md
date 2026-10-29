@@ -13,7 +13,8 @@ something.
 | `src/main.cpp` | ~80 | Startup order: parse, init the backend, then `onyx_server_run` with a load step | You change what happens before the first request |
 | `src/args.h`, `src/args.cpp` | ~300 | `onyx_args`, the parser, `--help` and `--version` | You add or change a flag (both files, same change) |
 | `src/server.h`, `src/server.cpp` | ~1500 | Every route, request parsing, response and SSE frames, the pre-routing checks (Origin, Host, key, loading), `/metrics` text, bind and listen | You add a field, a route or a response shape |
-| `src/http_util.h`, `src/http_util.cpp` | ~200 | Pure request helpers: base64, media payloads, `X-Request-Id`, key compare, `Host` names | The helper needs no engine; unit-test it |
+| `src/http_util.h`, `src/http_util.cpp` | ~200 | Pure request helpers: base64, media payloads, `X-Request-Id`, key compare, `Host` names, JSON nesting depth | The helper needs no engine; unit-test it |
+| `src/llama_util.h`, `src/llama_util.cpp` | ~100 | Tokenize, detokenize, token-to-piece and `llama_batch` helpers on `llama.h`, and the quiet log filter | You need a llama.cpp helper that `common/` would otherwise provide |
 | `src/engine.h`, `src/engine.cpp` | ~1900 | `onyx_engine`: model and context, the batching loop, slots, sampling, prefix reuse, context shift, reasoning budget, logprobs, embeddings, metrics counters | You change how tokens are scheduled, decoded or sampled |
 | `src/decision.h`, `src/decision.cpp` | ~1900 | Decision models: family detection, request parsing, prompt rendering, scoring | You touch `/v1/systemone` |
 | `src/convert.h`, `src/convert.cpp` | ~400 | `onyx_resolve_model`: GGUF passthrough, safetensors detection, running and caching the converter | You change what `-m` accepts |
@@ -29,7 +30,7 @@ A `POST /v1/chat/completions` with `"stream": true`:
 1. **`server.cpp`, pre-routing handler.** Echo `X-Request-Id`; refuse `Origin` (`403`), a
    non-loopback `Host` on a loopback bind (`403`), a wrong key (`401`), or any request while the
    model loads (`503`).
-2. **`server.cpp`, the chat handler.** Parse the body (`common_json`), refuse unsupported fields
+2. **`server.cpp`, the chat handler.** Parse the body (`parse_body`: the nesting-depth cap, then `common_json`), refuse unsupported fields
    (`reject_unsupported_fields`), decode media parts (`extract_media` → `http_util.cpp`), render
    the chat template (`common_chat_templates_apply`), build sampling and grammar
    (`parse_sampling`, `apply_grammar`) and the reasoning budget, tokenize, check the prompt fits

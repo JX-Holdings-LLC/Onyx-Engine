@@ -1,7 +1,13 @@
 # cpp-httplib (vendored)
 
-`httplib.h` / `httplib.cpp` from [yhirose/cpp-httplib], version **0.54.1**,
+`httplib.h` / `httplib.cpp` from [yhirose/cpp-httplib], version **0.62.0**,
 copied verbatim. `LICENSE` is that project's (MIT).
+
+Upstream ships one header; the two files here are its own `split.py -e cpp`
+output for the `v0.62.0` tag (the 0.54.1 copy was checked the same way and
+matched byte for byte). The pinned llama.cpp (b11820) vendors the same
+version in `vendor/cpp-httplib`, so the copy inside `llama-common` and this
+one agree.
 
 ## Why this is here
 
@@ -58,8 +64,9 @@ by JX Runtime, so cpp-httplib is built without OpenSSL.
 
 ## Updating
 
-Replace the three files from the upstream release and update the version
-above. Re-check `CMakeLists.txt` if upstream adds tuning macros that are used
+Download `httplib.h`, `split.py` and `LICENSE` from the upstream tag, run
+`python3 split.py -e cpp -o <dir>`, copy the two outputs and `LICENSE` here,
+and update the version above. Re-check `CMakeLists.txt` if upstream adds tuning macros that are used
 from the header.
 
 [yhirose/cpp-httplib]: https://github.com/yhirose/cpp-httplib

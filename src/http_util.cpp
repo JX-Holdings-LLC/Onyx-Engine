@@ -186,3 +186,47 @@ onyx_media_buffer decode_media_payload(const std::string & url, const char * wha
     }
     return data;
 }
+
+size_t json_nesting_depth(const std::string & text) {
+    // A plain switch over each byte: the earlier if/else-if chain over a
+    // range-for counted openers only under MSVC 19.51 Release (closers never
+    // decremented), though GCC and Clang got it right.
+    size_t depth = 0;
+    size_t deepest = 0;
+    bool in_string = false;
+    bool escaped = false;
+    for (size_t i = 0; i < text.size(); i++) {
+        const char c = text[i];
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        switch (c) {
+            case '"':
+                in_string = true;
+                break;
+            case '[':
+            case '{':
+                depth++;
+                if (depth > deepest) {
+                    deepest = depth;
+                }
+                break;
+            case ']':
+            case '}':
+                if (depth > 0) {
+                    depth--;
+                }
+                break;
+            default:
+                break;
+        }
+    }
+    return deepest;
+}

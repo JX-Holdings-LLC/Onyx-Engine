@@ -148,6 +148,14 @@ tool-call grammar can apply).
 otherwise `"tool_calls"` if the parsed message contains tool calls, otherwise
 `"stop"`.
 
+Under `json_schema` or `response_format` (`json_object` or `json_schema`), a
+response that hits `n_predict` or the context limit holds incomplete JSON, so it
+is not returned: the request answers `400` (`invalid_request_error`) with a
+message that names the limit (`the response stopped at max_tokens (N) ...` or
+`... at the context limit ...`). A streaming request ends on that error frame
+(see below). `{"type":"json_object"}` without a `schema` is held to a JSON
+object (`{"type":"object"}`).
+
 Generation responses include `truncated: true` when `--context-shift` discarded older tokens. Streaming responses report it on their final usage frame.
 
 ## Streaming
@@ -168,5 +176,8 @@ text/event-stream`. Each frame is `data: <json>\n\n`:
 5. A literal `data: [DONE]\n\n`.
 
 If generation errors mid-stream, one `data: {"error":{"message":...,"type":"server_error"}}`
-frame is sent and the stream ends (no `[DONE]`). If the client disconnects,
+frame is sent and the stream ends (no `[DONE]`). The same frame, with `"code":503` and
+`"type":"unavailable_error"`, ends a stream whose request waited past `--queue-timeout`, and
+with `"code":400` and `"type":"invalid_request_error"` one whose structured output was cut by
+length (above); neither sends the finish or usage frames. If the client disconnects,
 the stream simply stops (no further frames).

@@ -35,6 +35,10 @@ The port opens at once and `GET /health` answers `503` (`Loading model`) until l
 | `403 Host header is not a loopback name` | The engine is bound to loopback and the request's `Host` named something else (a DNS name, a LAN address). Call it as `127.0.0.1` or `localhost`, or have the proxy rewrite `Host`. |
 | `503 Loading model` | The model is still loading. Wait for `GET /health` to answer `200`. |
 | `503 server is busy: ... (--max-queue)` | The wait queue is full. Retry after the `Retry-After` seconds, raise `--max-queue`, or add slots. |
+| `503 server is busy: no slot became free within ... (--queue-timeout)` | The request waited longer than `--queue-timeout` for a slot. Retry, raise the timeout, or add slots. |
+| `400 the response stopped at max_tokens ... before the JSON required by the response format was complete` | A `response_format` or `json_schema` answer ran out of tokens mid-object. Raise `max_tokens`, or `-c` when the message names the context limit. |
+| `failed to create inference context (... cache types q8_0/q8_0)` | The model's head size is not a multiple of the cache type's block size, or the type needs flash attention the backend lacks. Use `f16`, `bf16` or a type that fits. |
+| `--override-tensor: unknown buffer type` | The name after `=` is not a buffer type of any device in this build; the message lists the ones that exist. |
 | `413` (empty body) | The request body is over 100 MiB. |
 | `400 unsupported field: logit_bias` (or `mirostat`, `dry_*`, `xtc_*`, `typical_p`, `dynatemp_*`) | Not implemented. Remove the field. See [compatibility](../reference/compatibility.md). |
 | `400 only n=1 is supported` | Send one request per choice. |

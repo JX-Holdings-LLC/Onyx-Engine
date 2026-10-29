@@ -38,6 +38,12 @@ TEST(args, defaults) {
     CHECK_EQ(a.tick_tokens, 0);
     CHECK(!a.metrics);
     CHECK_EQ(a.flash_attn, -1);
+    CHECK_EQ(a.queue_timeout, 0);
+    CHECK_EQ(a.cache_type_k, std::string("f16"));
+    CHECK_EQ(a.cache_type_v, std::string("f16"));
+    CHECK(!a.cpu_moe);
+    CHECK_EQ(a.n_cpu_moe, 0);
+    CHECK(a.tensor_overrides.empty());
 }
 
 TEST(args, model_is_required) {
@@ -67,7 +73,7 @@ TEST(args, help_and_version_short_circuit) {
 
 TEST(args, unknown_flags_are_refused) {
     CHECK(!parses({"-m", "x.gguf", "--no-such-flag"}));
-    CHECK(!parses({"-m", "x.gguf", "--cache-type-k", "q8_0"}));   // not implemented, so not accepted
+    CHECK(!parses({"-m", "x.gguf", "--fit", "on"}));              // not implemented, so not accepted
 }
 
 TEST(args, integers_are_strict) {
@@ -144,4 +150,69 @@ TEST(args, other_ranges) {
     CHECK(!parses({"-m", "x.gguf", "-c", "-1"}));
     CHECK(!parses({"-m", "x.gguf", "--cache-reuse", "-1"}));
     CHECK(parses({"-m", "x.gguf", "-c", "0"}));                       // the model's own context
+}
+
+TEST(args, queue_timeout) {
+    onyx_args a;
+    CHECK(parse({"-m", "x.gguf", "--queue-timeout", "30"}, a));
+    CHECK_EQ(a.queue_timeout, 30);
+    CHECK(!parses({"-m", "x.gguf", "--queue-timeout", "-1"}));
+    CHECK(!parses({"-m", "x.gguf", "--queue-timeout"}));
+}
+
+TEST(args, cache_types) {
+    onyx_args a;
+    CHECK(parse({"-m", "x.gguf", "-ctk", "q8_0", "--cache-type-v", "q8_0"}, a));
+    CHECK_EQ(a.cache_type_k, std::string("q8_0"));
+    CHECK_EQ(a.cache_type_v, std::string("q8_0"));
+    CHECK(parse({"-m", "x.gguf", "--cache-type-k", "bf16", "-ctv", "iq4_nl"}, a));
+    CHECK_EQ(a.cache_type_k, std::string("bf16"));
+    CHECK_EQ(a.cache_type_v, std::string("iq4_nl"));
+    CHECK(!parses({"-m", "x.gguf", "-ctk", "q3_k"}));
+    CHECK(!parses({"-m", "x.gguf", "-ctk", "Q8_0"}));                 // llama-server's spelling only
+    CHECK(!parses({"-m", "x.gguf", "-ctv"}));
+    // a quantized V cache needs flash attention; K alone does not
+    CHECK(!parses({"-m", "x.gguf", "-ctv", "q8_0", "-fa", "off"}));
+    CHECK(parses({"-m", "x.gguf", "-ctv", "q8_0", "-fa", "on"}));
+    CHECK(parses({"-m", "x.gguf", "-ctk", "q8_0", "-fa", "off"}));
+    CHECK(parses({"-m", "x.gguf", "-ctv", "bf16", "-fa", "off"}));
+    CHECK(onyx_cache_type_is_quantized("q4_0"));
+    CHECK(!onyx_cache_type_is_quantized("f32"));
+    CHECK(!onyx_cache_type_is_quantized("nonsense"));
+}
+
+TEST(args, moe_offload) {
+    onyx_args a;
+    CHECK(parse({"-m", "x.gguf", "--cpu-moe"}, a));
+    CHECK(a.cpu_moe);
+    CHECK(parse({"-m", "x.gguf", "-cmoe"}, a));
+    CHECK(a.cpu_moe);
+    CHECK(parse({"-m", "x.gguf", "--n-cpu-moe", "12"}, a));
+    CHECK_EQ(a.n_cpu_moe, 12);
+    CHECK(parse({"-m", "x.gguf", "-ncmoe", "3"}, a));
+    CHECK_EQ(a.n_cpu_moe, 3);
+    CHECK(!parses({"-m", "x.gguf", "--n-cpu-moe", "-2"}));
+}
+
+TEST(args, override_tensor) {
+    onyx_args a;
+    CHECK(parse({"-m", "x.gguf", "-ot", "exps=CPU", "--override-tensor", "blk\\.0\\.attn=CUDA0,ffn=CPU"}, a));
+    CHECK_EQ(a.tensor_overrides.size(), (size_t) 3);
+    CHECK_EQ(a.tensor_overrides[0].first, std::string("exps"));
+    CHECK_EQ(a.tensor_overrides[0].second, std::string("CPU"));
+    CHECK_EQ(a.tensor_overrides[1].first, std::string("blk\\.0\\.attn"));
+    CHECK_EQ(a.tensor_overrides[1].second, std::string("CUDA0"));
+    CHECK_EQ(a.tensor_overrides[2].first, std::string("ffn"));
+    CHECK(!parses({"-m", "x.gguf", "-ot", "exps"}));
+    CHECK(!parses({"-m", "x.gguf", "-ot", "=CPU"}));
+    CHECK(!parses({"-m", "x.gguf", "-ot", "exps="}));
+    CHECK(!parses({"-m", "x.gguf", "-ot", "a=CPU,"}));
+    CHECK(!parses({"-m", "x.gguf", "-ot"}));
+
+    std::vector<std::pair<std::string, std::string>> out;
+    CHECK(onyx_parse_tensor_overrides("x{1,2}=CPU", out) == false);   // a comma always separates items
+    out.clear();
+    CHECK(onyx_parse_tensor_overrides("a=b=CPU", out));               // the last '=' splits
+    CHECK_EQ(out[0].first, std::string("a=b"));
+    CHECK_EQ(out[0].second, std::string("CPU"));
 }

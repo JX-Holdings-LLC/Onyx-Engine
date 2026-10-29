@@ -91,6 +91,7 @@ dashboards built for it read Onyx unchanged:
 | `llamacpp:requests_processing` | gauge | Requests holding a slot now |
 | `llamacpp:requests_deferred` | gauge | Requests waiting for a slot now |
 | `onyx:requests_rejected_total` | counter | Requests refused with `503` because `--max-queue` was full |
+| `onyx:requests_timed_out_total` | counter | Requests answered `503` after waiting `--queue-timeout` seconds for a slot |
 
 The counters cover chat and text completions since the process started. Embedding and decision
 requests are not counted, and a multimodal prefill's own decode calls are not in `n_decode_total`.
@@ -100,7 +101,7 @@ requests are not counted, and a multimodal prefill's own decode calls are not in
 - **`X-Request-Id`**: when a request carries one of up to 128 printable ASCII characters (no
   spaces), the response carries the same value, including on errors. Anything else is not
   echoed.
-- **`Retry-After: 1`** accompanies a `503` caused by `--max-queue`.
+- **`Retry-After: 1`** accompanies a `503` caused by `--max-queue` or `--queue-timeout`.
 - **`Server: onyx-engine/<version>`**.
 
 ## `GET /v1/models`

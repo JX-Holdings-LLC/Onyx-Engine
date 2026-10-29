@@ -1,10 +1,10 @@
 #include "args.h"
 #include "convert.h"
 #include "engine.h"
+#include "llama_util.h"
 #include "server.h"
 
 #include "llama.h"
-#include "log.h"
 
 #include <cinttypes>
 #include <cstdio>
@@ -25,12 +25,7 @@ int main(int argc, char ** argv) {
 
     if (!args.verbose) {
         // keep stderr limited to warnings/errors so managed-process logs stay readable
-        llama_log_set([](ggml_log_level level, const char * text, void *) {
-            if (level >= GGML_LOG_LEVEL_WARN) {
-                fputs(text, stderr);
-            }
-        }, nullptr);
-        common_log_set_verbosity_thold(-1);
+        onyx_log_set_quiet();
     }
 
     llama_backend_init();

@@ -37,10 +37,10 @@ without that announcement. It does not mean it will never change.
 | **`/props`** | The fields documented in [service endpoints](api/service-endpoints.md#get-props), including the per-slot `n_ctx` (equal to `default_generation_settings.n_ctx`), `n_ctx_total` and `port`. |
 | **Exit codes** | `0` after `--help` or `--version`. `1` for an invalid argument, a refused `--host`, a failed bind, a failed conversion or a failed load; each prints a line starting `error:` on stderr first. A signal ends the process with the signal's usual status. |
 | **Two stderr lines** | `onyx-engine listening on http://HOST:PORT (loading)` once the port is open, and `onyx-engine ready on http://HOST:PORT (...)` once the model is loaded. Supervisors can parse the port from the first line (useful with `--port 0`). |
-| **Operations** | The `X-Request-Id` echo rule, `--max-queue`'s `503` with `Retry-After`, and the `/metrics` names listed in [service endpoints](api/service-endpoints.md#get-metrics). |
+| **Operations** | The `X-Request-Id` echo rule, the `503` with `Retry-After` from `--max-queue` and `--queue-timeout`, and the `/metrics` names listed in [service endpoints](api/service-endpoints.md#get-metrics). |
 | **Security defaults** | Binding `127.0.0.1` by default; refusing a non-loopback `--host` without `--api-key` (or `--allow-unauthenticated`); refusing requests that carry `Origin`; refusing a non-loopback `Host` header on a loopback bind. A future release may tighten these further; that counts as breaking and is announced. |
 | **Release assets** | The archive names `onyx-engine-v<version>-<platform>-<arch>.<ext>` for the platforms listed in [releasing](../development/releasing.md#what-gets-published), flat archive layout, and `checksums.txt`. New platforms or variants can be added; existing names are not removed in a patch release. |
-| **Limits** | Request bodies up to 100 MiB (larger ones get `413`); `X-Request-Id` values up to 128 printable ASCII characters. Raising a limit is not breaking; lowering one is. |
+| **Limits** | Request bodies up to 100 MiB (larger ones get `413`) and nested up to 64 levels of arrays and objects (deeper ones get `400`); `X-Request-Id` values up to 128 printable ASCII characters. Raising a limit is not breaking; lowering one is. |
 
 ## Not stable
 

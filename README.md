@@ -25,11 +25,12 @@ You point it at a model (a GGUF, or a safetensors model it converts once and rem
 |---|---|
 | **Serves** | `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`, `/v1/systemone`, plus `/health`, `/props`, `/metrics`, `/tokenize`, `/detokenize`, `/apply-template` |
 | **Models** | GGUF; safetensors (`LlamaForCausalLM`) converted to GGUF on first load by a numpy-only script, cached and reused; multimodal through `--mmproj`; embedding, reranking and decision models |
-| **Concurrency** | `-np N` request slots, one engine thread, one shared batch per tick (continuous batching, decode rows first); `--max-queue` and `--tick-tokens` to bound waiting and latency |
+| **Concurrency** | `-np N` request slots, one engine thread, one shared batch per tick (continuous batching, decode rows first); `--max-queue`, `--queue-timeout` and `--tick-tokens` to bound waiting and latency |
 | **Streaming** | SSE with a closing `usage` and `timings` frame, then `[DONE]` |
-| **Constraints** | GBNF grammar, `json_schema`, `response_format`, tool calls with streamed deltas |
-| **Extras** | logprobs, reasoning-budget control, context shift, per-slot prefix reuse |
-| **Operations** | `503` while loading, `--port 0`, `X-Request-Id` echo, `/metrics` (`llamacpp:*`), `--max-queue` with `Retry-After` |
+| **Constraints** | GBNF grammar, `json_schema`, `response_format` (a length cut is a `400`, never half an object), tool calls with streamed deltas |
+| **Memory** | KV cache types (`-ctk`/`-ctv`, e.g. `q8_0`), MoE expert offload (`--cpu-moe`, `--n-cpu-moe`) and tensor placement (`-ot`) |
+| **Extras** | logprobs, reasoning-budget control, context shift, per-slot prefix reuse (sliding-window and recurrent models included) |
+| **Operations** | `503` while loading, `--port 0`, `X-Request-Id` echo, `/metrics` (`llamacpp:*`), `--max-queue` and `--queue-timeout` with `Retry-After` |
 | **Hardware** | CPU by default; CUDA, Vulkan, Metal, ROCm/HIP or BLAS chosen at build time; prebuilt Vulkan archives for Linux and Windows |
 | **Platforms** | `linux-x64`, `linux-arm64`, `darwin-arm64`, `darwin-x64`, `win32-x64`, plus `-baseline` (no AVX2) and `-vulkan` variants for Linux and Windows x64; a Docker image |
 | **Built on** | llama.cpp b11820 (`d77256999`), fetched by exact commit and verified with Git |
@@ -132,10 +133,13 @@ The flags you will touch most. `onyx-engine --help` is the source of truth, and 
 | `--host`, `--port` | `127.0.0.1`, `8080` | Where to listen; `--port 0` picks a free port. A non-loopback host needs a key |
 | `--api-key KEY` | none | Require a bearer token (except `/health`) |
 | `--max-queue N` | `0` (no limit) | Requests allowed to wait for a slot; beyond it, `503` with `Retry-After` |
+| `--queue-timeout N` | `0` (no limit) | Seconds a request may wait for a slot; beyond it, `503` with `Retry-After` |
 | `--metrics` | off | Serve `/metrics` |
 | `-c, --ctx-size N` | `4096` | Context in tokens; `0` is the model's own. Divided across slots |
 | `-np, --parallel N` | `1` | Concurrent request slots |
 | `-ngl, --n-gpu-layers N` | `-1` | Layers on the GPU (`-1` is all that fit) |
+| `-ctk`, `-ctv TYPE` | `f16` | KV cache types; `q8_0` roughly halves KV memory |
+| `--cpu-moe`, `--n-cpu-moe N`, `-ot P=B` | off | Keep MoE experts (all, or the first `N` layers) in RAM; place any tensor by regex |
 | `--mmproj PATH` | none | Multimodal projector: images, and audio if it can |
 | `--embedding`, `--pooling TYPE` | off | Serve embeddings (or rerank, with `rank`) |
 | `--context-shift`, `--keep N` | off, `0` | Keep generating when a slot fills, protecting the first `N` tokens |
@@ -194,4 +198,4 @@ The mark is a hex nut seen from above with a cyan-lit bore: a small, solid part 
 
 ## Licence
 
-MIT. See [`LICENSE`](LICENSE). The vendored llama.cpp source (`@jxburros/llama-cpp-source`) is its own project, also MIT-licensed, copyright the ggml/llama.cpp authors; its `LICENSE` file sits in `.deps/llama.cpp/` after a CMake fetch, or under `node_modules/@jxburros/llama-cpp-source/` after `npm ci`, and ships in every archive as `LICENSE-llama.cpp`. [`third_party/cpp-httplib`](third_party/cpp-httplib) is a verbatim copy of [cpp-httplib](https://github.com/yhirose/cpp-httplib) v0.54.1 (MIT, copyright Yuji Hirose); its licence and provenance notes are in that directory.
+MIT. See [`LICENSE`](LICENSE). The vendored llama.cpp source (`@jxburros/llama-cpp-source`) is its own project, also MIT-licensed, copyright the ggml/llama.cpp authors; its `LICENSE` file sits in `.deps/llama.cpp/` after a CMake fetch, or under `node_modules/@jxburros/llama-cpp-source/` after `npm ci`, and ships in every archive as `LICENSE-llama.cpp`. [`third_party/cpp-httplib`](third_party/cpp-httplib) is a verbatim copy of [cpp-httplib](https://github.com/yhirose/cpp-httplib) v0.62.0 (MIT, copyright Yuji Hirose); its licence and provenance notes are in that directory.

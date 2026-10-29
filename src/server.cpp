@@ -1,6 +1,7 @@
 #include "server.h"
 
 #include "http_util.h"
+#include "llama_util.h"
 
 #include "chat.h"
 #include "common.h"
@@ -29,8 +30,20 @@
 // limit rather than a library detail (docs/reference/stability.md).
 static constexpr size_t ONYX_MAX_PAYLOAD_BYTES = 100u * 1024u * 1024u;
 
-// Seconds a client told "busy" (--max-queue) is asked to wait.
+// Seconds a client told "busy" (--max-queue, --queue-timeout) is asked to wait.
 static constexpr int ONYX_RETRY_AFTER_SECONDS = 1;
+
+// Seconds httplib waits for the next bytes of a request before it drops the
+// connection. Short, so idle or slow-header clients cannot hold the worker
+// threads (from httplib v0.62 it bounds the whole request head). Responses
+// keep the long write timeout below: SSE streams can run for minutes.
+static constexpr int ONYX_READ_TIMEOUT_SECONDS  = 30;
+static constexpr int ONYX_WRITE_TIMEOUT_SECONDS = 600;
+
+// Deepest array/object nesting accepted in a request body; deeper bodies get
+// a 400 before they reach the JSON parser or the schema converter, both of
+// which recurse once per level.
+static constexpr size_t ONYX_MAX_JSON_DEPTH = 64;
 
 // ---------------------------------------------------------------------------
 // small helpers
@@ -59,8 +72,39 @@ static void send_busy(httplib::Response & res, const std::string & message) {
     send_error(res, 503, message, "unavailable_error");
 }
 
+// Parses a request body, refusing one nested deeper than ONYX_MAX_JSON_DEPTH
+// (std::invalid_argument, which the exception handler answers with 400).
+static common_json parse_body(const httplib::Request & req) {
+    if (json_nesting_depth(req.body) > ONYX_MAX_JSON_DEPTH) {
+        throw std::invalid_argument("request body nests arrays and objects deeper than " +
+                                    std::to_string(ONYX_MAX_JSON_DEPTH) + " levels");
+    }
+    return common_json::parse(req.body);
+}
+
+// The 400 for a response_format / json_schema answer that stopped before its
+// JSON was complete: half an object is never returned as if it were output.
+static std::string truncated_json_message(const onyx_gen_result & r, int32_t n_predict) {
+    const bool by_max_tokens = n_predict >= 0 && r.n_predicted >= n_predict;
+    return std::string("the response stopped at ") +
+           (by_max_tokens ? "max_tokens (" + std::to_string(n_predict) + ")"
+                          : std::string("the context limit")) +
+           " before the JSON required by the response format was complete; raise " +
+           (by_max_tokens ? "max_tokens" : "--ctx-size or shorten the prompt");
+}
+
+static common_json truncated_json_frame(const std::string & message) {
+    common_json e = common_json::object();
+    e["message"] = message;
+    e["type"]    = "invalid_request_error";
+    e["code"]    = 400;
+    common_json err = common_json::object();
+    err["error"] = e;
+    return err;
+}
+
 static void send_generation_error(httplib::Response & res, const onyx_gen_result & r) {
-    if (r.queue_full) {
+    if (r.queue_full || r.queue_timeout) {
         send_busy(res, r.error);
         return;
     }
@@ -76,8 +120,9 @@ static void send_generation_error(httplib::Response & res, const onyx_gen_result
 static common_json stream_error_json(const onyx_gen_result & r) {
     common_json e = common_json::object();
     e["message"] = r.error;
-    e["type"]    = r.queue_full ? "unavailable_error" : "server_error";
-    e["code"]    = r.queue_full ? 503 : 500;
+    const bool busy = r.queue_full || r.queue_timeout;
+    e["type"]    = busy ? "unavailable_error" : "server_error";
+    e["code"]    = busy ? 503 : 500;
     common_json err = common_json::object();
     err["error"] = e;
     return err;
@@ -110,6 +155,8 @@ static std::string metrics_text(const onyx_engine_metrics & m) {
     add("llamacpp:requests_deferred", "gauge", "Number of requests deferred.", (double) m.requests_deferred);
     add("onyx:requests_rejected_total", "counter", "Requests refused with 503 because --max-queue was reached.",
         (double) m.requests_rejected);
+    add("onyx:requests_timed_out_total", "counter", "Requests answered 503 after waiting --queue-timeout for a slot.",
+        (double) m.requests_timed_out);
     return out;
 }
 
@@ -394,7 +441,7 @@ static void apply_grammar(common_params_sampling &   sparams,
                           common_grammar_type        type,
                           const llama_vocab *        vocab) {
     for (const auto & t : cp.preserved_tokens) {
-        auto ids = common_tokenize(vocab, t, /* add_special */ false, /* parse_special */ true);
+        auto ids = onyx_tokenize(vocab, t, /* add_special */ false, /* parse_special */ true);
         if (ids.size() == 1) {
             sparams.preserved_tokens.insert(ids[0]);
         }
@@ -408,7 +455,7 @@ static void apply_grammar(common_params_sampling &   sparams,
 
     for (const auto & trigger : cp.grammar_triggers) {
         if (trigger.type == COMMON_GRAMMAR_TRIGGER_TYPE_WORD) {
-            auto ids = common_tokenize(vocab, trigger.value, false, true);
+            auto ids = onyx_tokenize(vocab, trigger.value, false, true);
             if (ids.size() == 1 && sparams.preserved_tokens.count(ids[0]) > 0) {
                 common_grammar_trigger tok_trigger;
                 tok_trigger.type  = COMMON_GRAMMAR_TRIGGER_TYPE_TOKEN;
@@ -511,7 +558,9 @@ static common_chat_templates_inputs parse_chat_inputs(const common_json & body) 
         const common_json & rf = body.at("response_format");
         const std::string type = rf.value<std::string>("type", "");
         if (type == "json_object") {
-            inputs.json_schema = "{}";
+            // OpenAI's JSON mode promises an object; "{}" would leave the
+            // output unconstrained, since common/ builds no grammar for it
+            inputs.json_schema = "{\"type\":\"object\"}";
             if (rf.contains("schema")) {
                 inputs.json_schema = rf.at("schema").dump();
             }
@@ -730,7 +779,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
     // ---- tokenization ---------------------------------------------------
 
     svr.Post("/tokenize", [&](const httplib::Request & req, httplib::Response & res) {
-        const common_json body = common_json::parse(req.body);
+        const common_json body = parse_body(req);
         const std::string content = body.value<std::string>("content", "");
         const bool add_special    = body.value<bool>("add_special", false);
 
@@ -743,14 +792,14 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
         out["tokens"] = toks;
         if (body.value<bool>("with_pieces", false)) {
             common_json pieces = common_json::array();
-            for (llama_token t : tokens) pieces.push_back(common_token_to_piece(engine.vocab(), t, true));
+            for (llama_token t : tokens) pieces.push_back(onyx_token_to_piece(engine.vocab(), t, true));
             out["pieces"] = pieces;
         }
         res.set_content(out.dump(), "application/json; charset=utf-8");
     });
 
     svr.Post("/detokenize", [&](const httplib::Request & req, httplib::Response & res) {
-        const common_json body = common_json::parse(req.body);
+        const common_json body = parse_body(req);
         std::vector<llama_token> tokens;
         if (body.contains("tokens") && body.at("tokens").is_array()) {
             const common_json & arr = body.at("tokens");
@@ -769,7 +818,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
     });
 
     svr.Post("/apply-template", [&](const httplib::Request & req, httplib::Response & res) {
-        const common_json body = common_json::parse(req.body);
+        const common_json body = parse_body(req);
         if (!body.contains("messages")) {
             send_error(res, 400, "missing 'messages'", "invalid_request_error");
             return;
@@ -788,7 +837,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
     // ---- chat completions ------------------------------------------------
 
     svr.Post("/v1/chat/completions", [&](const httplib::Request & req, httplib::Response & res) {
-        common_json body = common_json::parse(req.body);
+        common_json body = parse_body(req);
         if (reject_unsupported_fields(body, res, {"logit_bias", "typical_p", "mirostat", "mirostat_tau",
             "mirostat_eta", "dynatemp_range", "dynatemp_exponent", "dry_multiplier", "dry_base",
             "dry_allowed_length", "dry_penalty_last_n", "xtc_probability", "xtc_threshold"})) return;
@@ -871,6 +920,9 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             !inputs.json_schema.empty() ? COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT
                                         : COMMON_GRAMMAR_TYPE_TOOL_CALLS;
         apply_grammar(gp.sampling, cp, gtype, engine.vocab());
+        // response_format / json_schema: a length cut leaves invalid JSON, so
+        // it is answered with an error instead of half an object
+        const bool json_output = gtype == COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT;
         if (gp.reasoning.enabled && gp.reasoning.budget >= 0 &&
             !gp.sampling.grammar.empty() && !gp.sampling.grammar_lazy) {
             send_error(res, 400, "reasoning budget cannot force tokens through a non-lazy grammar",
@@ -895,6 +947,10 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             });
             if (!r.error.empty()) {
                 send_generation_error(res, r);
+                return;
+            }
+            if (json_output && r.finish == ONYX_FINISH_LENGTH) {
+                send_error(res, 400, truncated_json_message(r, gp.n_predict), "invalid_request_error");
                 return;
             }
 
@@ -944,7 +1000,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             send_busy(res, "server is busy: the request queue is full (--max-queue)");
             return;
         }
-        res.set_chunked_content_provider("text/event-stream", [&engine, gp, st, include_usage](size_t offset, httplib::DataSink & sink) {
+        res.set_chunked_content_provider("text/event-stream", [&engine, gp, st, include_usage, json_output](size_t offset, httplib::DataSink & sink) {
             if (offset > 0) {
                 // single-shot provider: everything is written on the first call
                 return false;
@@ -1007,6 +1063,13 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             if (r.finish == ONYX_FINISH_CANCEL) {
                 return false;
             }
+            if (json_output && r.finish == ONYX_FINISH_LENGTH) {
+                // the deltas so far are not valid JSON; end on an error frame
+                // in place of the finish, usage and [DONE] frames
+                sse_write(sink, truncated_json_frame(truncated_json_message(r, gp.n_predict)));
+                sink.done();
+                return true;
+            }
 
             // flush any tail withheld by the partial parser
             try {
@@ -1056,7 +1119,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
     // ---- text completions ------------------------------------------------
 
     svr.Post("/v1/completions", [&](const httplib::Request & req, httplib::Response & res) {
-        const common_json body = common_json::parse(req.body);
+        const common_json body = parse_body(req);
         if (reject_unsupported_fields(body, res, {"logit_bias", "echo", "suffix", "best_of",
             "typical_p", "mirostat", "mirostat_tau", "mirostat_eta", "dynatemp_range",
             "dynatemp_exponent", "dry_multiplier", "dry_base", "dry_allowed_length",
@@ -1121,6 +1184,9 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             }
         }
 
+        // a json_schema answer cut by length is an error, not half an object
+        const bool json_output = gp.sampling.grammar.type == COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT;
+
         const bool stream = body.value<bool>("stream", false);
         const bool include_usage = !body.contains("stream_options") ||
             body.at("stream_options").value<bool>("include_usage", true);
@@ -1163,6 +1229,10 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
                 send_generation_error(res, r);
                 return;
             }
+            if (json_output && r.finish == ONYX_FINISH_LENGTH) {
+                send_error(res, 400, truncated_json_message(r, gp.n_predict), "invalid_request_error");
+                return;
+            }
             common_json out = make_cmpl_payload(r.text, finish_reason_str(r, false).c_str(),
                                                 gp.want_logprobs ? [&] {
                                                     size_t offset = 0;
@@ -1180,7 +1250,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             send_busy(res, "server is busy: the request queue is full (--max-queue)");
             return;
         }
-        res.set_chunked_content_provider("text/event-stream", [&engine, gp, make_cmpl_payload, include_usage](size_t offset, httplib::DataSink & sink) {
+        res.set_chunked_content_provider("text/event-stream", [&engine, gp, make_cmpl_payload, include_usage, json_output](size_t offset, httplib::DataSink & sink) {
             if (offset > 0) {
                 return false;
             }
@@ -1205,6 +1275,11 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             if (r.finish == ONYX_FINISH_CANCEL) {
                 return false;
             }
+            if (json_output && r.finish == ONYX_FINISH_LENGTH) {
+                sse_write(sink, truncated_json_frame(truncated_json_message(r, gp.n_predict)));
+                sink.done();
+                return true;
+            }
 
             common_json final_chunk = make_cmpl_payload("", finish_reason_str(r, false).c_str());
             if (include_usage) final_chunk["usage"] = usage_json(r);
@@ -1222,7 +1297,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
     // ---- embeddings ------------------------------------------------------
 
     svr.Post("/v1/embeddings", [&](const httplib::Request & req, httplib::Response & res) {
-        const common_json body = common_json::parse(req.body);
+        const common_json body = parse_body(req);
         if (body.contains("dimensions")) {
             send_error(res, 400, "dimensions is not supported", "invalid_request_error");
             return;
@@ -1330,7 +1405,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
     // TypeSafe-compatible System One API: typed questions about a state,
     // answered from one prefill per question (see decision.h).
     svr.Post("/v1/systemone", [&](const httplib::Request & req, httplib::Response & res) {
-        const common_json body = common_json::parse(req.body);
+        const common_json body = parse_body(req);
         if (!engine.decision_mode()) {
             send_error(res, 501, "this model is not a decision model", "not_supported_error");
             return;
@@ -1426,8 +1501,8 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
 
     // ---------------------------------------------------------------------
 
-    svr.set_read_timeout(600);
-    svr.set_write_timeout(600);
+    svr.set_read_timeout(ONYX_READ_TIMEOUT_SECONDS);
+    svr.set_write_timeout(ONYX_WRITE_TIMEOUT_SECONDS);
     svr.set_payload_max_length(ONYX_MAX_PAYLOAD_BYTES);
 
     if (args.port == 0) {

@@ -59,4 +59,4 @@ The route names, flag names and response shapes follow llama-server where onyx-e
 | API-key comparison | plain string compare | constant time |
 | Sampler fields such as `mirostat`, `dry_*`, `xtc_*`, `logit_bias` | applied | refused with `400` |
 | `/v1/models` | model metadata | exactly one entry, with `meta`; `created` is the request time |
-| HTTP layer | its own build of `httplib` | a vendored `cpp-httplib` v0.54.1 compiled as `onyx-httplib` |
+| HTTP layer | its own build of `httplib` | a vendored `cpp-httplib` v0.62.0 compiled as `onyx-httplib` |

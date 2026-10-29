@@ -122,6 +122,7 @@ struct onyx_gen_result {
     int32_t          n_predicted = 0;     // tokens generated
     bool             truncated   = false; // context was shifted at least once
     bool             queue_full  = false; // refused at submission: --max-queue reached
+    bool             queue_timeout = false; // waited past --queue-timeout without a slot
     double           t_prompt_ms    = 0;
     double           t_predict_ms   = 0;
 
@@ -156,6 +157,7 @@ struct onyx_gen_request {
     std::condition_variable  cv;
     std::deque<onyx_gen_piece> pieces;      // engine -> caller (text + logprobs for the callback)
     bool                    cancelled = false;   // caller -> engine
+    int64_t                 t_queued  = 0;       // us (ggml_time_us), when it joined the queue
     bool                    finished  = false;   // engine -> caller
     onyx_gen_result           result;
 };
@@ -231,13 +233,10 @@ struct onyx_engine_metrics {
     uint64_t n_busy_slots       = 0;   // sum over those calls of the slots in use
     uint64_t n_tokens_max       = 0;   // largest KV fill a slot reached
     uint64_t requests_rejected  = 0;   // refused because the queue was full
+    uint64_t requests_timed_out = 0;   // waited past --queue-timeout without a slot
     int32_t  requests_processing = 0;  // slots in use now
     int32_t  requests_deferred   = 0;  // requests waiting for a slot now
 };
-
-void onyx_batch_clear(llama_batch & batch);
-void onyx_batch_add(llama_batch & batch, llama_token id, llama_pos pos,
-                    const std::vector<llama_seq_id> & seq_ids, bool logits);
 
 class onyx_engine {
 public:
@@ -320,6 +319,7 @@ private:
     // --- engine loop (all of these run on loop_thread_ only) ---
     void loop();
     bool admit_queued();                      // queued requests -> idle slots
+    void sweep_queue();                       // drops cancelled and timed-out queued requests
     void build_batch(llama_batch & batch);    // one tick's shared batch
     bool decode_batch(llama_batch & batch);   // decode + per-slot sampling
     bool prefill_media(onyx_slot & slot);       // mtmd prefill; false if the slot was failed
@@ -328,6 +328,9 @@ private:
     bool context_shift(onyx_slot & slot);       // returns false if it cannot shift
     void emit(onyx_slot & slot, std::string piece, std::vector<onyx_token_probs> probs = {});
     void finish(onyx_slot & slot, onyx_finish_reason reason, const std::string & error = "");
+
+    // load-time setup: --override-tensor, --cpu-moe, --n-cpu-moe
+    bool build_tensor_overrides(const onyx_args & args);
 
     // --- decision mode (callers hold mutex_) ---
     int32_t decision_reuse(const std::vector<llama_token> & tokens, int32_t n_max);
@@ -349,6 +352,8 @@ private:
     int32_t     n_batch_        = 0;
     int32_t     tick_tokens_    = 0;   // --tick-tokens: per-tick token budget, 0 = n_batch_
     int32_t     max_queue_      = 0;   // --max-queue: waiting requests allowed, 0 = unbounded
+    int64_t     queue_timeout_us_ = 0; // --queue-timeout in us, 0 = wait as long as it takes
+    int32_t     n_swa_          = 0;   // sliding window the KV cache prunes to, 0 = none (or swa_full)
     int32_t     n_parallel_     = 1;
     bool        embedding_mode_ = false;
     int32_t     cache_reuse_    = 0;
@@ -357,6 +362,11 @@ private:
     bool        add_bos_        = false;
 
     std::vector<onyx_slot> slots_;
+
+    // tensor placement overrides handed to libllama (null-terminated) and
+    // the pattern strings they point into; both live as long as the model
+    std::vector<std::string>                     tensor_override_patterns_;
+    std::vector<llama_model_tensor_buft_override> tensor_overrides_;
 
     // queue + wakeup for the engine loop
     std::mutex                    q_mutex_;

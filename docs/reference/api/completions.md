@@ -54,3 +54,7 @@ Streaming: one `data: {...}` frame per non-empty generated piece
 with `choices[0].text: ""`, the real `finish_reason`, plus `usage`/`timings`,
 then `data: [DONE]\n\n`. Same mid-stream error frame behavior as chat
 completions.
+
+With `json_schema`, a completion cut by `n_predict` or the context limit
+answers `400` instead of returning incomplete JSON, exactly as on chat
+completions; a stream ends on the `400` error frame.
