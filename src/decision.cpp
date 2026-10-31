@@ -1,10 +1,9 @@
 #include "decision.h"
 #include "llama_util.h"
 
-#include "chat.h"
-#include "common.h"
-#include "jinja/runtime.h"
-#include "jinja/value.h"
+#include "onyx_chat.h"
+
+#include "common.h"   // string_format, string_split and the other string helpers
 
 // staging API, the only way to reach these: llama_decision_order and
 // llama_model_decision_label (see CMakeLists.txt for the include path)
@@ -167,7 +166,7 @@ void onyx_decision::init(const llama_model * model, const std::string & media_ma
     if (tmpl_src == nullptr) {
         throw std::runtime_error("decision model has no \"systemone\" template");
     }
-    tmpl_ = std::make_unique<common_chat_template>(tmpl_src, "", "");
+    tmpl_ = std::make_unique<onyx_jinja_template>(tmpl_src);
 
     // "<prefix>temperature.<type>[.<bucket>]" and "<prefix>score_bias.<n_levels>.<level>"
     const std::string prefix_temp = prefix + "temperature.";
@@ -1170,11 +1169,7 @@ json onyx_decision::render_options(const onyx_decision_question & question, size
 }
 
 std::string onyx_decision::render_template(const json & inp) const {
-    jinja::context ctx(tmpl_->source());
-    jinja::global_from_json(ctx, inp, /* mark_input */ false);
-    jinja::runtime runtime(ctx);
-    const jinja::value results = runtime.execute(tmpl_->prog);
-    return jinja::runtime::gather_string_parts(results)->as_string().str();
+    return tmpl_->render(inp);
 }
 
 std::string onyx_decision::render(const json & state,

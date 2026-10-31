@@ -3,8 +3,6 @@
 #include "http_util.h"
 #include "llama_util.h"
 
-#include "chat.h"
-#include "common.h"
 #include "json-schema-to-grammar.h"
 #include "json.h"
 
@@ -284,39 +282,6 @@ static common_json legacy_logprobs(const std::vector<onyx_token_probs> & probs, 
     return out;
 }
 
-// OpenAI delta object for one parsed-message diff (mirrors llama-server)
-static common_json diff_to_delta(const common_chat_msg_diff & diff) {
-    common_json delta = common_json::object();
-    if (!diff.reasoning_content_delta.empty()) {
-        delta["reasoning_content"] = diff.reasoning_content_delta;
-    }
-    if (!diff.content_delta.empty()) {
-        delta["content"] = diff.content_delta;
-    }
-    if (diff.tool_call_index != std::string::npos) {
-        common_json tc = common_json::object();
-        tc["index"] = (int64_t) diff.tool_call_index;
-        if (!diff.tool_call_delta.id.empty()) {
-            tc["id"]   = diff.tool_call_delta.id;
-            tc["type"] = "function";
-        }
-        if (!diff.tool_call_delta.name.empty() || !diff.tool_call_delta.arguments.empty()) {
-            common_json fn = common_json::object();
-            if (!diff.tool_call_delta.name.empty()) {
-                fn["name"] = diff.tool_call_delta.name;
-            }
-            if (!diff.tool_call_delta.arguments.empty()) {
-                fn["arguments"] = diff.tool_call_delta.arguments;
-            }
-            tc["function"] = fn;
-        }
-        common_json arr = common_json::array();
-        arr.push_back(tc);
-        delta["tool_calls"] = arr;
-    }
-    return delta;
-}
-
 // ---------------------------------------------------------------------------
 // multimodal content parts
 // ---------------------------------------------------------------------------
@@ -429,58 +394,14 @@ static onyx_sampling_params parse_sampling(const common_json & body, uint32_t de
     return s;
 }
 
-// applies grammar produced by the chat template (tool calls / json_schema) or
-// supplied directly by the caller
-static void apply_grammar(onyx_sampling_params &     sparams,
-                          const common_chat_params & cp,
-                          onyx_grammar_kind          kind,
-                          const llama_vocab *        vocab) {
-    for (const auto & t : cp.preserved_tokens) {
-        auto ids = onyx_tokenize(vocab, t, /* add_special */ false, /* parse_special */ true);
-        if (ids.size() == 1) {
-            sparams.preserved_tokens.insert(ids[0]);
-        }
-    }
-    if (cp.grammar.empty()) {
-        return;
-    }
-    sparams.grammar_kind      = kind;
-    sparams.grammar           = cp.grammar;
-    sparams.grammar_lazy      = cp.grammar_lazy;
-    sparams.generation_prompt = cp.generation_prompt;
-
-    for (const auto & trigger : cp.grammar_triggers) {
-        onyx_grammar_trigger t;
-        t.value = trigger.value;
-        switch (trigger.type) {
-            case COMMON_GRAMMAR_TRIGGER_TYPE_WORD:         t.kind = ONYX_TRIGGER_WORD;         break;
-            case COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN:      t.kind = ONYX_TRIGGER_PATTERN;      break;
-            case COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN_FULL: t.kind = ONYX_TRIGGER_PATTERN_FULL; break;
-            case COMMON_GRAMMAR_TRIGGER_TYPE_TOKEN:
-                t.kind  = ONYX_TRIGGER_TOKEN;
-                t.token = trigger.token;
-                break;
-        }
-        if (t.kind == ONYX_TRIGGER_WORD) {
-            // a word that is one preserved token triggers on that token
-            auto ids = onyx_tokenize(vocab, trigger.value, false, true);
-            if (ids.size() == 1 && sparams.preserved_tokens.count(ids[0]) > 0) {
-                t.kind  = ONYX_TRIGGER_TOKEN;
-                t.token = ids[0];
-            }
-        }
-        sparams.grammar_triggers.push_back(std::move(t));
-    }
-}
-
 // Builds the engine-side reasoning-budget config for one chat request (v2).
-// `cp` is the already-applied common_chat_params for this request, needed
-// for the template's own thinking tags (falling back to "<think>"/"</think>"
-// when the template doesn't expose any, per the v2 API reference §4) and for
-// the rendered prompt text (to detect a deepseek-style template whose
-// generation prompt already ends inside the thinking block).
+// `cr` is the already-rendered chat request, needed for the template's own
+// thinking tags (falling back to "<think>"/"</think>" when the template
+// doesn't expose any, per the v2 API reference §4) and for the rendered
+// prompt text (to detect a deepseek-style template whose generation prompt
+// already ends inside the thinking block).
 static onyx_reasoning_budget build_reasoning_budget(const common_json & body, const onyx_args & args,
-                                                  const common_chat_params & cp, const onyx_engine & engine) {
+                                                  const onyx_chat_render & cr, const onyx_engine & engine) {
     onyx_reasoning_budget rb;
 
     int32_t budget = args.reasoning_budget;
@@ -491,10 +412,8 @@ static onyx_reasoning_budget build_reasoning_budget(const common_json & body, co
         return rb;   // -1 (or below): unrestricted, feature stays inert
     }
 
-    const std::string start_tag = (cp.supports_thinking && !cp.thinking_start_tag.empty())
-        ? cp.thinking_start_tag : std::string("<think>");
-    const std::string end_tag = (cp.supports_thinking && !cp.thinking_end_tags.empty())
-        ? cp.thinking_end_tags[0] : std::string("</think>");
+    const std::string start_tag = !cr.thinking_start_tag.empty() ? cr.thinking_start_tag : std::string("<think>");
+    const std::string end_tag   = !cr.thinking_end_tag.empty()   ? cr.thinking_end_tag   : std::string("</think>");
 
     rb.enabled   = true;
     rb.budget    = budget;
@@ -513,77 +432,11 @@ static onyx_reasoning_budget build_reasoning_budget(const common_json & body, co
     // with the start tag (e.g. "...Assistant:<think>"); detect that
     // textually rather than by token match, since prompt-context tokenization
     // of the tag can differ from tokenizing it standalone.
-    const std::string prompt = cp.prompt.str();
+    const std::string prompt = cr.prompt.str();
     rb.start_in_prompt = prompt.size() >= start_tag.size() &&
         prompt.compare(prompt.size() - start_tag.size(), start_tag.size(), start_tag) == 0;
 
     return rb;
-}
-
-// builds template inputs shared by /v1/chat/completions and /apply-template
-static common_chat_templates_inputs parse_chat_inputs(const common_json & body) {
-    common_chat_templates_inputs inputs;
-    inputs.messages         = common_chat_msgs_parse_oaicompat(body.at("messages"));
-    inputs.use_jinja        = true;
-    inputs.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
-
-    if (body.contains("tools") && body.at("tools").is_array() && body.at("tools").size() > 0) {
-        inputs.tools = common_chat_tools_parse_oaicompat(body.at("tools"));
-    }
-    if (body.contains("tool_choice") && body.at("tool_choice").is_string()) {
-        inputs.tool_choice = common_chat_tool_choice_parse_oaicompat(body.at("tool_choice").get<std::string>());
-    } else if (body.contains("tool_choice") && body.at("tool_choice").is_object()) {
-        const auto & choice = body.at("tool_choice");
-        if (choice.value<std::string>("type", "") != "function" || !choice.contains("function") ||
-            !choice.at("function").is_object() || !choice.at("function").contains("name")) {
-            throw std::invalid_argument("tool_choice must name a function");
-        }
-        const std::string name = choice.at("function").at("name").get<std::string>();
-        std::vector<common_chat_tool> selected;
-        for (const auto & tool : inputs.tools) {
-            if (tool.name == name) selected.push_back(tool);
-        }
-        if (selected.empty()) throw std::invalid_argument("tool_choice names an unknown function: " + name);
-        inputs.tools = std::move(selected);
-        inputs.tool_choice = COMMON_CHAT_TOOL_CHOICE_REQUIRED;
-    } else if (body.contains("tool_choice") && !body.at("tool_choice").is_null()) {
-        throw std::invalid_argument("tool_choice must be a string or function object");
-    }
-    if (body.contains("parallel_tool_calls")) {
-        inputs.parallel_tool_calls = body.at("parallel_tool_calls").get<bool>();
-    }
-    if (body.contains("grammar") && body.at("grammar").is_string()) {
-        inputs.grammar = body.at("grammar").get<std::string>();
-    }
-    if (body.contains("json_schema")) {
-        inputs.json_schema = body.at("json_schema").dump();
-    }
-    if (body.contains("response_format") && body.at("response_format").is_object()) {
-        const common_json & rf = body.at("response_format");
-        const std::string type = rf.value<std::string>("type", "");
-        if (type == "json_object") {
-            // OpenAI's JSON mode promises an object; "{}" would leave the
-            // output unconstrained, since common/ builds no grammar for it
-            inputs.json_schema = "{\"type\":\"object\"}";
-            if (rf.contains("schema")) {
-                inputs.json_schema = rf.at("schema").dump();
-            }
-        } else if (type == "json_schema") {
-            if (rf.contains("json_schema") && rf.at("json_schema").contains("schema")) {
-                inputs.json_schema = rf.at("json_schema").at("schema").dump();
-            } else if (rf.contains("schema")) {
-                inputs.json_schema = rf.at("schema").dump();
-            }
-        } else if (!type.empty() && type != "text") {
-            throw std::runtime_error("unsupported response_format type: " + type);
-        }
-    }
-    if (body.contains("chat_template_kwargs") && body.at("chat_template_kwargs").is_object()) {
-        for (const auto & [key, val] : body.at("chat_template_kwargs").items()) {
-            inputs.chat_template_kwargs[key] = val.is_string() ? val.get<std::string>() : val.dump();
-        }
-    }
-    return inputs;
 }
 
 // ---------------------------------------------------------------------------
@@ -591,12 +444,11 @@ static common_chat_templates_inputs parse_chat_inputs(const common_json & body) 
 // ---------------------------------------------------------------------------
 
 struct chat_stream_state {
-    std::string               request_id;
-    std::string               model;
-    std::time_t               created = 0;
-    common_chat_parser_params parser_params;
-    std::string               accumulated;
-    common_chat_msg           prev_msg;
+    std::string                       request_id;
+    std::string                       model;
+    std::time_t                       created = 0;
+    std::unique_ptr<onyx_chat_parser> parser;
+    std::string                       accumulated;
 };
 
 static common_json make_chat_chunk(const chat_stream_state & st, common_json delta, const char * finish_reason,
@@ -833,10 +685,9 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             return;
         }
         try {
-            const auto inputs = parse_chat_inputs(body);
-            const auto cp     = common_chat_templates_apply(engine.chat_templates(), inputs);
+            const auto cr = engine.chat_templates().render(body, engine.vocab());
             common_json out = common_json::object();
-            out["prompt"] = cp.prompt.str();
+            out["prompt"] = cr.prompt.str();
             res.set_content(out.dump(), "application/json; charset=utf-8");
         } catch (const std::exception & e) {
             send_error(res, 400, e.what(), "invalid_request_error");
@@ -895,11 +746,9 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             }
         }
 
-        common_chat_templates_inputs inputs;
-        common_chat_params           cp;
+        onyx_chat_render cr;
         try {
-            inputs = parse_chat_inputs(body);
-            cp     = common_chat_templates_apply(engine.chat_templates(), inputs);
+            cr = engine.chat_templates().render(body, engine.vocab());
         } catch (const std::exception & e) {
             send_error(res, 400, std::string("failed to apply chat template: ") + e.what(), "invalid_request_error");
             return;
@@ -908,36 +757,26 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
         onyx_gen_params gp;
         gp.want_logprobs = logprobs_requested;
         gp.n_probs       = top_logprobs;
-        gp.reasoning     = build_reasoning_budget(body, args, cp, engine);
+        gp.reasoning     = build_reasoning_budget(body, args, cr, engine);
         if (media.empty()) {
-            gp.prompt_tokens = engine.tokenize_prompt(cp.prompt);
+            gp.prompt_tokens = engine.tokenize_prompt(cr.prompt);
         } else {
             // mtmd tokenizes the rendered text itself, splitting it on the
             // markers it now contains
-            gp.prompt_text = cp.prompt.str();
+            gp.prompt_text = cr.prompt.str();
             gp.media       = std::move(media);
         }
         gp.n_predict     = parse_max_tokens(body);
         gp.stop          = parse_stop(body);
-        for (const auto & s : cp.additional_stops) {
+        for (const auto & s : cr.additional_stops) {
             gp.stop.push_back(s);
         }
         gp.sampling = parse_sampling(body, args.seed);
 
-        const onyx_grammar_kind gtype =
-            !inputs.grammar.empty()     ? ONYX_GRAMMAR_USER :
-            !inputs.json_schema.empty() ? ONYX_GRAMMAR_OUTPUT_FORMAT
-                                        : ONYX_GRAMMAR_TOOL_CALLS;
-        apply_grammar(gp.sampling, cp, gtype, engine.vocab());
-        if (gp.sampling.grammar.empty() && !inputs.grammar.empty()) {
-            // the Jinja path builds no grammar from the caller's own GBNF
-            // (llama-server applies it from the request, as here)
-            gp.sampling.grammar_kind = ONYX_GRAMMAR_USER;
-            gp.sampling.grammar      = inputs.grammar;
-        }
+        cr.apply_sampling(gp.sampling);
         // response_format / json_schema: a length cut leaves invalid JSON, so
         // it is answered with an error instead of half an object
-        const bool json_output = gtype == ONYX_GRAMMAR_OUTPUT_FORMAT;
+        const bool json_output = cr.output_format;
         if (gp.reasoning.enabled && gp.reasoning.budget >= 0 &&
             !gp.sampling.grammar.empty() && !gp.sampling.grammar_lazy) {
             send_error(res, 400, "reasoning budget cannot force tokens through a non-lazy grammar",
@@ -948,10 +787,6 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             send_error(res, 400, "prompt does not fit in the context window", "invalid_request_error");
             return;
         }
-
-        common_chat_parser_params parser_params(cp);
-        parser_params.generation_prompt = common_chat_input_tokenize(engine.vocab(), cp.generation_prompt);
-        parser_params.parser            = cp.parser;
 
         const std::string request_id = gen_request_id("chatcmpl");
         const std::time_t created    = std::time(nullptr);
@@ -969,23 +804,12 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
                 return;
             }
 
-            common_chat_msg msg;
-            try {
-                msg = common_chat_parse(common_chat_input(r.text), /* is_partial */ false, parser_params);
-            } catch (const std::exception & e) {
-                msg = {};
-                msg.role    = "assistant";
-                msg.content = r.text;
-            }
-            if (msg.role.empty()) {
-                msg.role = "assistant";
-            }
-
-            common_json message = msg.to_json_oaicompat(/* concat_typed_text */ true);
+            auto parser = cr.make_parser();
+            common_json message = parser->message(r.text);
             common_json choice  = common_json::object();
             choice["index"]         = 0;
             choice["message"]       = message;
-            choice["finish_reason"] = finish_reason_str(r, !msg.tool_calls.empty());
+            choice["finish_reason"] = finish_reason_str(r, parser->has_tool_calls());
             choice["logprobs"]      = gp.want_logprobs ? chat_logprobs_content(r.probs) : common_json(nullptr);
             common_json choices = common_json::array();
             choices.push_back(choice);
@@ -1008,7 +832,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
         st->request_id    = request_id;
         st->model         = engine.alias();
         st->created       = created;
-        st->parser_params = parser_params;
+        st->parser        = cr.make_parser();
 
         if (!validate_stream_sampler(engine, gp, res)) return;
         if (engine.queue_full()) {
@@ -1044,23 +868,12 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
                 }
 
                 st->accumulated += piece;
-                std::vector<common_chat_msg_diff> diffs;
-                try {
-                    common_chat_msg cur = common_chat_parse(common_chat_input(st->accumulated), /* is_partial */ true, st->parser_params);
-                    if (cur.role.empty()) {
-                        cur.role = "assistant";
-                    }
-                    diffs = common_chat_msg_diff::compute_diffs(st->prev_msg, cur);
-                    st->prev_msg = std::move(cur);
-                } catch (const std::exception &) {
+                std::vector<common_json> deltas;
+                if (!st->parser->update(st->accumulated, /* is_partial */ true, deltas)) {
                     // partial output not yet parseable - hold until more arrives
                     return sink.is_writable();
                 }
-                for (const auto & diff : diffs) {
-                    common_json delta = diff_to_delta(diff);
-                    if (delta.size() == 0) {
-                        continue;
-                    }
+                for (const auto & delta : deltas) {
                     if (!sse_write(sink, make_chat_chunk(*st, delta, nullptr))) {
                         return false;
                     }
@@ -1087,20 +900,12 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             }
 
             // flush any tail withheld by the partial parser
-            try {
-                common_chat_msg final_msg = common_chat_parse(common_chat_input(r.text), /* is_partial */ false, st->parser_params);
-                if (final_msg.role.empty()) {
-                    final_msg.role = "assistant";
+            std::vector<common_json> deltas;
+            if (st->parser->update(r.text, /* is_partial */ false, deltas)) {
+                for (const auto & delta : deltas) {
+                    sse_write(sink, make_chat_chunk(*st, delta, nullptr));
                 }
-                const auto diffs = common_chat_msg_diff::compute_diffs(st->prev_msg, final_msg);
-                for (const auto & diff : diffs) {
-                    common_json delta = diff_to_delta(diff);
-                    if (delta.size() > 0) {
-                        sse_write(sink, make_chat_chunk(*st, delta, nullptr));
-                    }
-                }
-                st->prev_msg = std::move(final_msg);
-            } catch (const std::exception &) {
+            } else {
                 const std::string tail = r.text.substr(std::min(st->accumulated.size(), r.text.size()));
                 if (!tail.empty()) {
                     common_json delta = common_json::object();
@@ -1109,7 +914,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
                 }
             }
 
-            const std::string finish = finish_reason_str(r, !st->prev_msg.tool_calls.empty());
+            const std::string finish = finish_reason_str(r, st->parser->has_tool_calls());
             sse_write(sink, make_chat_chunk(*st, common_json::object(), finish.c_str()));
 
             // final usage frame (empty choices per OpenAI stream_options spec)

@@ -29,10 +29,9 @@
 #include "args.h"
 #include "decision.h"
 #include "llama_util.h"
+#include "onyx_chat.h"
 #include "sampler.h"
 
-#include "chat.h"
-#include "common.h"
 #include "llama.h"
 #include "mtmd.h"
 
@@ -280,7 +279,7 @@ public:
     std::string media_marker() const { return mctx_ ? mtmd_get_marker(mctx_) : std::string(); }
 
     std::string chat_template_source() const;
-    const common_chat_templates * chat_templates() const { return chat_templates_.get(); }
+    const onyx_chat_templates & chat_templates() const { return *chat_templates_; }
     const llama_vocab * vocab()     const { return vocab_; }
     const llama_model * model()     const { return model_; }
 
@@ -317,7 +316,7 @@ public:
     std::vector<llama_token> tokenize(const std::string & text, bool add_special, bool parse_special = true) const;
     // Rendered chat prompt: special tokens are parsed in template text only,
     // never in request input parts. Adds BOS if the vocab wants one.
-    std::vector<llama_token> tokenize_prompt(const common_chat_prompt & prompt) const;
+    std::vector<llama_token> tokenize_prompt(const onyx_prompt & prompt) const;
     std::string detokenize(const std::vector<llama_token> & tokens, bool special = false) const;
 
 private:
@@ -348,7 +347,7 @@ private:
     llama_context * ctx_   = nullptr;
     mtmd_context *  mctx_  = nullptr;   // multimodal projector, null without --mmproj
     const llama_vocab * vocab_ = nullptr;
-    common_chat_templates_ptr chat_templates_;
+    std::unique_ptr<onyx_chat_templates> chat_templates_;
 
     std::string alias_;
     std::string load_error_;

@@ -297,7 +297,7 @@ bool onyx_engine::load(const onyx_args & args) {
     }
 
     try {
-        chat_templates_ = common_chat_templates_init(model_, template_override);
+        chat_templates_ = std::make_unique<onyx_chat_templates>(model_, template_override);
     } catch (const std::exception & e) {
         load_error_ = std::string("failed to initialize chat template: ") + e.what();
         return false;
@@ -342,14 +342,14 @@ std::string onyx_engine::model_desc() const {
 }
 
 std::string onyx_engine::chat_template_source() const {
-    return chat_templates_ ? common_chat_templates_source(chat_templates_.get()) : "";
+    return chat_templates_ ? chat_templates_->source() : "";
 }
 
 std::vector<llama_token> onyx_engine::tokenize(const std::string & text, bool add_special, bool parse_special) const {
     return onyx_tokenize(vocab_, text, add_special, parse_special);
 }
 
-std::vector<llama_token> onyx_engine::tokenize_prompt(const common_chat_prompt & prompt) const {
+std::vector<llama_token> onyx_engine::tokenize_prompt(const onyx_prompt & prompt) const {
     // template text is parsed for special tokens; text that came from the
     // request (message content) is not, so a client cannot write "<|im_end|>"
     // and get the control token. BOS, if the vocab adds one, comes once.

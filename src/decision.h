@@ -22,7 +22,7 @@
 #include <string>
 #include <vector>
 
-struct common_chat_template;
+class onyx_jinja_template;
 
 // one decoded media file, same as onyx_media_buffer in engine.h
 using onyx_decision_media = std::vector<unsigned char>;
@@ -159,7 +159,7 @@ private:
     onyx_decision_type type_  = ONYX_DECISION_NONE;
     const llama_vocab * vocab_ = nullptr;
     std::string         media_marker_;
-    std::unique_ptr<common_chat_template> tmpl_; // the "systemone" template
+    std::unique_ptr<onyx_jinja_template> tmpl_; // the "systemone" template
 
     std::map<std::string, float>          temperatures_; // "<type>" or "<type>.<bucket>"
     std::map<size_t, std::vector<float>>  score_bias_;   // by number of score levels
