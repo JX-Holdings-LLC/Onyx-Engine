@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-10-31
+
+### Cross-repo review action items — 2026-10-31 (0.7.1)
+
+Agent: Claude Code (Claude). Documentation only; the binary is unchanged from 0.7.0.
+
+- **`reports/2026-10-31-cross-repo-action-items.md`** (indexed in `reports/README.md`): what Onyx
+  Engine could adopt from Media Engine so JX Runtime can check the engine it supervises (a
+  machine-readable capability document with a contract version, a conformance suite runnable
+  against any URL, graceful SIGTERM drain, an opt-in JSON startup record, `--model-sha256`), the
+  maintainer decisions that needs, and four inconsistencies. Tracked in
+  [#89](https://github.com/JX-Holdings-LLC/Onyx-Engine/issues/89). Dated analysis from a
+  read-only review: nothing in it was run, and `ROADMAP.md` still decides what is scheduled.
+
+#### Not completed
+
+- None of the action items; they are a list, not work done.
+
+#### Validation
+
+- The documented link check (`docs/development/documentation.md`) reports no missing target in
+  the new report. It still exits 1 on 9 targets that predate this change (item D4 of the report).
+- No build or test run: no code changed.
+
 ## [0.7.0] — 2026-10-28
 
 ### Memory, queue timeout, hardening, Stage 1 helpers, Song Deck M1 — 2026-10-28 (0.7.0)

@@ -98,8 +98,7 @@ protocol and ships a conformance suite that runs against any worker (§7.1, §8)
 - [ ] **C3. Governance.** Onyx is agent-maintained (changelog entries are signed "Agent: Claude Code
   (Claude)") but has no `AGENTS.md`. Adopt Spec-Driven Docs as JX Runtime did, or add only an
   `AGENTS.md` that points to `CONTRIBUTING.md`?
-- [ ] **C4. Version bump.** The bump policy is `every-main-change`, enforced by `release-validation.yml`,
-  and docs-only changes bump too. Bump for this report when it reaches main?
+- [x] **C4. Version bump.** Decided 2026-10-31: patch bump to 0.7.1 for this report, under the `every-main-change` policy.
 
 ## D. Inconsistencies found
 
