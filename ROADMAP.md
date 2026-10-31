@@ -1,6 +1,6 @@
 # Onyx Engine roadmap
 
-What's next for Onyx Engine and what needs an owner decision, as of 2026-10-28. It summarises
+What's next for Onyx Engine and what needs an owner decision, as of 2026-10-31. It summarises
 the research reports, docs and open issues, and adds no scope of its own. **R1** is
 [Onyx Engine improvement opportunities][R1] and **R2** is [Replacing llama cpp common code][R2].
 
@@ -8,7 +8,7 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
 
 ## Where Onyx Engine stands
 
-- **Version 0.7.0;** the last published release predates it, and `.release/README.md` records
+- **Version 0.8.0;** the last published release predates it, and `.release/README.md` records
   no dry run of the new release workflow yet.
 - **llama.cpp pinned at b11820** (`d77256999`, 2026-10-22, the latest release when it moved);
   ggml pinned at `f1aa6a3` to match. CMake (or `npm ci`) fetches the source with Git; no Node is
@@ -18,10 +18,12 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
   `common/`; GBNF and `json_schema`; parallel slots with continuous batching; context shift;
   logprobs; reasoning budget; image and audio via `--mmproj`; per-slot prefix reuse; decision
   models on `/v1/systemone` ([#49][i49]); a numpy-only
-  `LlamaForCausalLM` converter; `--api-key`; `503` while loading and `--port 0`; `/metrics`,
+  `LlamaForCausalLM` converter; `--api-key`; `503` while loading and `--port 0`; `--api-key-file` and `ONYX_ENGINE_API_KEY`; `--timeout` and `--max-request-bytes`; `/metrics`,
   `X-Request-Id`, `--max-queue`, `--queue-timeout` and `--tick-tokens`; base64 embeddings; KV cache
   types and MoE offload (`-ctk`/`-ctv`, `--cpu-moe`, `--n-cpu-moe`, `-ot`); prefix reuse on
-  sliding-window and recurrent models; structured output that fails with `400` when cut by length. Release binaries for
+  sliding-window and recurrent models; structured output that fails with `400` when cut by length;
+  embeddings `dimensions`; decision images for every family whose template takes them; Onyx's own
+  sampler, chat seam and JSON (Stage 1 of the `common/` plan). Release binaries for
   nine platform variants (CPU, baseline x64, arm64 Linux, Vulkan) and a CPU Docker image.
 - **Independent-tool plan:** items 1 to 8 of [`reports/independent-tool-plan.md`](reports/independent-tool-plan.md)
   landed in 0.6.0; item 9 (conformance suite, benchmarks, real-model nightly, sanitizers) is open.
@@ -33,8 +35,9 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
 
 - **`logit_bias` for label tokens** ([#49][i49], optional): would let a caller constrain a chat
   model to a fixed set of label tokens; `logit_bias` still gets a 400. See [Decisions needed](#decisions-needed).
-- **Decision images for clef, lfm2-d1-omni and vllm-d3:** these answer `501` today; they need media
-  evaluated in the same batch as the text that reads it ([`docs/architecture/decision-models.md`](docs/architecture/decision-models.md)).
+- **Decision images for clef, lfm2-d1-omni and vllm-d3:** done in 0.8.0 ([#79][i79]): their media
+  are rows of the prompt, evaluated in the batch that reads them. Checked by hand on real models;
+  no offline fixture yet.
 - **Memory flags:** done in 0.7.0: `-ctk`/`-ctv` (`--cache-type-k/-v`) and MoE offload
   (`--cpu-moe`, `--n-cpu-moe`, `-ot`), plumbed onto libllama. ([R1 ranking][R1-rank] #1;
   [R2 table][R2-table]) Auto-fit (`--fit`) is under Next.
@@ -42,14 +45,16 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
   0.7.0 (`--queue-timeout`, `onyx:requests_timed_out_total`). ([R1 ranking][R1-rank] #2–3)
 - **Hardening:** done in 0.6.0 (loopback Host allowlist, constant-time key compare, explicit
   payload cap, non-loopback `--host` refusal) and 0.7.0 (a 30 s read timeout, cpp-httplib
-  v0.54.1 → v0.62.0, a 64-level JSON nesting cap). ([R1 hardening][R1-hard])
-- **Stage 1 of the `common/` plan:** partly done in 0.7.0: Onyx-owned tokenize, detokenize,
-  token-to-piece, batch and log helpers (`src/llama_util.*`); the narrower SWA/recurrent reuse
-  gate (llama-server's `pos_min` rule per request instead of a load-time disable); and the
-  request depth cap, as a pre-parse check. Still open: the Onyx sampler (the piece Stage 4 needs),
-  swapping `common_json` for nlohmann (100–160 call sites), the memory-capability probe and the
-  thin chat seam. The exit test (same greedy output, grammar and tool tests) applies to the
-  sampler work. ([R2 stages][R2-stages])
+  v0.54.1 → v0.62.0, a 64-level JSON nesting cap) and 0.8.0 (`--api-key-file` and
+  `ONYX_ENGINE_API_KEY`, `--max-request-bytes`, `--timeout`). ([R1 hardening][R1-hard])
+- **Stage 1 of the `common/` plan:** done in 0.8.0 ([#84][i84]): Onyx-owned tokenize, batch and
+  log helpers and the SWA/recurrent reuse gate (0.7.0); the Onyx sampler on `llama.h`
+  (`src/sampler.*`, token-for-token equal to `common_sampler` on three models), the memory-capability
+  probe, the chat seam (`src/onyx_chat.*`, the only includer of `common/chat.h`) and
+  `nlohmann::ordered_json` in place of `common_json` (0.8.0). Left in `common/`: the chat layer,
+  Jinja and the schema converter behind the seam (Stage 3), `common.h`'s string helpers in
+  `decision.cpp`, and the log threshold. #84's other asks (decision 2, one header for
+  `llama-ext.h`, the pin-bump pipeline) are still open. ([R2 stages][R2-stages])
 - **Song Deck structured output (its M1):** done in 0.7.0 on Onyx's side: two of Song Deck's
   schemas (OpenAI-strict and plain JSON-schema dialects) are a smoke-test regression check through
   `response_format` → GBNF; a length cut under `json_schema`/`response_format` answers `400`
@@ -72,9 +77,10 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
   checkpoint fixes. ([R2 KV][R2-kv])
 - **Auto-fit (`--fit`)** for one GPU plus CPU, alongside Stage 2. It reads memory through the
   unstable `src/llama-ext.h`, so it needs a fallback estimate. ([R2 table][R2-table])
-- **Client compatibility:** embeddings `dimensions` (`base64` landed in 0.6.0), `/v1/rerank` over
+- **Client compatibility:** `/v1/rerank` over
   `--pooling rank`, `reasoning`/`reasoning_effort`, `allowed_tools` and `strict` tools, and context
-  length in `/v1/models`. ([R1 API][R1-api]; [ranking][R1-rank] #5)
+  length in `/v1/models` (#59, contributor PR #86 open). Embeddings `base64` (0.6.0) and `dimensions`
+  (0.8.0) are done. ([R1 API][R1-api]; [ranking][R1-rank] #5)
 - **`/v1/responses` and `/v1/messages`** for Codex and Claude Code, 1–2 weeks each; JX Runtime
   needs new `KIND_PATHS` entries to route them. ([R1 API][R1-api])
 - **CI and distribution:** an ASan/UBSan smoke-test job, fuzz harnesses, an RPC-off assertion,
@@ -89,8 +95,8 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
   per-family tool-call and reasoning parsers, then set `LLAMA_BUILD_COMMON=OFF`. 4–7 weeks; its
   scope is decision 2. ([R2 chat layer][R2-chat])
 - **Speculative decoding (Stage 4):** a verifier and adaptive n-gram drafting with a per-slot kill
-  switch; an opt-in draft model later. Needs only the Stage 1 sampler, so it can run beside
-  Stage 3. ([R2 speculation][R2-spec])
+  switch; an opt-in draft model later. Needs only the Stage 1 sampler (done in 0.8.0), so it
+  can run beside Stage 3. ([R2 speculation][R2-spec])
 - **Converter:** accept Llama 3 RoPE and the `llama-bpe` pre-tokenizer, rebase on the vendored
   `gguf-py`, and prefer pre-quantized GGUFs through an `-hf` resolver. ([R1 converter][R1-conv])
 - **Unified KV** behind a flag, so `-np N` stops splitting the context.
@@ -175,5 +181,7 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
 [R2-chat]: reports/Replacing%20llama%20cpp%20common%20code.md#the-chat-layer-is-a-hybrid-copied-engine-owned-parsers
 [R2-spec]: reports/Replacing%20llama%20cpp%20common%20code.md#speculation-is-owned-in-two-stages-mtp-waits
 [i49]: https://github.com/JX-Holdings-LLC/Onyx-Engine/issues/49
+[i79]: https://github.com/JX-Holdings-LLC/Onyx-Engine/issues/79
+[i84]: https://github.com/JX-Holdings-LLC/Onyx-Engine/issues/84
 [SD-onyx]: https://github.com/jxburros/Song-Deck/blob/main/docs/plans/onyx-engine.md
 [SD-jx]: https://github.com/jxburros/Song-Deck/blob/main/docs/plans/jx-runtime.md

@@ -34,7 +34,7 @@ You point it at a model (a GGUF, or a safetensors model it converts once and rem
 | **Hardware** | CPU by default; CUDA, Vulkan, Metal, ROCm/HIP or BLAS chosen at build time; prebuilt Vulkan archives for Linux and Windows |
 | **Platforms** | `linux-x64`, `linux-arm64`, `darwin-arm64`, `darwin-x64`, `win32-x64`, plus `-baseline` (no AVX2) and `-vulkan` variants for Linux and Windows x64; a Docker image |
 | **Built on** | llama.cpp b11820 (`d77256999`), fetched by exact commit and verified with Git |
-| **Auth** | optional `--api-key` bearer token (constant-time compare), on every route but `/health`; required for a non-loopback `--host` |
+| **Auth** | optional bearer token (`--api-key`, `--api-key-file` or `ONYX_ENGINE_API_KEY`; constant-time compare), on every route but `/health`; required for a non-loopback `--host` |
 | **Licence** | MIT |
 
 ## Start her up
@@ -84,7 +84,7 @@ Anything that speaks the OpenAI API works with the base URL `http://127.0.0.1:80
 | `curl` | Add `"stream": true` and `curl -N` to stream; the last frame carries `usage` and `timings`. |
 | Open WebUI, Continue | Configure an OpenAI-compatible connection. Not tested by this project; Open WebUI in Docker needs the engine bound to an address it can reach, with a key. |
 
-Strict field handling means a client that sends `logit_bias`, `mirostat`, `dry_*`, `xtc_*`, `n` above 1 or `dimensions` gets a `400` naming the field; turn that setting off in the client. [Using it with other clients](docs/guides/clients.md) has the code.
+Strict field handling means a client that sends `logit_bias`, `mirostat`, `dry_*`, `xtc_*`, or `n` above 1 gets a `400` naming the field; turn that setting off in the client. [Using it with other clients](docs/guides/clients.md) has the code.
 
 ## What goes on under the hood
 
@@ -131,7 +131,8 @@ The flags you will touch most. `onyx-engine --help` is the source of truth, and 
 | `-m, --model PATH` | required | GGUF, or a safetensors model converted on first load |
 | `-a, --alias NAME` | file stem | The model id the API reports |
 | `--host`, `--port` | `127.0.0.1`, `8080` | Where to listen; `--port 0` picks a free port. A non-loopback host needs a key |
-| `--api-key KEY` | none | Require a bearer token (except `/health`) |
+| `--api-key KEY`, `--api-key-file PATH` | none | Require a bearer token (except `/health`); the file (or `ONYX_ENGINE_API_KEY`) keeps it out of the process list |
+| `--timeout N`, `--max-request-bytes N` | `600`, 100 MiB | Write timeout (the read timeout stays 30 s or less); request body cap, `413` beyond |
 | `--max-queue N` | `0` (no limit) | Requests allowed to wait for a slot; beyond it, `503` with `Retry-After` |
 | `--queue-timeout N` | `0` (no limit) | Seconds a request may wait for a slot; beyond it, `503` with `Retry-After` |
 | `--metrics` | off | Serve `/metrics` |
