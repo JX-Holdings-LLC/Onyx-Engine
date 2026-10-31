@@ -36,7 +36,7 @@ There is no in-process model swapping and no multi-model registry. Running more 
 | `src/server.h` / `src/server.cpp` | The HTTP layer on `cpp-httplib`: request parsing, response and SSE-frame construction, every route handler |
 | `src/main.cpp` | Entry point: parse arguments, initialize the llama.cpp backend, then hand `onyx_server_run` a load step (resolve, convert, load) that runs while the server already answers `503` |
 
-`server.cpp` depends on `engine.h` (to call generation, embedding and tokenize), on `onyx_chat.h` for chat templating and output parsing, and on llama.cpp's `common` headers `json.h` and `json-schema-to-grammar.h` for JSON and the completions route's schema grammar. `engine.cpp` depends directly on `llama.h`, the core C API; sampling goes through `sampler.h`, so `common_sampler` is no longer used. Tokenization and batch filling go through `llama_util.h` everywhere, so `common/`'s tokenize helpers are no longer called.
+`server.cpp` depends on `engine.h` (to call generation, embedding and tokenize), on `onyx_chat.h` for chat templating, output parsing and the completions route's schema grammar, and on `onyx_json.h` for JSON: `nlohmann::ordered_json` from `third_party/nlohmann`, not `common/`'s `common_json`. It includes no `common/` header. `engine.cpp` depends directly on `llama.h`, the core C API; sampling goes through `sampler.h`, so `common_sampler` is no longer used. Tokenization and batch filling go through `llama_util.h` everywhere, so `common/`'s tokenize helpers are no longer called.
 
 ## The parts, one page each
 

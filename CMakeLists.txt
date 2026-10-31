@@ -212,7 +212,11 @@ target_compile_definitions(onyx-engine PRIVATE
     $<$<CONFIG:Debug>:ONYX_ENGINE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}">
 )
 
+# third_party/nlohmann: onyx-engine's own copy of nlohmann/json (the version
+# the pin vendors; see third_party/nlohmann/README.md), used through
+# src/onyx_json.h in place of common/'s common_json.
 target_include_directories(onyx-engine PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann
     ${ONYX_LLAMA_SRC}/common
     ${ONYX_LLAMA_SRC}/tools/mtmd
 )

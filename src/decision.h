@@ -13,7 +13,7 @@
 // the prompts is onyx_engine::decide() (engine.cpp).
 #pragma once
 
-#include "json.h"
+#include "onyx_json.h"
 #include "llama.h"
 
 #include <functional>
@@ -64,13 +64,13 @@ enum onyx_decision_question_type {
 
 struct onyx_decision_option {
     std::string key;
-    common_json description; // null if not provided
+    onyx_json description; // null if not provided
 };
 
 struct onyx_decision_question {
     std::string                        id;
     onyx_decision_question_type        type = ONYX_DECISION_QUESTION_CHOICE;
-    common_json                        instructions;
+    onyx_json                        instructions;
     std::vector<onyx_decision_option>  options; // in the order of the model outputs
 };
 
@@ -127,31 +127,31 @@ public:
     bool onyx_supports_media() const;
 
     // All of these throw std::invalid_argument on a bad request.
-    std::vector<onyx_decision_question> parse_questions(const common_json & body) const;
+    std::vector<onyx_decision_question> parse_questions(const onyx_json & body) const;
 
     // The state without its media parts; media go to `files`, in order.
-    common_json parse_state(const common_json & body, std::vector<onyx_decision_media> & files,
+    onyx_json parse_state(const onyx_json & body, std::vector<onyx_decision_media> & files,
                             const onyx_decision_decoder & decode) const;
 
     // The state as the model reads it; done once per request.
-    common_json prepare_state(const common_json & state) const;
+    onyx_json prepare_state(const onyx_json & state) const;
 
     // prompts evaluated for one question, each shows the options in another order
     size_t n_variants(const onyx_decision_question & question) const;
 
-    onyx_decision_prompt fill_prompt(const common_json & state,
+    onyx_decision_prompt fill_prompt(const onyx_json & state,
                                      const std::vector<onyx_decision_question> & questions,
                                      const onyx_decision_question & question,
                                      size_t variant,
                                      const std::vector<onyx_decision_media> & files) const;
 
     // clef: one prompt for all the questions; the scores of all their options, in order
-    onyx_decision_prompt fill_prompt_joint(const common_json & state,
+    onyx_decision_prompt fill_prompt_joint(const onyx_json & state,
                                            const std::vector<onyx_decision_question> & questions,
                                            const std::vector<onyx_decision_media> & files) const;
 
     // scores: the raw model outputs of each variant
-    common_json format_answer(const onyx_decision_question & question,
+    onyx_json format_answer(const onyx_decision_question & question,
                               const std::vector<std::vector<float>> & scores,
                               bool has_media) const;
 
@@ -186,22 +186,22 @@ private:
     std::string              quoted_first_;     // their first bytes
 
     std::vector<llama_token> tokenize(const std::string & text, bool parse_special) const;
-    std::string render_template(const common_json & inp) const;
-    std::string render(const common_json & state,
+    std::string render_template(const onyx_json & inp) const;
+    std::string render(const onyx_json & state,
                        const std::vector<onyx_decision_question> & questions,
                        const onyx_decision_question & question,
                        size_t variant, size_t n_images, bool is_audio = false) const;
-    common_json render_options(const onyx_decision_question & question, size_t variant) const;
+    onyx_json render_options(const onyx_decision_question & question, size_t variant) const;
     size_t      n_outputs(const onyx_decision_question & question) const;
     void        d1_labels(const onyx_decision_question & question,
                           std::vector<std::string> & texts,
                           std::vector<std::vector<llama_token>> & groups) const;
-    common_json render_h2o(const common_json & state, const onyx_decision_question & question) const;
+    onyx_json render_h2o(const onyx_json & state, const onyx_decision_question & question) const;
     std::string h2o_cut_state(const std::string & text) const;
     std::string h2o_quote(const std::string & text) const;
     void        fill_laya(std::vector<llama_token> & tokens, const onyx_decision_question & question,
                           onyx_decision_prompt & out) const;
-    void        fill_d1omni(const common_json & state,
+    void        fill_d1omni(const onyx_json & state,
                             const std::vector<onyx_decision_question> & questions,
                             const onyx_decision_question & question,
                             size_t variant, onyx_decision_prompt & out) const;

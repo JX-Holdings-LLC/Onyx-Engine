@@ -114,6 +114,10 @@ private:
     std::unique_ptr<impl> impl_;
 };
 
+// GBNF for a JSON schema (llama.cpp's schema converter); throws on a schema
+// it cannot convert.
+std::string onyx_json_schema_to_grammar(const onyx_json & schema);
+
 // A raw Jinja template rendered with JSON globals (the decision models'
 // "systemone" template).
 class onyx_jinja_template {

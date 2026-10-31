@@ -15,7 +15,7 @@
 #include <cstdlib>
 #include <stdexcept>
 
-using json = common_json;
+using json = onyx_json;
 
 // ---------------------------------------------------------------------------
 // type detection
@@ -911,7 +911,7 @@ std::string onyx_decision::h2o_cut_state(const std::string & text) const {
         for (auto it = begin; it != end; ++it) {
             out += onyx_token_to_piece(vocab_, *it, true);
         }
-        return json::parse(json::make(out).dump_safe()).get<std::string>();
+        return json::parse(onyx_json_dump_safe(json(out))).get<std::string>();
     };
     return text_of(tokens.begin(), tokens.begin() + half) + "\n...\n" + text_of(tokens.end() - half, tokens.end());
 }

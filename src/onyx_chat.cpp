@@ -7,6 +7,7 @@
 #include "common.h"
 #include "jinja/runtime.h"
 #include "jinja/value.h"
+#include "json-schema-to-grammar.h"
 
 #include <stdexcept>
 
@@ -18,18 +19,32 @@ std::string onyx_prompt::str() const {
     return out;
 }
 
+// Onyx's JSON and llama.cpp's common_json cross as text: common_json keeps its
+// nlohmann value private, and a dump/parse costs little next to rendering.
+static common_json to_common(const onyx_json & j) {
+    return common_json::parse(j.dump());
+}
+
+static onyx_json from_common(const common_json & j) {
+    return onyx_json::parse(j.dump());
+}
+
+std::string onyx_json_schema_to_grammar(const onyx_json & schema) {
+    return json_schema_to_grammar(to_common(schema));
+}
+
 // ---------------------------------------------------------------------------
 // request -> template inputs
 // ---------------------------------------------------------------------------
 
 static common_chat_templates_inputs parse_chat_inputs(const onyx_json & body) {
     common_chat_templates_inputs inputs;
-    inputs.messages         = common_chat_msgs_parse_oaicompat(body.at("messages"));
+    inputs.messages         = common_chat_msgs_parse_oaicompat(to_common(body.at("messages")));
     inputs.use_jinja        = true;
     inputs.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
 
     if (body.contains("tools") && body.at("tools").is_array() && body.at("tools").size() > 0) {
-        inputs.tools = common_chat_tools_parse_oaicompat(body.at("tools"));
+        inputs.tools = common_chat_tools_parse_oaicompat(to_common(body.at("tools")));
     }
     if (body.contains("tool_choice") && body.at("tool_choice").is_string()) {
         inputs.tool_choice = common_chat_tool_choice_parse_oaicompat(body.at("tool_choice").get<std::string>());
@@ -255,7 +270,7 @@ onyx_json onyx_chat_parser::message(const std::string & text) {
         msg.role = "assistant";
     }
     impl_->prev = msg;
-    return msg.to_json_oaicompat(/* concat_typed_text */ true);
+    return from_common(msg.to_json_oaicompat(/* concat_typed_text */ true));
 }
 
 bool onyx_chat_parser::update(const std::string & text, bool is_partial, std::vector<onyx_json> & deltas) {
@@ -299,7 +314,7 @@ onyx_jinja_template::~onyx_jinja_template() = default;
 
 std::string onyx_jinja_template::render(const onyx_json & globals) const {
     jinja::context ctx(impl_->tmpl.source());
-    jinja::global_from_json(ctx, globals, /* mark_input */ false);
+    jinja::global_from_json(ctx, to_common(globals), /* mark_input */ false);
     jinja::runtime runtime(ctx);
     const jinja::value results = runtime.execute(impl_->tmpl.prog);
     return jinja::runtime::gather_string_parts(results)->as_string().str();

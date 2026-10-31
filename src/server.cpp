@@ -3,8 +3,8 @@
 #include "http_util.h"
 #include "llama_util.h"
 
-#include "json-schema-to-grammar.h"
-#include "json.h"
+#include "onyx_chat.h"
+#include "onyx_json.h"
 
 #include "httplib.h"
 
@@ -53,8 +53,8 @@ static std::string gen_request_id(const char * prefix) {
 }
 
 static void send_error(httplib::Response & res, int status, const std::string & message, const char * type) {
-    common_json err = common_json::object();
-    common_json body = common_json::object();
+    onyx_json err = onyx_json::object();
+    onyx_json body = onyx_json::object();
     err["message"] = message;
     err["type"]    = type;
     err["code"]    = status;
@@ -70,12 +70,12 @@ static void send_busy(httplib::Response & res, const std::string & message) {
 
 // Parses a request body, refusing one nested deeper than ONYX_MAX_JSON_DEPTH
 // (std::invalid_argument, which the exception handler answers with 400).
-static common_json parse_body(const httplib::Request & req) {
+static onyx_json parse_body(const httplib::Request & req) {
     if (json_nesting_depth(req.body) > ONYX_MAX_JSON_DEPTH) {
         throw std::invalid_argument("request body nests arrays and objects deeper than " +
                                     std::to_string(ONYX_MAX_JSON_DEPTH) + " levels");
     }
-    return common_json::parse(req.body);
+    return onyx_json::parse(req.body);
 }
 
 // The 400 for a response_format / json_schema answer that stopped before its
@@ -89,12 +89,12 @@ static std::string truncated_json_message(const onyx_gen_result & r, int32_t n_p
            (by_max_tokens ? "max_tokens" : "--ctx-size or shorten the prompt");
 }
 
-static common_json truncated_json_frame(const std::string & message) {
-    common_json e = common_json::object();
+static onyx_json truncated_json_frame(const std::string & message) {
+    onyx_json e = onyx_json::object();
     e["message"] = message;
     e["type"]    = "invalid_request_error";
     e["code"]    = 400;
-    common_json err = common_json::object();
+    onyx_json err = onyx_json::object();
     err["error"] = e;
     return err;
 }
@@ -113,13 +113,13 @@ static void send_generation_error(httplib::Response & res, const onyx_gen_result
 }
 
 // SSE error frame for a generation that failed after the stream started.
-static common_json stream_error_json(const onyx_gen_result & r) {
-    common_json e = common_json::object();
+static onyx_json stream_error_json(const onyx_gen_result & r) {
+    onyx_json e = onyx_json::object();
     e["message"] = r.error;
     const bool busy = r.queue_full || r.queue_timeout;
     e["type"]    = busy ? "unavailable_error" : "server_error";
     e["code"]    = busy ? 503 : 500;
-    common_json err = common_json::object();
+    onyx_json err = onyx_json::object();
     err["error"] = e;
     return err;
 }
@@ -156,7 +156,7 @@ static std::string metrics_text(const onyx_engine_metrics & m) {
     return out;
 }
 
-static bool reject_unsupported_fields(const common_json & body, httplib::Response & res,
+static bool reject_unsupported_fields(const onyx_json & body, httplib::Response & res,
                                       std::initializer_list<const char *> fields) {
     for (const char * field : fields) {
         if (body.contains(field)) {
@@ -191,16 +191,16 @@ static std::string finish_reason_str(const onyx_gen_result & r, bool has_tool_ca
     return has_tool_calls ? "tool_calls" : "stop";
 }
 
-static common_json usage_json(const onyx_gen_result & r) {
-    common_json u = common_json::object();
+static onyx_json usage_json(const onyx_gen_result & r) {
+    onyx_json u = onyx_json::object();
     u["prompt_tokens"]     = r.n_prompt;
     u["completion_tokens"] = r.n_predicted;
     u["total_tokens"]      = r.n_prompt + r.n_predicted;
     return u;
 }
 
-static common_json timings_json(const onyx_gen_result & r) {
-    common_json t = common_json::object();
+static onyx_json timings_json(const onyx_gen_result & r) {
+    onyx_json t = onyx_json::object();
     t["cache_n"]              = r.n_cached;
     t["prompt_n"]             = r.n_prompt - r.n_cached;
     t["prompt_ms"]            = r.t_prompt_ms;
@@ -215,8 +215,8 @@ static common_json timings_json(const onyx_gen_result & r) {
 // logprobs (v2)
 // ---------------------------------------------------------------------------
 
-static common_json bytes_json(const std::string & s) {
-    common_json arr = common_json::array();
+static onyx_json bytes_json(const std::string & s) {
+    onyx_json arr = onyx_json::array();
     for (unsigned char c : s) {
         arr.push_back((int64_t) c);
     }
@@ -225,14 +225,14 @@ static common_json bytes_json(const std::string & s) {
 
 // OpenAI chat-completions logprobs.content[] entry shape, used by both
 // /v1/chat/completions (non-streaming and streaming).
-static common_json chat_logprob_entry(const onyx_token_probs & p) {
-    common_json e = common_json::object();
+static onyx_json chat_logprob_entry(const onyx_token_probs & p) {
+    onyx_json e = onyx_json::object();
     e["token"]   = p.sampled.piece;
     e["logprob"] = p.sampled.logprob;
     e["bytes"]   = bytes_json(p.sampled.piece);
-    common_json top = common_json::array();
+    onyx_json top = onyx_json::array();
     for (const auto & t : p.top) {
-        common_json te = common_json::object();
+        onyx_json te = onyx_json::object();
         te["token"]   = t.piece;
         te["logprob"] = t.logprob;
         te["bytes"]   = bytes_json(t.piece);
@@ -242,12 +242,12 @@ static common_json chat_logprob_entry(const onyx_token_probs & p) {
     return e;
 }
 
-static common_json chat_logprobs_content(const std::vector<onyx_token_probs> & probs) {
-    common_json content = common_json::array();
+static onyx_json chat_logprobs_content(const std::vector<onyx_token_probs> & probs) {
+    onyx_json content = onyx_json::array();
     for (const auto & p : probs) {
         content.push_back(chat_logprob_entry(p));
     }
-    common_json out = common_json::object();
+    onyx_json out = onyx_json::object();
     out["content"] = content;
     return out;
 }
@@ -256,16 +256,16 @@ static common_json chat_logprobs_content(const std::vector<onyx_token_probs> & p
 // `text_offset` relative to the start of the whole returned completion text
 // -- `offset` is threaded through by the caller so a streaming response's
 // per-frame call keeps accumulating across frames.
-static common_json legacy_logprobs(const std::vector<onyx_token_probs> & probs, size_t & offset) {
-    common_json tokens         = common_json::array();
-    common_json token_logprobs = common_json::array();
-    common_json top_logprobs   = common_json::array();
-    common_json text_offset    = common_json::array();
+static onyx_json legacy_logprobs(const std::vector<onyx_token_probs> & probs, size_t & offset) {
+    onyx_json tokens         = onyx_json::array();
+    onyx_json token_logprobs = onyx_json::array();
+    onyx_json top_logprobs   = onyx_json::array();
+    onyx_json text_offset    = onyx_json::array();
 
     for (const auto & p : probs) {
         tokens.push_back(p.sampled.piece);
         token_logprobs.push_back(p.sampled.logprob);
-        common_json top = common_json::object();
+        onyx_json top = onyx_json::object();
         for (const auto & t : p.top) {
             top[t.piece] = t.logprob;
         }
@@ -274,7 +274,7 @@ static common_json legacy_logprobs(const std::vector<onyx_token_probs> & probs, 
         offset += p.sampled.piece.size();
     }
 
-    common_json out = common_json::object();
+    onyx_json out = onyx_json::object();
     out["tokens"]         = tokens;
     out["token_logprobs"] = token_logprobs;
     out["top_logprobs"]   = top_logprobs;
@@ -291,7 +291,7 @@ static common_json legacy_logprobs(const std::vector<onyx_token_probs> & probs, 
 // media_marker part carrying the mtmd marker text, so the chat template
 // renders the marker exactly where the media was and mtmd_tokenize matches
 // markers to buffers in order. Throws (-> 400) on anything unacceptable.
-static void extract_media(common_json & messages, const onyx_engine & engine,
+static void extract_media(onyx_json & messages, const onyx_engine & engine,
                           std::vector<onyx_media_buffer> & out_media) {
     const std::string marker = engine.media_marker();
 
@@ -313,10 +313,10 @@ static void extract_media(common_json & messages, const onyx_engine & engine,
 
             std::string payload;
             if (is_image) {
-                const common_json & iu = part.at("image_url");
+                const onyx_json & iu = part.at("image_url");
                 payload = iu.is_string() ? iu.get<std::string>() : iu.value<std::string>("url", "");
             } else {
-                const common_json & ia = part.at("input_audio");
+                const onyx_json & ia = part.at("input_audio");
                 payload = ia.is_string() ? ia.get<std::string>() : ia.value<std::string>("data", "");
             }
             if (payload.empty()) {
@@ -335,7 +335,7 @@ static void extract_media(common_json & messages, const onyx_engine & engine,
             }
 
             out_media.push_back(decode_media_payload(payload, what));
-            part = common_json{{"type", "media_marker"}, {"text", marker}};
+            part = onyx_json{{"type", "media_marker"}, {"text", marker}};
         }
     }
 }
@@ -344,12 +344,12 @@ static void extract_media(common_json & messages, const onyx_engine & engine,
 // request parsing
 // ---------------------------------------------------------------------------
 
-static std::vector<std::string> parse_stop(const common_json & body) {
+static std::vector<std::string> parse_stop(const onyx_json & body) {
     std::vector<std::string> stop;
     if (!body.contains("stop")) {
         return stop;
     }
-    const common_json & s = body.at("stop");
+    const onyx_json & s = body.at("stop");
     if (s.is_string()) {
         std::string v = s.get<std::string>();
         if (!v.empty()) {
@@ -366,7 +366,7 @@ static std::vector<std::string> parse_stop(const common_json & body) {
     return stop;
 }
 
-static int32_t parse_max_tokens(const common_json & body) {
+static int32_t parse_max_tokens(const onyx_json & body) {
     for (const char * key : {"max_completion_tokens", "max_tokens", "n_predict"}) {
         if (body.contains(key) && !body.at(key).is_null()) {
             return body.at(key).get<int32_t>();
@@ -375,7 +375,7 @@ static int32_t parse_max_tokens(const common_json & body) {
     return -1;
 }
 
-static onyx_sampling_params parse_sampling(const common_json & body, uint32_t default_seed) {
+static onyx_sampling_params parse_sampling(const onyx_json & body, uint32_t default_seed) {
     onyx_sampling_params s;
     s.seed = default_seed;
 
@@ -400,7 +400,7 @@ static onyx_sampling_params parse_sampling(const common_json & body, uint32_t de
 // doesn't expose any, per the v2 API reference §4) and for the rendered
 // prompt text (to detect a deepseek-style template whose generation prompt
 // already ends inside the thinking block).
-static onyx_reasoning_budget build_reasoning_budget(const common_json & body, const onyx_args & args,
+static onyx_reasoning_budget build_reasoning_budget(const onyx_json & body, const onyx_args & args,
                                                   const onyx_chat_render & cr, const onyx_engine & engine) {
     onyx_reasoning_budget rb;
 
@@ -451,9 +451,9 @@ struct chat_stream_state {
     std::string                       accumulated;
 };
 
-static common_json make_chat_chunk(const chat_stream_state & st, common_json delta, const char * finish_reason,
-                                   common_json logprobs = nullptr) {
-    common_json choice = common_json::object();
+static onyx_json make_chat_chunk(const chat_stream_state & st, onyx_json delta, const char * finish_reason,
+                                   onyx_json logprobs = nullptr) {
+    onyx_json choice = onyx_json::object();
     choice["index"] = 0;
     choice["delta"] = delta;
     if (finish_reason) {
@@ -461,11 +461,11 @@ static common_json make_chat_chunk(const chat_stream_state & st, common_json del
     } else {
         choice["finish_reason"] = nullptr;
     }
-    choice["logprobs"] = logprobs.is_null() ? common_json(nullptr) : logprobs;
-    common_json choices = common_json::array();
+    choice["logprobs"] = logprobs.is_null() ? onyx_json(nullptr) : logprobs;
+    onyx_json choices = onyx_json::array();
     choices.push_back(choice);
 
-    common_json chunk = common_json::object();
+    onyx_json chunk = onyx_json::object();
     chunk["id"]      = st.request_id;
     chunk["object"]  = "chat.completion.chunk";
     chunk["created"] = (int64_t) st.created;
@@ -474,8 +474,8 @@ static common_json make_chat_chunk(const chat_stream_state & st, common_json del
     return chunk;
 }
 
-static bool sse_write(httplib::DataSink & sink, const common_json & payload) {
-    const std::string frame = "data: " + payload.dump_safe() + "\n\n";
+static bool sse_write(httplib::DataSink & sink, const onyx_json & payload) {
+    const std::string frame = "data: " + onyx_json_dump_safe(payload) + "\n\n";
     return sink.write(frame.data(), frame.size());
 }
 
@@ -538,7 +538,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
         std::string msg = "internal error";
         try {
             if (ep) std::rethrow_exception(ep);
-        } catch (const common_json_error & e) {
+        } catch (const onyx_json_error & e) {
             send_error(res, 400, e.what(), "invalid_request_error");
             return;
         } catch (const std::invalid_argument & e) {
@@ -570,7 +570,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
     }
 
     svr.Get("/props", [&engine, &bound_port](const httplib::Request &, httplib::Response & res) {
-        common_json defaults = common_json::object();
+        onyx_json defaults = onyx_json::object();
         // Per-slot, not the whole context - llama-server parity. Its
         // get_res_props() reports default_generation_settings.n_ctx as
         // meta.slot_n_ctx, which is its own impl->n_ctx_slot(). This is the
@@ -580,11 +580,11 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
         // as the top-level n_ctx_total below.
         defaults["n_ctx"] = (int64_t) engine.n_ctx_slot();
 
-        common_json modalities = common_json::object();
+        onyx_json modalities = onyx_json::object();
         modalities["vision"] = engine.supports_vision();
         modalities["audio"]  = engine.supports_audio();
 
-        common_json props = common_json::object();
+        onyx_json props = onyx_json::object();
         props["model_alias"]                 = engine.alias();
         props["chat_template"]               = engine.chat_template_source();
         props["build_info"]                  = std::string("onyx-engine/" ONYX_ENGINE_VERSION " (llama.cpp " ONYX_ENGINE_LLAMA_PIN ")");
@@ -600,7 +600,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
         props["n_embd"]                      = (int64_t) engine.n_embd();
         props["embedding_mode"]              = engine.embedding_mode();
         props["decision_type"]               = engine.decision_mode()
-            ? common_json(onyx_decision_type_name(engine.decision().type())) : common_json(nullptr);
+            ? onyx_json(onyx_decision_type_name(engine.decision().type())) : onyx_json(nullptr);
         props["model_desc"]                  = engine.model_desc();
         props["model_size_bytes"]            = engine.model_size_bytes();
         props["model_n_params"]              = engine.model_n_params();
@@ -609,29 +609,29 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
         // (recurrent state, exact extensions only), "bounded" (recurrent
         // rollback); null outside generation mode
         props["memory_seq_rm"]               = engine.embedding_mode() || engine.decision_mode()
-            ? common_json(nullptr) : common_json(onyx_seq_rm_kind_name(engine.seq_rm()));
+            ? onyx_json(nullptr) : onyx_json(onyx_seq_rm_kind_name(engine.seq_rm()));
         props["default_generation_settings"] = defaults;
         res.set_content(props.dump(), "application/json; charset=utf-8");
     });
 
     svr.Get("/v1/models", [&](const httplib::Request &, httplib::Response & res) {
-        common_json meta = common_json::object();
+        onyx_json meta = onyx_json::object();
         meta["n_ctx_train"] = (int64_t) engine.n_ctx_train();
         meta["n_embd"]      = (int64_t) engine.n_embd();
         meta["size"]        = engine.model_size_bytes();
         meta["n_params"]    = engine.model_n_params();
 
-        common_json model = common_json::object();
+        onyx_json model = onyx_json::object();
         model["id"]       = engine.alias();
         model["object"]   = "model";
         model["created"]  = (int64_t) std::time(nullptr);
         model["owned_by"] = "onyx-engine";
         model["meta"]     = meta;
 
-        common_json data = common_json::array();
+        onyx_json data = onyx_json::array();
         data.push_back(model);
 
-        common_json out = common_json::object();
+        onyx_json out = onyx_json::object();
         out["object"] = "list";
         out["data"]   = data;
         res.set_content(out.dump(), "application/json; charset=utf-8");
@@ -640,19 +640,19 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
     // ---- tokenization ---------------------------------------------------
 
     svr.Post("/tokenize", [&](const httplib::Request & req, httplib::Response & res) {
-        const common_json body = parse_body(req);
+        const onyx_json body = parse_body(req);
         const std::string content = body.value<std::string>("content", "");
         const bool add_special    = body.value<bool>("add_special", false);
 
         const auto tokens = engine.tokenize(content, add_special, true);
-        common_json toks = common_json::array();
+        onyx_json toks = onyx_json::array();
         for (llama_token t : tokens) {
             toks.push_back((int64_t) t);
         }
-        common_json out = common_json::object();
+        onyx_json out = onyx_json::object();
         out["tokens"] = toks;
         if (body.value<bool>("with_pieces", false)) {
-            common_json pieces = common_json::array();
+            onyx_json pieces = onyx_json::array();
             for (llama_token t : tokens) pieces.push_back(onyx_token_to_piece(engine.vocab(), t, true));
             out["pieces"] = pieces;
         }
@@ -660,10 +660,10 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
     });
 
     svr.Post("/detokenize", [&](const httplib::Request & req, httplib::Response & res) {
-        const common_json body = parse_body(req);
+        const onyx_json body = parse_body(req);
         std::vector<llama_token> tokens;
         if (body.contains("tokens") && body.at("tokens").is_array()) {
-            const common_json & arr = body.at("tokens");
+            const onyx_json & arr = body.at("tokens");
             for (size_t i = 0; i < arr.size(); i++) {
                 const auto t = arr[i].get<int32_t>();
                 if (t < 0 || t >= llama_vocab_n_tokens(engine.vocab())) {
@@ -673,20 +673,20 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
                 tokens.push_back(t);
             }
         }
-        common_json out = common_json::object();
+        onyx_json out = onyx_json::object();
         out["content"] = engine.detokenize(tokens, false);
         res.set_content(out.dump(), "application/json; charset=utf-8");
     });
 
     svr.Post("/apply-template", [&](const httplib::Request & req, httplib::Response & res) {
-        const common_json body = parse_body(req);
+        const onyx_json body = parse_body(req);
         if (!body.contains("messages")) {
             send_error(res, 400, "missing 'messages'", "invalid_request_error");
             return;
         }
         try {
             const auto cr = engine.chat_templates().render(body, engine.vocab());
-            common_json out = common_json::object();
+            onyx_json out = onyx_json::object();
             out["prompt"] = cr.prompt.str();
             res.set_content(out.dump(), "application/json; charset=utf-8");
         } catch (const std::exception & e) {
@@ -697,7 +697,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
     // ---- chat completions ------------------------------------------------
 
     svr.Post("/v1/chat/completions", [&](const httplib::Request & req, httplib::Response & res) {
-        common_json body = parse_body(req);
+        onyx_json body = parse_body(req);
         if (reject_unsupported_fields(body, res, {"logit_bias", "typical_p", "mirostat", "mirostat_tau",
             "mirostat_eta", "dynatemp_range", "dynatemp_exponent", "dry_multiplier", "dry_base",
             "dry_allowed_length", "dry_penalty_last_n", "xtc_probability", "xtc_threshold"})) return;
@@ -805,16 +805,16 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             }
 
             auto parser = cr.make_parser();
-            common_json message = parser->message(r.text);
-            common_json choice  = common_json::object();
+            onyx_json message = parser->message(r.text);
+            onyx_json choice  = onyx_json::object();
             choice["index"]         = 0;
             choice["message"]       = message;
             choice["finish_reason"] = finish_reason_str(r, parser->has_tool_calls());
-            choice["logprobs"]      = gp.want_logprobs ? chat_logprobs_content(r.probs) : common_json(nullptr);
-            common_json choices = common_json::array();
+            choice["logprobs"]      = gp.want_logprobs ? chat_logprobs_content(r.probs) : onyx_json(nullptr);
+            onyx_json choices = onyx_json::array();
             choices.push_back(choice);
 
-            common_json out = common_json::object();
+            onyx_json out = onyx_json::object();
             out["id"]      = request_id;
             out["object"]  = "chat.completion";
             out["created"] = (int64_t) created;
@@ -823,7 +823,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             out["usage"]   = usage_json(r);
             out["timings"] = timings_json(r);
             out["truncated"] = r.truncated;
-            res.set_content(out.dump_safe(), "application/json; charset=utf-8");
+            res.set_content(onyx_json_dump_safe(out), "application/json; charset=utf-8");
             return;
         }
 
@@ -846,7 +846,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             }
 
             {
-                common_json role_delta = common_json::object();
+                onyx_json role_delta = onyx_json::object();
                 role_delta["role"]    = "assistant";
                 role_delta["content"] = "";
                 if (!sse_write(sink, make_chat_chunk(*st, role_delta, nullptr))) {
@@ -862,13 +862,13 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
                 // together) each piece's logprobs go out as their own frame,
                 // with an empty delta, the moment that piece's tokens exist.
                 if (gp.want_logprobs && !probs.empty()) {
-                    if (!sse_write(sink, make_chat_chunk(*st, common_json::object(), nullptr, chat_logprobs_content(probs)))) {
+                    if (!sse_write(sink, make_chat_chunk(*st, onyx_json::object(), nullptr, chat_logprobs_content(probs)))) {
                         return false;
                     }
                 }
 
                 st->accumulated += piece;
-                std::vector<common_json> deltas;
+                std::vector<onyx_json> deltas;
                 if (!st->parser->update(st->accumulated, /* is_partial */ true, deltas)) {
                     // partial output not yet parseable - hold until more arrives
                     return sink.is_writable();
@@ -900,7 +900,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             }
 
             // flush any tail withheld by the partial parser
-            std::vector<common_json> deltas;
+            std::vector<onyx_json> deltas;
             if (st->parser->update(r.text, /* is_partial */ false, deltas)) {
                 for (const auto & delta : deltas) {
                     sse_write(sink, make_chat_chunk(*st, delta, nullptr));
@@ -908,22 +908,22 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             } else {
                 const std::string tail = r.text.substr(std::min(st->accumulated.size(), r.text.size()));
                 if (!tail.empty()) {
-                    common_json delta = common_json::object();
+                    onyx_json delta = onyx_json::object();
                     delta["content"] = tail;
                     sse_write(sink, make_chat_chunk(*st, delta, nullptr));
                 }
             }
 
             const std::string finish = finish_reason_str(r, st->parser->has_tool_calls());
-            sse_write(sink, make_chat_chunk(*st, common_json::object(), finish.c_str()));
+            sse_write(sink, make_chat_chunk(*st, onyx_json::object(), finish.c_str()));
 
             // final usage frame (empty choices per OpenAI stream_options spec)
-            common_json usage_chunk = common_json::object();
+            onyx_json usage_chunk = onyx_json::object();
             usage_chunk["id"]      = st->request_id;
             usage_chunk["object"]  = "chat.completion.chunk";
             usage_chunk["created"] = (int64_t) st->created;
             usage_chunk["model"]   = st->model;
-            usage_chunk["choices"] = common_json::array();
+            usage_chunk["choices"] = onyx_json::array();
             usage_chunk["usage"]   = usage_json(r);
             usage_chunk["timings"] = timings_json(r);
             usage_chunk["truncated"] = r.truncated;
@@ -939,7 +939,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
     // ---- text completions ------------------------------------------------
 
     svr.Post("/v1/completions", [&](const httplib::Request & req, httplib::Response & res) {
-        const common_json body = parse_body(req);
+        const onyx_json body = parse_body(req);
         if (reject_unsupported_fields(body, res, {"logit_bias", "echo", "suffix", "best_of",
             "typical_p", "mirostat", "mirostat_tau", "mirostat_eta", "dynatemp_range",
             "dynatemp_exponent", "dry_multiplier", "dry_base", "dry_allowed_length",
@@ -958,7 +958,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
         }
 
         onyx_gen_params gp;
-        const common_json & prompt = body.at("prompt");
+        const onyx_json & prompt = body.at("prompt");
         if (prompt.is_string()) {
             gp.prompt_tokens = engine.tokenize(prompt.get<std::string>(), /* add_special */ true, /* parse_special */ true);
         } else if (prompt.is_array()) {
@@ -998,7 +998,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
         } else if (body.contains("json_schema")) {
             try {
                 gp.sampling.grammar_kind = ONYX_GRAMMAR_OUTPUT_FORMAT;
-                gp.sampling.grammar      = json_schema_to_grammar(body.at("json_schema"));
+                gp.sampling.grammar      = onyx_json_schema_to_grammar(body.at("json_schema"));
             } catch (const std::exception & e) {
                 send_error(res, 400, e.what(), "invalid_request_error");
                 return;
@@ -1020,8 +1020,8 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
         const std::string model      = engine.alias();
 
         auto make_cmpl_payload = [request_id, created, model](const std::string & text, const char * finish,
-                                                              common_json logprobs = nullptr) {
-            common_json choice = common_json::object();
+                                                              onyx_json logprobs = nullptr) {
+            onyx_json choice = onyx_json::object();
             choice["index"] = 0;
             choice["text"]  = text;
             if (finish) {
@@ -1029,11 +1029,11 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             } else {
                 choice["finish_reason"] = nullptr;
             }
-            choice["logprobs"] = logprobs.is_null() ? common_json(nullptr) : logprobs;
-            common_json choices = common_json::array();
+            choice["logprobs"] = logprobs.is_null() ? onyx_json(nullptr) : logprobs;
+            onyx_json choices = onyx_json::array();
             choices.push_back(choice);
 
-            common_json out = common_json::object();
+            onyx_json out = onyx_json::object();
             out["id"]      = request_id;
             out["object"]  = "text_completion";
             out["created"] = (int64_t) created;
@@ -1054,15 +1054,15 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
                 send_error(res, 400, truncated_json_message(r, gp.n_predict), "invalid_request_error");
                 return;
             }
-            common_json out = make_cmpl_payload(r.text, finish_reason_str(r, false).c_str(),
+            onyx_json out = make_cmpl_payload(r.text, finish_reason_str(r, false).c_str(),
                                                 gp.want_logprobs ? [&] {
                                                     size_t offset = 0;
                                                     return legacy_logprobs(r.probs, offset);
-                                                }() : common_json(nullptr));
+                                                }() : onyx_json(nullptr));
             out["usage"]   = usage_json(r);
             out["timings"] = timings_json(r);
             out["truncated"] = r.truncated;
-            res.set_content(out.dump_safe(), "application/json; charset=utf-8");
+            res.set_content(onyx_json_dump_safe(out), "application/json; charset=utf-8");
             return;
         }
 
@@ -1081,8 +1081,8 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
                 if (piece.empty() && probs.empty()) {
                     return sink.is_writable();
                 }
-                common_json payload = make_cmpl_payload(piece, nullptr,
-                    gp.want_logprobs && !probs.empty() ? legacy_logprobs(probs, *lp_offset) : common_json(nullptr));
+                onyx_json payload = make_cmpl_payload(piece, nullptr,
+                    gp.want_logprobs && !probs.empty() ? legacy_logprobs(probs, *lp_offset) : onyx_json(nullptr));
                 return sse_write(sink, payload);
             };
 
@@ -1102,7 +1102,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
                 return true;
             }
 
-            common_json final_chunk = make_cmpl_payload("", finish_reason_str(r, false).c_str());
+            onyx_json final_chunk = make_cmpl_payload("", finish_reason_str(r, false).c_str());
             if (include_usage) final_chunk["usage"] = usage_json(r);
             final_chunk["timings"] = timings_json(r);
             final_chunk["truncated"] = r.truncated;
@@ -1118,7 +1118,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
     // ---- embeddings ------------------------------------------------------
 
     svr.Post("/v1/embeddings", [&](const httplib::Request & req, httplib::Response & res) {
-        const common_json body = parse_body(req);
+        const onyx_json body = parse_body(req);
         if (body.contains("dimensions")) {
             send_error(res, 400, "dimensions is not supported", "invalid_request_error");
             return;
@@ -1141,7 +1141,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
 
         // input: string | [string] | [int] | [[int]]
         std::vector<std::vector<llama_token>> inputs;
-        const common_json & input = body.at("input");
+        const onyx_json & input = body.at("input");
         if (input.is_string()) {
             inputs.push_back(engine.tokenize(input.get<std::string>(), /* add_special */ true, /* parse_special */ false));
         } else if (input.is_array() && input.size() > 0 && input[(size_t) 0].is_number_integer()) {
@@ -1157,7 +1157,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             inputs.push_back(std::move(toks));
         } else if (input.is_array()) {
             for (size_t i = 0; i < input.size(); i++) {
-                const common_json & item = input[i];
+                const onyx_json & item = input[i];
                 if (item.is_string()) {
                     inputs.push_back(engine.tokenize(item.get<std::string>(), true, false));
                 } else if (item.is_array()) {
@@ -1181,7 +1181,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             return;
         }
 
-        common_json data = common_json::array();
+        onyx_json data = onyx_json::array();
         int64_t n_prompt_total = 0;
         for (size_t i = 0; i < inputs.size(); i++) {
             std::string err;
@@ -1194,13 +1194,13 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             }
             n_prompt_total += (int64_t) inputs[i].size();
 
-            common_json item = common_json::object();
+            onyx_json item = onyx_json::object();
             item["object"] = "embedding";
             item["index"]  = (int64_t) i;
             if (encoding == "base64") {
                 item["embedding"] = embedding_base64(emb);
             } else {
-                common_json vec = common_json::array();
+                onyx_json vec = onyx_json::array();
                 for (float v : emb) {
                     vec.push_back((double) v);
                 }
@@ -1209,11 +1209,11 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             data.push_back(item);
         }
 
-        common_json usage = common_json::object();
+        onyx_json usage = onyx_json::object();
         usage["prompt_tokens"] = n_prompt_total;
         usage["total_tokens"]  = n_prompt_total;
 
-        common_json out = common_json::object();
+        onyx_json out = onyx_json::object();
         out["object"] = "list";
         out["model"]  = engine.alias();
         out["data"]   = data;
@@ -1226,7 +1226,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
     // TypeSafe-compatible System One API: typed questions about a state,
     // answered from one prefill per question (see decision.h).
     svr.Post("/v1/systemone", [&](const httplib::Request & req, httplib::Response & res) {
-        const common_json body = parse_body(req);
+        const onyx_json body = parse_body(req);
         if (!engine.decision_mode()) {
             send_error(res, 501, "this model is not a decision model", "not_supported_error");
             return;
@@ -1235,7 +1235,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
 
         std::vector<onyx_decision_question> questions;
         std::vector<onyx_media_buffer>      files;
-        common_json                         state;
+        onyx_json                         state;
         try {
             questions = decision.parse_questions(body);
             state     = decision.prepare_state(decision.parse_state(body, files, [](const std::string & url) {
@@ -1287,7 +1287,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             return;
         }
 
-        common_json answers = common_json::object();
+        onyx_json answers = onyx_json::object();
         size_t i_prompt = 0;
         size_t i_score  = 0;
         for (const auto & question : questions) {
@@ -1309,15 +1309,15 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             answers[question.id] = decision.format_answer(question, question_scores, !files.empty());
         }
 
-        common_json usage = common_json::object();
+        onyx_json usage = onyx_json::object();
         usage["input_tokens"]  = (int64_t) n_tokens;
         usage["output_tokens"] = 0;
 
-        common_json out = common_json::object();
+        onyx_json out = onyx_json::object();
         out["model"]   = engine.alias();
         out["answers"] = answers;
         out["usage"]   = usage;
-        res.set_content(out.dump_safe(), "application/json; charset=utf-8");
+        res.set_content(onyx_json_dump_safe(out), "application/json; charset=utf-8");
     });
 
     // ---------------------------------------------------------------------

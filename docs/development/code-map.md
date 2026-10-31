@@ -16,6 +16,7 @@ something.
 | `src/http_util.h`, `src/http_util.cpp` | ~200 | Pure request helpers: base64, media payloads, `X-Request-Id`, key compare, `Host` names, JSON nesting depth | The helper needs no engine; unit-test it |
 | `src/llama_util.h`, `src/llama_util.cpp` | ~150 | Tokenize, detokenize, token-to-piece and `llama_batch` helpers on `llama.h`, the memory-capability probe (`onyx_probe_seq_rm`), and the quiet log filter | You need a llama.cpp helper that `common/` would otherwise provide |
 | `src/onyx_chat.h`, `src/onyx_chat.cpp` | ~350 | The chat seam: template rendering, the chat grammar, output parsing and raw Jinja, over `common/chat.h` (the only includer) | You touch chat templates, tool calls or how output is parsed |
+| `src/onyx_json.h` | ~20 | `onyx_json` (`nlohmann::ordered_json` from `third_party/nlohmann`) and `onyx_json_dump_safe` | You need JSON in Onyx code |
 | `src/sampler.h`, `src/sampler.cpp` | ~300 | `onyx_sampler`: the sampler chain and the grammar (rejection sampling, lazy triggers, generation-prompt prefill) on `llama.h` | You change how a token is picked or constrained |
 | `src/engine.h`, `src/engine.cpp` | ~1900 | `onyx_engine`: model and context, the batching loop, slots, sampling, prefix reuse, context shift, reasoning budget, logprobs, embeddings, metrics counters | You change how tokens are scheduled, decoded or sampled |
 | `src/decision.h`, `src/decision.cpp` | ~1900 | Decision models: family detection, request parsing, prompt rendering, scoring | You touch `/v1/systemone` |
@@ -32,7 +33,7 @@ A `POST /v1/chat/completions` with `"stream": true`:
 1. **`server.cpp`, pre-routing handler.** Echo `X-Request-Id`; refuse `Origin` (`403`), a
    non-loopback `Host` on a loopback bind (`403`), a wrong key (`401`), or any request while the
    model loads (`503`).
-2. **`server.cpp`, the chat handler.** Parse the body (`parse_body`: the nesting-depth cap, then `common_json`), refuse unsupported fields
+2. **`server.cpp`, the chat handler.** Parse the body (`parse_body`: the nesting-depth cap, then `onyx_json`, which is `nlohmann::ordered_json`), refuse unsupported fields
    (`reject_unsupported_fields`), decode media parts (`extract_media` → `http_util.cpp`), render
    the chat template (`onyx_chat_templates::render` → `onyx_chat.cpp`), build sampling and grammar
    (`parse_sampling`, `onyx_chat_render::apply_sampling`) and the reasoning budget, tokenize, check the prompt fits
