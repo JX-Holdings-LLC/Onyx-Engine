@@ -60,7 +60,7 @@ the labels are read from the last row.
 
 clef, lfm2-d1-omni and vllm-d3 read rows after the media, or need the
 whole prompt in one non-causal batch, which a chunk-by-chunk prefill does
-not give. For them (since 0.8.0) the media become rows of the prompt itself,
+not give. For them the media become rows of the prompt itself,
 as in llama-server's `fill_task_d1omni`, `fill_task_joint` and mixed batch:
 `onyx_decision::tokenize_media` runs mtmd's tokenizer and leaves one
 `LLAMA_TOKEN_NULL` row per media embedding plus the chunk

@@ -42,7 +42,7 @@ curl http://127.0.0.1:8083/v1/systemone -H 'Content-Type: application/json' -d '
 
 ## Images
 
-With a projector (`--mmproj`) the families whose template has a place for images accept `images` (data URLs, at most 8), or `image_url` parts inside a `state` made of chat messages: `openjev`, `pplx-decider`, `lfm2-d1`, `h2o-lightning`, `vllm-d3`, `lfm2-d1-omni` and `clef` (since 0.8.0 for the last three, which answered `501` before). `lfm2-d1-omni` also takes one audio clip instead of images; its media answers are not calibrated (temperature 1). The other families answer image requests with `501`. A prompt with media is never reused by the next request.
+With a projector (`--mmproj`) the families whose template has a place for images accept `images` (data URLs, at most 8), or `image_url` parts inside a `state` made of chat messages: `openjev`, `pplx-decider`, `lfm2-d1`, `h2o-lightning`, `vllm-d3`, `lfm2-d1-omni` and `clef`. `lfm2-d1-omni` also takes one audio clip instead of images; its media answers are not calibrated (temperature 1). The other families answer image requests with `501`. A prompt with media is never reused by the next request.
 
 ## Speed
 

@@ -71,10 +71,10 @@ Families (from `<arch>.decision.type`):
 | Family | Reads | Images |
 |---|---|---|
 | `openjev`, `lev`, `nimble`, `pplx-decider`, `granite-switch`, `lfm2-d1`, `h2o-lightning` | logits of one label token per option, at the last prompt token | openjev, pplx-decider, lfm2-d1, h2o-lightning |
-| `vllm-d3` | same, non-causal: the whole prompt is one batch | yes (since 0.8.0) |
-| `laya`, `lfm2-d1-omni` | embeddings at one marker token per option; the whole prompt is one batch | lfm2-d1-omni (since 0.8.0): images, or one audio clip |
+| `vllm-d3` | same, non-causal: the whole prompt is one batch | yes |
+| `laya`, `lfm2-d1-omni` | embeddings at one marker token per option; the whole prompt is one batch | lfm2-d1-omni: images, or one audio clip |
 | `kev` | dot product of the last token's and each option's hidden state | no |
-| `clef`, `vllm-decision2` | a joint head over marked spans (all of a request's questions in one prompt, for clef) | clef (since 0.8.0) |
+| `clef`, `vllm-decision2` | a joint head over marked spans (all of a request's questions in one prompt, for clef) | clef |
 
 Questions of one request that share a prompt prefix (the causal families)
 evaluate it once, and a later request that starts the same way reuses it,

@@ -119,7 +119,7 @@ not independent. The grammar kind is a user grammar for a caller `grammar`,
 an output format for `json_schema`/`response_format`, otherwise a tool-call
 grammar so the template's own tool-call grammar can apply. When the chat
 template builds no grammar for a caller `grammar` (the Jinja path never
-does), the caller's GBNF is applied as given; before 0.8.0 it was dropped.
+does), the caller's GBNF is applied as given.
 
 ## Non-streaming response
 

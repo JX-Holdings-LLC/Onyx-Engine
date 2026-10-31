@@ -53,7 +53,7 @@ passed `grammar` directly, `ONYX_GRAMMAR_OUTPUT_FORMAT` when
 `json_schema`/`response_format` was used, otherwise `ONYX_GRAMMAR_TOOL_CALLS`
 (letting the template's own tool-call grammar apply, if any). The Jinja path
 builds no grammar from a caller's `grammar`, so when the template returns none
-the caller's GBNF is used as given (until 0.8.0 it was dropped). A trigger word
+the caller's GBNF is used as given. A trigger word
 that is a single preserved token becomes a token trigger. `/v1/completions`
 builds its grammar more directly: a caller-supplied `grammar` string is used
 as-is, or a `json_schema` is converted with `json_schema_to_grammar()`.

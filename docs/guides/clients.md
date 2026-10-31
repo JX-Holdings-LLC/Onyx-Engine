@@ -17,7 +17,7 @@ these fields gets `400 unsupported field: <name>`:
 - `echo`, `suffix`, `best_of` on completions;
 - `n` other than 1.
 
-`dimensions` on embeddings is accepted from 0.8.0 (truncate and renormalise); a value outside 1 to
+`dimensions` on embeddings is accepted (truncate and renormalise); a value outside 1 to
 the model's `n_embd` is a `400`.
 
 Most clients send none of these unless you set them. If a client returns a `400` naming a field,

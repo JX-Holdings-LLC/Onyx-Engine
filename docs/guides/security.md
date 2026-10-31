@@ -23,7 +23,7 @@ Onyx Engine is built to sit behind something you control, on the same machine or
 |---|---|
 | **Transport encryption** | The engine speaks plain HTTP. Terminate TLS in a reverse proxy, or keep the traffic on loopback or an encrypted private network. |
 | **Binding beyond loopback** | If you pass `--host 0.0.0.0` (or a LAN address), the engine requires `--api-key`. Firewall the port as well. The `Host` check applies only to loopback binds; on a public bind the key is the guard. |
-| **Key hygiene** | `--api-key` appears in the process's argument list, which other local users may be able to read. Pass the key with `--api-key-file PATH` (a file only the service user can read) or the `ONYX_ENGINE_API_KEY` environment variable instead (from 0.8.0): another user cannot read either by default, though processes of the same user can read the environment. Rotate the key by restarting. |
+| **Key hygiene** | `--api-key` appears in the process's argument list, which other local users may be able to read. Pass the key with `--api-key-file PATH` (a file only the service user can read) or the `ONYX_ENGINE_API_KEY` environment variable instead: another user cannot read either by default, though processes of the same user can read the environment. Rotate the key by restarting. |
 | **Rate limits** | There are none per client. `--max-queue` bounds the total queue, but one client with a key can still fill it. Put per-client limits in the proxy. |
 | **Who may use the key** | There is one key and no per-user identity or audit log. If you need either, authenticate in the proxy. |
 | **Untrusted model files** | A GGUF is parsed by llama.cpp. Load models you trust, from sources you trust. |
