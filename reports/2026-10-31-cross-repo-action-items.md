@@ -98,7 +98,7 @@ protocol and ships a conformance suite that runs against any worker (§7.1, §8)
 - [ ] **C3. Governance.** Onyx is agent-maintained (changelog entries are signed "Agent: Claude Code
   (Claude)") but has no `AGENTS.md`. Adopt Spec-Driven Docs as JX Runtime did, or add only an
   `AGENTS.md` that points to `CONTRIBUTING.md`?
-- [x] **C4. Version bump.** Decided 2026-10-31: patch bump to 0.7.1 for this report, under the `every-main-change` policy.
+- [x] **C4. Version bump.** Decided 2026-10-31: patch bump to 0.8.1 for this report, under the `every-main-change` policy.
 
 ## D. Inconsistencies found
 
@@ -106,17 +106,18 @@ protocol and ships a conformance suite that runs against any worker (§7.1, §8)
   [`ci.yml`](../.github/workflows/ci.yml) now runs it on `windows-latest` under Git Bash (comment at
   line 51).
 - [ ] **D2.** JX Runtime pins Onyx `v0.6.0` (`JX-Runtime/src/binaries.js:302`) while this repository is
-  at 0.7.0, and the roadmap says the unified release workflow has not yet published a release.
-  Publishing 0.7.0, after its dry run, unblocks JX's pin bump. **(JX A4)**
+  at 0.8.0 (0.7.0 when the review was written), and the roadmap says the last published release
+  predates it. Publishing a release after the workflow's dry run unblocks JX's pin bump. **(JX A4)**
 - [ ] **D3.** No change needed. `research_notes/…/serving_techniques.md` and `models_quant_conversion.md`
   cite `docs/architecture.md`, which is now the `docs/architecture/` folder. The notes are dated
   evidence, and by this folder's convention they are not edited. Listed only so nobody "fixes" them
   by mistake.
 - [ ] **D4.** The link check documented in
   [`docs/development/documentation.md`](../docs/development/documentation.md) ("Checking links")
-  exits 1 on `main`, reporting 9 missing targets. None of them comes from this report. They are:
+  exits 1 on `main`, reporting 12 missing targets at 0.8.0 (9 at 0.7.0). None of them comes from this report. They are:
   - Links written with `%20`, such as those in [`reports/README.md`](README.md),
-    `docs/architecture/kv-cache.md` and `docs/architecture/README.md`. They resolve on GitHub, but
+    `CHANGELOG.md`, `docs/architecture/kv-cache.md`, `docs/architecture/README.md` and
+    `docs/architecture/chat-templates-and-sampling.md`. They resolve on GitHub, but
     the script does not URL-decode them.
   - Absolute `/home/user/Onyx-Engine/…` links, and one `…` placeholder link, in
     `research_notes/Replacing llama cpp common code/` (`kv_cache_state.md`,
@@ -124,3 +125,8 @@ protocol and ships a conformance suite that runs against any worker (§7.1, §8)
 
   Either have the script apply `urllib.parse.unquote`, or exclude `research_notes/`, or both. The
   notes themselves are dated evidence (see D3).
+- [ ] **D5.** The example `--version` output in [`docs/reference/cli.md`](../docs/reference/cli.md)
+  (line 16) and the startup line in [`docs/getting-started.md`](../docs/getting-started.md) (line 61)
+  still show `onyx-engine 0.7.0`, while the engine is 0.8.0. Either update them on each bump, or
+  replace the number with a placeholder so they cannot go stale, in line with 0.8.0's "keep version
+  history in the changelog, not the prose".
