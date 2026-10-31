@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-10-31
+
+### Cross-repo review action items — 2026-10-31 (0.8.1)
+
+Agent: Claude Code (Claude). Documentation only; the binary is unchanged from 0.8.0.
+
+- **`reports/2026-10-31-cross-repo-action-items.md`** (indexed in `reports/README.md`): what Onyx
+  Engine could adopt from Media Engine so JX Runtime can check the engine it supervises (a
+  machine-readable capability document with a contract version, a conformance suite runnable
+  against any URL, graceful SIGTERM drain, an opt-in JSON startup record, `--model-sha256`), the
+  maintainer decisions that needs, and five inconsistencies. Tracked in
+  [#89](https://github.com/JX-Holdings-LLC/Onyx-Engine/issues/89). Dated analysis from a
+  read-only review of 0.7.0, rechecked against 0.8.0: none of its items is resolved by 0.8.0.
+  Nothing in it was run, and `ROADMAP.md` still decides what is scheduled.
+
+#### Not completed
+
+- None of the action items; they are a list, not work done.
+
+#### Validation
+
+- `release.mjs validate` (pinned toolkit `d7f42f99`) against `main`.
+- The documented link check (`docs/development/documentation.md`) reports no missing target in
+  the new report. It still exits 1 on 12 targets that predate this change (item D4 of the report).
+- No build or test run: no code changed.
+
 ## [0.8.0] — 2026-10-31
 
 ### Stage 1 of the `common/` plan, decision images, operator flags — 2026-10-31 (0.8.0)
