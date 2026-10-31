@@ -265,6 +265,8 @@ public:
     uint64_t model_n_params()       const;
     std::string model_desc()        const;
     bool embedding_mode()           const { return embedding_mode_; }
+    // embedding mode with rank pooling: /v1/embeddings returns scores
+    bool rank_pooling()             const;
     // what the batching loop's memory can cut back, probed at load
     // (generation mode only; NONE otherwise)
     onyx_seq_rm_kind seq_rm()       const { return seq_rm_; }

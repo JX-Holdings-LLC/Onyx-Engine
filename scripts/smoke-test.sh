@@ -315,6 +315,11 @@ raw = base64.b64decode(json.loads(sys.argv[2])[\"data\"][0][\"embedding\"])
 b = struct.unpack(\"<%df\" % (len(raw) // 4), raw)
 assert len(b) == len(f) == 64 and max(abs(x - y) for x, y in zip(f, b)) < 1e-6, (f[:3], b[:3])
 ' \"\$f\" \"\$b\""
+check "dimensions truncates and renormalises the embedding" \
+    json_has 'len(d["data"][0]["embedding"]) == 16 and abs(sum(x * x for x in d["data"][0]["embedding"]) ** 0.5 - 1) < 1e-5' \
+    -X POST "$EMB_BASE/v1/embeddings" -d '{"input":"hello world","dimensions":16}'
+check "dimensions 0 returns 400" http_status 400 -X POST "$EMB_BASE/v1/embeddings" -d '{"input":"x","dimensions":0}'
+check "dimensions above n_embd returns 400" http_status 400 -X POST "$EMB_BASE/v1/embeddings" -d '{"input":"x","dimensions":65}'
 check "an unknown encoding_format returns 400" http_status 400 -X POST "$EMB_BASE/v1/embeddings" \
     -d '{"input":"x","encoding_format":"binary"}'
 check "generation rejected in embedding mode (501)" bash -c "
@@ -332,6 +337,9 @@ echo "== rank-pooling instance"
 check "POST /v1/embeddings with --pooling rank returns one raw score per input" \
     json_has 'len(d["data"]) == 2 and all(len(e["embedding"]) == 1 and abs(abs(e["embedding"][0]) - 1.0) > 1e-6 for e in d["data"])' \
     -X POST "$RK_BASE/v1/embeddings" -d '{"input":["hello world","goodbye"]}'
+
+check "dimensions with --pooling rank returns 400" http_status 400 -X POST "$RK_BASE/v1/embeddings" \
+    -d '{"input":"x","dimensions":1}'
 
 echo "== parallel slots (-np 2) instance"
 # /props n_ctx is PER-SLOT, matching llama-server (its get_res_props reports

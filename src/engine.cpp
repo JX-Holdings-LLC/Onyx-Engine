@@ -330,6 +330,10 @@ bool onyx_engine::load(const onyx_args & args) {
     return true;
 }
 
+bool onyx_engine::rank_pooling() const {
+    return embedding_mode_ && ctx_ && llama_pooling_type(ctx_) == LLAMA_POOLING_TYPE_RANK;
+}
+
 int32_t  onyx_engine::n_ctx_train() const { return llama_model_n_ctx_train(model_); }
 int32_t  onyx_engine::n_embd()      const { return llama_model_n_embd(model_); }
 uint64_t onyx_engine::model_size_bytes() const { return llama_model_size(model_); }

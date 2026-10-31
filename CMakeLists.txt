@@ -202,6 +202,7 @@ add_executable(onyx-engine
     src/http_util.cpp
     src/llama_util.cpp
     src/onyx_chat.cpp
+    src/request.cpp
     src/sampler.cpp
     src/server.cpp
 )
@@ -259,17 +260,28 @@ if (ONYX_ENGINE_TESTS)
         tests/unit/test_args.cpp
         tests/unit/test_convert.cpp
         tests/unit/test_http_util.cpp
+        tests/unit/test_request.cpp
         src/args.cpp
         src/convert.cpp
         src/http_util.cpp
+        src/llama_util.cpp
+        src/request.cpp
+        src/sampler.cpp
     )
-    target_include_directories(onyx-unit-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_include_directories(onyx-unit-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann
+        ${ONYX_LLAMA_SRC}/common
+        ${ONYX_LLAMA_SRC}/tools/mtmd
+    )
     target_compile_definitions(onyx-unit-tests PRIVATE
         ONYX_ENGINE_VERSION="${APP_RELEASE_VERSION}"
         ONYX_ENGINE_LLAMA_PIN="${ONYX_LLAMA_PIN}"
     )
-    target_link_libraries(onyx-unit-tests PRIVATE Threads::Threads)
-    foreach(suite args convert http)
+    # request parsing and the sampler's trigger patterns need llama.h's types
+    # (and llama_util.cpp the libraries); no test loads a model
+    target_link_libraries(onyx-unit-tests PRIVATE llama-common llama mtmd Threads::Threads)
+    foreach(suite args convert http request)
         add_test(NAME unit.${suite} COMMAND onyx-unit-tests ${suite})
     endforeach()
 endif()

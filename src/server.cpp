@@ -5,6 +5,7 @@
 
 #include "onyx_chat.h"
 #include "onyx_json.h"
+#include "request.h"
 
 #include "httplib.h"
 
@@ -341,58 +342,8 @@ static void extract_media(onyx_json & messages, const onyx_engine & engine,
 }
 
 // ---------------------------------------------------------------------------
-// request parsing
+// request parsing (stop, max tokens and sampling: request.cpp)
 // ---------------------------------------------------------------------------
-
-static std::vector<std::string> parse_stop(const onyx_json & body) {
-    std::vector<std::string> stop;
-    if (!body.contains("stop")) {
-        return stop;
-    }
-    const onyx_json & s = body.at("stop");
-    if (s.is_string()) {
-        std::string v = s.get<std::string>();
-        if (!v.empty()) {
-            stop.push_back(std::move(v));
-        }
-    } else if (s.is_array()) {
-        for (size_t i = 0; i < s.size(); i++) {
-            std::string v = s[i].get<std::string>();
-            if (!v.empty()) {
-                stop.push_back(std::move(v));
-            }
-        }
-    }
-    return stop;
-}
-
-static int32_t parse_max_tokens(const onyx_json & body) {
-    for (const char * key : {"max_completion_tokens", "max_tokens", "n_predict"}) {
-        if (body.contains(key) && !body.at(key).is_null()) {
-            return body.at(key).get<int32_t>();
-        }
-    }
-    return -1;
-}
-
-static onyx_sampling_params parse_sampling(const onyx_json & body, uint32_t default_seed) {
-    onyx_sampling_params s;
-    s.seed = default_seed;
-
-    if (body.contains("temperature") && !body.at("temperature").is_null()) s.temp = body.at("temperature").get<float>();
-    if (body.contains("top_p"))             s.top_p           = body.at("top_p").get<float>();
-    if (body.contains("top_k"))             s.top_k           = body.at("top_k").get<int32_t>();
-    if (body.contains("min_p"))             s.min_p           = body.at("min_p").get<float>();
-    if (body.contains("seed") && !body.at("seed").is_null()) s.seed = (uint32_t) body.at("seed").get<int64_t>();
-    if (body.contains("repeat_penalty"))    s.penalty_repeat  = body.at("repeat_penalty").get<float>();
-    if (body.contains("repeat_last_n"))     s.penalty_last_n  = body.at("repeat_last_n").get<int32_t>();
-    if (body.contains("presence_penalty") && !body.at("presence_penalty").is_null())
-        s.penalty_present = body.at("presence_penalty").get<float>();
-    if (body.contains("frequency_penalty") && !body.at("frequency_penalty").is_null())
-        s.penalty_freq = body.at("frequency_penalty").get<float>();
-
-    return s;
-}
 
 // Builds the engine-side reasoning-budget config for one chat request (v2).
 // `cr` is the already-rendered chat request, needed for the template's own
@@ -766,12 +717,12 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             gp.prompt_text = cr.prompt.str();
             gp.media       = std::move(media);
         }
-        gp.n_predict     = parse_max_tokens(body);
-        gp.stop          = parse_stop(body);
+        gp.n_predict     = onyx_parse_max_tokens(body);
+        gp.stop          = onyx_parse_stop(body);
         for (const auto & s : cr.additional_stops) {
             gp.stop.push_back(s);
         }
-        gp.sampling = parse_sampling(body, args.seed);
+        gp.sampling = onyx_parse_sampling(body, args.seed);
 
         cr.apply_sampling(gp.sampling);
         // response_format / json_schema: a length cut leaves invalid JSON, so
@@ -975,9 +926,9 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             return;
         }
 
-        gp.n_predict = parse_max_tokens(body);
-        gp.stop      = parse_stop(body);
-        gp.sampling  = parse_sampling(body, args.seed);
+        gp.n_predict = onyx_parse_max_tokens(body);
+        gp.stop      = onyx_parse_stop(body);
+        gp.sampling  = onyx_parse_sampling(body, args.seed);
 
         // logprobs (v2, legacy OpenAI /v1/completions form): an integer N,
         // 0..20, meaning "report the top N alternatives per token" (the
@@ -1119,9 +1070,22 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
 
     svr.Post("/v1/embeddings", [&](const httplib::Request & req, httplib::Response & res) {
         const onyx_json body = parse_body(req);
-        if (body.contains("dimensions")) {
-            send_error(res, 400, "dimensions is not supported", "invalid_request_error");
-            return;
+        // OpenAI's Matryoshka truncation: keep the first N values, renormalise
+        size_t dimensions = 0;
+        if (body.contains("dimensions") && !body.at("dimensions").is_null()) {
+            const onyx_json & d = body.at("dimensions");
+            const int64_t n = d.is_number_integer() ? d.get<int64_t>() : 0;
+            if (n < 1 || n > (int64_t) engine.n_embd()) {
+                send_error(res, 400, "dimensions must be an integer from 1 to " + std::to_string(engine.n_embd()),
+                           "invalid_request_error");
+                return;
+            }
+            if (engine.rank_pooling()) {
+                send_error(res, 400, "dimensions does not apply to --pooling rank (scores, not embeddings)",
+                           "invalid_request_error");
+                return;
+            }
+            dimensions = (size_t) n;
         }
         // the official OpenAI clients ask for base64 unless told otherwise
         const std::string encoding = body.contains("encoding_format") && !body.at("encoding_format").is_null()
@@ -1185,12 +1149,15 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
         int64_t n_prompt_total = 0;
         for (size_t i = 0; i < inputs.size(); i++) {
             std::string err;
-            const std::vector<float> emb = engine.embed(inputs[i], err);
+            std::vector<float> emb = engine.embed(inputs[i], err);
             if (!err.empty()) {
                 const bool client_error = err.rfind("input", 0) == 0;
                 send_error(res, client_error ? 400 : 500, err,
                            client_error ? "invalid_request_error" : "server_error");
                 return;
+            }
+            if (dimensions > 0) {
+                onyx_truncate_embedding(emb, dimensions);
             }
             n_prompt_total += (int64_t) inputs[i].size();
 

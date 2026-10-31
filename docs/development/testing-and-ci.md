@@ -8,8 +8,11 @@ Everything here runs offline against tiny generated models. No test ever downloa
 
 `tests/unit/` holds a small C++ suite that needs no model and no server: argument parsing
 (`src/args.cpp`), the request helpers (`src/http_util.cpp`: media payloads, base64, `X-Request-Id`,
-the API-key compare, the `Host` allowlist) and model-path resolution (`src/convert.cpp`, without
-running the converter). The harness is one header, `tests/unit/check.h`, with no dependency.
+the API-key compare, the `Host` allowlist), request-body parsing (`src/request.cpp`: `stop`, max
+tokens, sampling fields, embeddings `dimensions`), the sampler's lazy-grammar trigger patterns and
+model-path resolution (`src/convert.cpp`, without running the converter). The harness is one
+header, `tests/unit/check.h`, with no dependency; the binary links libllama for its types and
+helpers but never loads a model.
 
 ```bash
 cmake --build build --target onyx-unit-tests
@@ -17,7 +20,7 @@ ctest --test-dir build --output-on-failure          # add -C Release with Visual
 build/onyx-unit-tests http                          # one suite, verbose
 ```
 
-ctest has one entry per suite (`unit.args`, `unit.convert`, `unit.http`). The tests build by
+ctest has one entry per suite (`unit.args`, `unit.convert`, `unit.http`, `unit.request`). The tests build by
 default when Onyx is the top-level project (`ONYX_ENGINE_TESTS`). A release build with
 `--target onyx-engine` does not build them.
 
