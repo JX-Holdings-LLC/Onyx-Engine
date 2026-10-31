@@ -192,6 +192,8 @@ check "GET /health" curl -sf "$BASE/health"
 # 2-slot instance below is what pins them apart.
 check "GET /props reports n_ctx" \
     json_has 'd["n_ctx"] == 512 and d["default_generation_settings"]["n_ctx"] == 512 and d["n_ctx_total"] == 512 and "chat_template" in d' "$BASE/props"
+check "GET /props reports the probed memory capability" \
+    json_has 'd["memory_seq_rm"] == "partial"' "$BASE/props"
 check "GET /v1/models echoes alias" \
     json_has 'd["data"][0]["id"] == "tiny-test"' "$BASE/v1/models"
 check "POST /tokenize" \

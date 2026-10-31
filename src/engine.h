@@ -28,6 +28,7 @@
 
 #include "args.h"
 #include "decision.h"
+#include "llama_util.h"
 #include "sampler.h"
 
 #include "chat.h"
@@ -265,6 +266,9 @@ public:
     uint64_t model_n_params()       const;
     std::string model_desc()        const;
     bool embedding_mode()           const { return embedding_mode_; }
+    // what the batching loop's memory can cut back, probed at load
+    // (generation mode only; NONE otherwise)
+    onyx_seq_rm_kind seq_rm()       const { return seq_rm_; }
     bool decision_mode()            const { return decision_.type() != ONYX_DECISION_NONE; }
     const onyx_decision & decision() const { return decision_; }
 
@@ -361,6 +365,7 @@ private:
     bool        ctx_shift_      = false;
     int32_t     n_keep_         = 0;
     bool        add_bos_        = false;
+    onyx_seq_rm_kind seq_rm_    = ONYX_SEQ_RM_NONE;
 
     std::vector<onyx_slot> slots_;
 

@@ -315,6 +315,11 @@ bool onyx_engine::load(const onyx_args & args) {
     }
 
     if (!embedding_mode_) {
+        // before any slot holds state: the probe clears the memory
+        seq_rm_ = onyx_probe_seq_rm(ctx_);
+        if (args.verbose) {
+            fprintf(stderr, "memory: sequence removal is %s\n", onyx_seq_rm_kind_name(seq_rm_));
+        }
         slots_.resize((size_t) n_parallel_);
         for (int32_t i = 0; i < n_parallel_; i++) {
             slots_[(size_t) i].seq_id = (llama_seq_id) i;
@@ -845,10 +850,18 @@ bool onyx_engine::admit_queued() {
             }
             size_t lcp = 0;
             // media prompts are never prefix-matched (see prefill_media)
-            if (cache_reuse_ > 0 && req->params.cache_prompt && req->params.media.empty()) {
+            if (cache_reuse_ > 0 && req->params.cache_prompt && req->params.media.empty() &&
+                seq_rm_ != ONYX_SEQ_RM_NONE) {
                 const size_t max_lcp = std::min(slot.cache_tokens.size(), req->params.prompt_tokens.size() - 1);
                 while (lcp < max_lcp && slot.cache_tokens[lcp] == req->params.prompt_tokens[lcp]) {
                     lcp++;
+                }
+                // memory that removes only whole sequences keeps a slot's
+                // state only for a prompt that extends all of it, so a
+                // partial match is worth nothing there (and would cost the
+                // slot whose state could be extended)
+                if (seq_rm_ == ONYX_SEQ_RM_FULL && lcp < slot.cache_tokens.size()) {
+                    lcp = 0;
                 }
             }
             if (!best || lcp > best_lcp || (lcp == best_lcp && slot.t_last_used < best->t_last_used)) {

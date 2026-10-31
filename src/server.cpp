@@ -753,6 +753,11 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
         props["model_size_bytes"]            = engine.model_size_bytes();
         props["model_n_params"]              = engine.model_n_params();
         props["modalities"]                  = modalities;
+        // what prefix reuse can cut back to: "partial" (KV caches), "full"
+        // (recurrent state, exact extensions only), "bounded" (recurrent
+        // rollback); null outside generation mode
+        props["memory_seq_rm"]               = engine.embedding_mode() || engine.decision_mode()
+            ? common_json(nullptr) : common_json(onyx_seq_rm_kind_name(engine.seq_rm()));
         props["default_generation_settings"] = defaults;
         res.set_content(props.dump(), "application/json; charset=utf-8");
     });

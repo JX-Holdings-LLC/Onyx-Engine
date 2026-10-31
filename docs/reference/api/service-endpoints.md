@@ -40,6 +40,7 @@ Model and build metadata. No request body.
   "model_size_bytes": 4661211648,
   "model_n_params": 8030261248,
   "modalities": {"vision": false, "audio": false},
+  "memory_seq_rm": "partial",
   "default_generation_settings": {"n_ctx": 4096}
 }
 ```
@@ -64,6 +65,12 @@ Notes:
 - `modalities.vision`/`modalities.audio` reflect the loaded `--mmproj`
   projector's real capabilities (`mtmd_support_vision`/`mtmd_support_audio`)
   — both `false` when no projector is loaded.
+- `memory_seq_rm` is what the context's memory can cut back, probed once at load by
+  decoding two tokens and removing the second: `"partial"` (a KV cache: any shared prefix
+  can be reused), `"full"` (recurrent state without rollback: only a prompt that extends a
+  slot's cached tokens exactly is reused), `"bounded"` (recurrent rollback, up to
+  `llama_n_rs_seq` tokens) or `"none"`. It is `null` in embedding and decision mode, which
+  run no batching loop. Informational: prefix reuse already adapts to it.
 - `chat_template` is the resolved chat template source. Models without one
   use the ChatML fallback.
 - `port` is the port actually bound. It differs from `--port` only when that was `0`.
