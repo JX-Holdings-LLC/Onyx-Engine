@@ -45,6 +45,8 @@ OPS_PORT=$((PORT + 7))
 TT_PORT=$((PORT + 8))
 LOAD_PORT=$((PORT + 9))
 MEM_PORT=$((PORT + 10))
+KEY_PORT=$((PORT + 11))
+ENV_PORT=$((PORT + 12))
 BASE="http://127.0.0.1:$PORT"
 EMB_BASE="http://127.0.0.1:$EMB_PORT"
 NP_BASE="http://127.0.0.1:$NP_PORT"
@@ -56,6 +58,8 @@ OPS_BASE="http://127.0.0.1:$OPS_PORT"
 TT_BASE="http://127.0.0.1:$TT_PORT"
 LOAD_BASE="http://127.0.0.1:$LOAD_PORT"
 MEM_BASE="http://127.0.0.1:$MEM_PORT"
+KEY_BASE="http://127.0.0.1:$KEY_PORT"
+ENV_BASE="http://127.0.0.1:$ENV_PORT"
 OPS_KEY="sk-smoke"
 
 PASS=0
@@ -105,13 +109,19 @@ check "--help lists --context-shift" bash -c "'$BIN' --help | grep -q -- --conte
 check "--help lists --mmproj" bash -c "'$BIN' --help | grep -q -- --mmproj"
 check "--help lists --no-webui" bash -c "'$BIN' --help | grep -q -- --no-webui"
 for flag in --max-queue --tick-tokens --metrics --allow-unauthenticated --queue-timeout \
-            --cache-type-k --cache-type-v --cpu-moe --n-cpu-moe --override-tensor; do
+            --cache-type-k --cache-type-v --cpu-moe --n-cpu-moe --override-tensor \
+            --timeout --max-request-bytes --api-key-file; do
     check "--help lists $flag" bash -c "'$BIN' --help | grep -q -- $flag"
 done
 check "a non-loopback --host without --api-key is refused" bash -c "
     ! '$BIN' -m '$MODEL' --host 0.0.0.0 --port $LOAD_PORT > models-test/refuse.out 2>&1 &&
     grep -q -- '--allow-unauthenticated' models-test/refuse.out"
 check "--port -1 is refused" bash -c "! '$BIN' -m '$MODEL' --port -1 2> /dev/null"
+check "--timeout 0 is refused" bash -c "! '$BIN' -m '$MODEL' --timeout 0 2> /dev/null"
+check "--max-request-bytes 0 is refused" bash -c "! '$BIN' -m '$MODEL' --max-request-bytes 0 2> /dev/null"
+check "an --api-key-file that cannot be read is refused" bash -c "
+    ! '$BIN' -m '$MODEL' --api-key-file models-test/no-such-key > models-test/refuse.out 2>&1 &&
+    grep -q 'api-key-file' models-test/refuse.out"
 check "a quantized --cache-type-v with -fa off is refused" bash -c "
     ! '$BIN' -m '$MODEL' -ctv q8_0 -fa off --port $LOAD_PORT > models-test/refuse.out 2>&1 &&
     grep -q 'needs flash attention' models-test/refuse.out"
@@ -794,6 +804,30 @@ check "--queue-timeout answers 503 with Retry-After after waiting for a slot" ba
     grep -q 'queue-timeout' \$(grep -l '^HTTP/1.1 503' models-test/qt/h* | head -1 | sed 's|/h|/b|')"
 check "/metrics counts timed-out requests" bash -c "
     curl -sf '$MEM_BASE/metrics' | awk '/^onyx:requests_timed_out_total /{exit !(\$2 >= 1)}'"
+
+echo "== key from a file and from the environment, --max-request-bytes, --timeout"
+printf 'sk-from-file\n' > models-test/api-key.txt
+"$BIN" -m "$MODEL" --port "$KEY_PORT" -c 256 --api-key-file models-test/api-key.txt --max-request-bytes 4096 \
+    --timeout 60 --alias tiny-key > models-test/onyx-key.log 2>&1 &
+PIDS+=($!)
+ONYX_ENGINE_API_KEY=sk-from-env "$BIN" -m "$MODEL" --port "$ENV_PORT" -c 256 --alias tiny-env \
+    > models-test/onyx-env.log 2>&1 &
+PIDS+=($!)
+for i in $(seq 1 100); do
+    curl -sf "$KEY_BASE/health" > /dev/null 2>&1 && curl -sf "$ENV_BASE/health" > /dev/null 2>&1 && break
+    sleep 0.2
+done
+check "--api-key-file: no key answers 401" http_status 401 "$KEY_BASE/v1/models"
+check "--api-key-file: the file's key (newline dropped) answers 200" \
+    http_status 200 -H "Authorization: Bearer sk-from-file" "$KEY_BASE/v1/models"
+check "ONYX_ENGINE_API_KEY: no key answers 401" http_status 401 "$ENV_BASE/v1/models"
+check "ONYX_ENGINE_API_KEY: the environment's key answers 200" \
+    http_status 200 -H "Authorization: Bearer sk-from-env" "$ENV_BASE/v1/models"
+python3 -c 'import json; print(json.dumps({"content": "x" * 5000}))' > models-test/big.json
+check "a body over --max-request-bytes answers 413" http_status 413 -H "Authorization: Bearer sk-from-file" \
+    -X POST "$KEY_BASE/tokenize" --data-binary @models-test/big.json
+check "a body under --max-request-bytes is served" http_status 200 -H "Authorization: Bearer sk-from-file" \
+    -X POST "$KEY_BASE/tokenize" -d '{"content":"hello"}'
 
 LONG_PROMPT=$(python3 -c 'print(" ".join(["word"] * 120))')
 check "--tick-tokens 16: two concurrent long prompts still complete" bash -c "

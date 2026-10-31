@@ -29,8 +29,11 @@ struct onyx_args {
     // network
     std::string host = "127.0.0.1";
     int         port = 8080;         // 0 = any free port, reported once bound
-    std::string api_key;             // optional bearer token
+    std::string api_key;             // optional bearer token (--api-key, --api-key-file or ONYX_ENGINE_API_KEY)
+    std::string api_key_file;        // where the key was read from, if --api-key-file
     bool        allow_unauthenticated = false; // permit a non-loopback --host without --api-key
+    int32_t     timeout = 600;       // --timeout: seconds; the write timeout, and the read timeout's ceiling
+    int64_t     max_request_bytes = 100ll * 1024 * 1024; // --max-request-bytes: larger bodies get 413
 
     // context / compute
     int32_t n_ctx           = 4096;  // 0 = use model's training context
@@ -101,6 +104,15 @@ bool onyx_cache_type_is_quantized(const std::string & name);
 // pairs appended to `out`. Returns false on an empty pattern or buffer type.
 bool onyx_parse_tensor_overrides(const std::string & value,
                                  std::vector<std::pair<std::string, std::string>> & out);
+
+// The environment variable read for the API key when neither --api-key nor
+// --api-key-file is given.
+#define ONYX_API_KEY_ENV "ONYX_ENGINE_API_KEY"
+
+// Reads an API key file: its contents without a trailing newline (LF or
+// CRLF). Returns false (after printing an error) when the file cannot be
+// read or the key is empty.
+bool onyx_read_api_key_file(const std::string & path, std::string & key);
 
 // True for a --host that only accepts connections from this machine.
 bool onyx_host_is_loopback(const std::string & host);

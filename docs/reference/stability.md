@@ -40,7 +40,7 @@ without that announcement. It does not mean it will never change.
 | **Operations** | The `X-Request-Id` echo rule, the `503` with `Retry-After` from `--max-queue` and `--queue-timeout`, and the `/metrics` names listed in [service endpoints](api/service-endpoints.md#get-metrics). |
 | **Security defaults** | Binding `127.0.0.1` by default; refusing a non-loopback `--host` without `--api-key` (or `--allow-unauthenticated`); refusing requests that carry `Origin`; refusing a non-loopback `Host` header on a loopback bind. A future release may tighten these further; that counts as breaking and is announced. |
 | **Release assets** | The archive names `onyx-engine-v<version>-<platform>-<arch>.<ext>` for the platforms listed in [releasing](../development/releasing.md#what-gets-published), flat archive layout, and `checksums.txt`. New platforms or variants can be added; existing names are not removed in a patch release. |
-| **Limits** | Request bodies up to 100 MiB (larger ones get `413`) and nested up to 64 levels of arrays and objects (deeper ones get `400`); `X-Request-Id` values up to 128 printable ASCII characters. Raising a limit is not breaking; lowering one is. |
+| **Limits** | Request bodies up to 100 MiB by default (larger ones get `413`; `--max-request-bytes` sets the cap, and lowering it is the operator's choice, not a breaking change) and nested up to 64 levels of arrays and objects (deeper ones get `400`); `X-Request-Id` values up to 128 printable ASCII characters. Raising a limit is not breaking; lowering one is. |
 
 ## Not stable
 

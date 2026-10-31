@@ -22,20 +22,15 @@
 #include <thread>
 #include <vector>
 
-// Largest request body accepted; httplib answers 413 beyond it. The same
-// figure as httplib's implicit default, written down so it is a documented
-// limit rather than a library detail (docs/reference/stability.md).
-static constexpr size_t ONYX_MAX_PAYLOAD_BYTES = 100u * 1024u * 1024u;
-
 // Seconds a client told "busy" (--max-queue, --queue-timeout) is asked to wait.
 static constexpr int ONYX_RETRY_AFTER_SECONDS = 1;
 
 // Seconds httplib waits for the next bytes of a request before it drops the
-// connection. Short, so idle or slow-header clients cannot hold the worker
-// threads (from httplib v0.62 it bounds the whole request head). Responses
-// keep the long write timeout below: SSE streams can run for minutes.
-static constexpr int ONYX_READ_TIMEOUT_SECONDS  = 30;
-static constexpr int ONYX_WRITE_TIMEOUT_SECONDS = 600;
+// connection, at most. Short, so idle or slow-header clients cannot hold the
+// worker threads (from httplib v0.62 it bounds the whole request head).
+// --timeout (default 600) sets the write timeout, which SSE streams need
+// long, and can only lower this one.
+static constexpr int ONYX_READ_TIMEOUT_SECONDS = 30;
 
 // Deepest array/object nesting accepted in a request body; deeper bodies get
 // a 400 before they reach the JSON parser or the schema converter, both of
@@ -1289,9 +1284,11 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
 
     // ---------------------------------------------------------------------
 
-    svr.set_read_timeout(ONYX_READ_TIMEOUT_SECONDS);
-    svr.set_write_timeout(ONYX_WRITE_TIMEOUT_SECONDS);
-    svr.set_payload_max_length(ONYX_MAX_PAYLOAD_BYTES);
+    svr.set_read_timeout(std::min(ONYX_READ_TIMEOUT_SECONDS, args.timeout));
+    svr.set_write_timeout(args.timeout);
+    // the largest body accepted (--max-request-bytes, default 100 MiB, the
+    // figure httplib uses when none is set); httplib answers 413 beyond it
+    svr.set_payload_max_length((size_t) args.max_request_bytes);
 
     if (args.port == 0) {
         bound_port = svr.bind_to_any_port(args.host);

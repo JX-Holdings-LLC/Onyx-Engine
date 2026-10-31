@@ -23,7 +23,7 @@ Onyx Engine implements a subset of the OpenAI API and a few llama-server conveni
 | a `Host` header that is not a loopback name, when bound to loopback | `403` |
 | any route but `/health` while the model is loading | `503 Loading model` (`unavailable_error`) |
 | a chat or text completion when `--max-queue` requests are already waiting | `503` with `Retry-After: 1` |
-| a request body over 100 MiB | `413` |
+| a request body over `--max-request-bytes` (default 100 MiB) | `413` |
 | a route that the process's mode does not serve | `501`; see [which routes answer](api/README.md#which-routes-answer) |
 
 `model` and `user` are accepted as client metadata and otherwise ignored: the process always uses the model it loaded.
