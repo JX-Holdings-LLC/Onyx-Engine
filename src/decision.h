@@ -23,6 +23,8 @@
 #include <vector>
 
 class onyx_jinja_template;
+struct mtmd_context;
+struct mtmd_input_chunk;
 
 // one decoded media file, same as onyx_media_buffer in engine.h
 using onyx_decision_media = std::vector<unsigned char>;
@@ -79,10 +81,22 @@ struct onyx_decision_question {
 // (embeddings rows at prompt positions) or `n_scores` (a joint head's first
 // embeddings rows, with `order` marking the spans it reads).
 struct onyx_decision_prompt {
-    std::vector<llama_token> tokens;      // text-only prompt
+    // The prompt's rows. With `chunks` (clef, lfm2-d1-omni and vllm-d3 with
+    // media), LLAMA_TOKEN_NULL marks each row a media chunk fills, and every
+    // read position (markers, order) counts rows.
+    std::vector<llama_token> tokens;
 
-    // with media: the text (one media marker per buffer) and the buffers;
-    // `tokens` is then empty and only `labels` reading is used
+    // one media chunk (image or audio) of the prompt, already tokenized by
+    // mtmd; it fills rows [row, row + its token count)
+    struct media_chunk {
+        size_t                            row = 0;
+        std::shared_ptr<mtmd_input_chunk> chunk;
+    };
+    std::vector<media_chunk> chunks;
+
+    // with media, label families that read the last row only: the text (one
+    // media marker per buffer) and the buffers, prefilled by mtmd chunk by
+    // chunk; `tokens` is then empty
     std::string                      text;
     std::vector<onyx_decision_media> media;
 
@@ -109,7 +123,8 @@ public:
     // Reads the "<arch>.decision.*" metadata. Leaves type() at NONE for a
     // model that is not a decision model; throws std::runtime_error for one
     // that is, but cannot be served.
-    void init(const llama_model * model, const std::string & media_marker);
+    // `mctx` is the projector (--mmproj), null without one.
+    void init(const llama_model * model, const std::string & media_marker, mtmd_context * mctx);
 
     onyx_decision_type type() const { return type_; }
 
@@ -159,6 +174,7 @@ private:
     onyx_decision_type type_  = ONYX_DECISION_NONE;
     const llama_vocab * vocab_ = nullptr;
     std::string         media_marker_;
+    mtmd_context *      mctx_  = nullptr;
     std::unique_ptr<onyx_jinja_template> tmpl_; // the "systemone" template
 
     std::map<std::string, float>          temperatures_; // "<type>" or "<type>.<bucket>"
@@ -186,6 +202,11 @@ private:
     std::string              quoted_first_;     // their first bytes
 
     std::vector<llama_token> tokenize(const std::string & text, bool parse_special) const;
+    // Tokenizes text with its media markers through mtmd and appends the
+    // rows to `out` (media rows as LLAMA_TOKEN_NULL, the chunks to
+    // out.chunks). Sets `is_audio` when a chunk is audio.
+    void tokenize_media(const std::string & text, const std::vector<onyx_decision_media> & files,
+                        onyx_decision_prompt & out, bool * is_audio = nullptr) const;
     std::string render_template(const onyx_json & inp) const;
     std::string render(const onyx_json & state,
                        const std::vector<onyx_decision_question> & questions,
@@ -204,7 +225,8 @@ private:
     void        fill_d1omni(const onyx_json & state,
                             const std::vector<onyx_decision_question> & questions,
                             const onyx_decision_question & question,
-                            size_t variant, onyx_decision_prompt & out) const;
+                            size_t variant, const std::vector<onyx_decision_media> & files,
+                            onyx_decision_prompt & out) const;
 
     float  get_temperature(const onyx_decision_question & question) const;
     double get_confidence(onyx_decision_question_type question_type, const std::vector<double> & probs) const;

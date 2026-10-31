@@ -5,6 +5,9 @@
 
 #include "common.h"   // string_format, string_split and the other string helpers
 
+#include "mtmd.h"
+#include "mtmd-helper.h"
+
 // staging API, the only way to reach these: llama_decision_order and
 // llama_model_decision_label (see CMakeLists.txt for the include path)
 #include "llama-ext.h"
@@ -147,7 +150,56 @@ std::vector<llama_token> onyx_decision::tokenize(const std::string & text, bool 
     return onyx_tokenize(vocab_, text, /* add_special */ false, parse_special);
 }
 
-void onyx_decision::init(const llama_model * model, const std::string & media_marker) {
+void onyx_decision::tokenize_media(const std::string & text, const std::vector<onyx_decision_media> & files,
+                                   onyx_decision_prompt & out, bool * is_audio) const {
+    if (!mctx_) {
+        throw std::invalid_argument("image input needs a projector; start onyx-engine with --mmproj");
+    }
+    mtmd::bitmaps bitmaps;
+    for (const auto & buf : files) {
+        auto bmp = mtmd_helper_bitmap_init_from_buf(mctx_, buf.data(), buf.size(), /* placeholder */ false,
+                                                    mtmd_helper_init_opt_default());
+        if (!bmp.bitmap) {
+            throw std::invalid_argument("failed to decode media input (unsupported or corrupt image/audio data)");
+        }
+        bitmaps.entries.emplace_back(bmp.bitmap);
+    }
+
+    // add_special as llama-server's process_mtmd_prompt does
+    mtmd_input_text inp {
+        /* text          */ text.c_str(),
+        /* text_len      */ text.size(),
+        /* add_special   */ true,
+        /* parse_special */ true,
+    };
+    mtmd::input_chunks chunks(mtmd_input_chunks_init());
+    auto bitmaps_c_ptr = bitmaps.c_ptr();
+    const int32_t rc = mtmd_tokenize(mctx_, chunks.ptr.get(), &inp, bitmaps_c_ptr.data(), bitmaps_c_ptr.size());
+    if (rc != 0) {
+        throw std::invalid_argument(rc == 1 ? "the number of images does not match the template's media markers"
+                                            : "failed to preprocess media input");
+    }
+
+    for (size_t i = 0; i < chunks.size(); i++) {
+        const mtmd_input_chunk * chunk = chunks[i];
+        if (mtmd_input_chunk_get_type(chunk) == MTMD_INPUT_CHUNK_TYPE_TEXT) {
+            size_t n = 0;
+            const llama_token * toks = mtmd_input_chunk_get_tokens_text(chunk, &n);
+            out.tokens.insert(out.tokens.end(), toks, toks + n);
+            continue;
+        }
+        if (is_audio && mtmd_input_chunk_get_type(chunk) == MTMD_INPUT_CHUNK_TYPE_AUDIO) {
+            *is_audio = true;
+        }
+        onyx_decision_prompt::media_chunk mc;
+        mc.row   = out.tokens.size();
+        mc.chunk = std::shared_ptr<mtmd_input_chunk>(mtmd_input_chunk_copy(chunk), mtmd_input_chunk_free);
+        out.chunks.push_back(std::move(mc));
+        out.tokens.insert(out.tokens.end(), mtmd_input_chunk_get_n_tokens(chunk), LLAMA_TOKEN_NULL);
+    }
+}
+
+void onyx_decision::init(const llama_model * model, const std::string & media_marker, mtmd_context * mctx) {
     const onyx_decision_type model_type = onyx_decision_type_of(model);
     if (model_type == ONYX_DECISION_NONE) {
         return;
@@ -161,6 +213,7 @@ void onyx_decision::init(const llama_model * model, const std::string & media_ma
 
     vocab_        = llama_model_get_vocab(model);
     media_marker_ = media_marker;
+    mctx_         = mctx;
 
     const char * tmpl_src = llama_model_chat_template(model, "systemone");
     if (tmpl_src == nullptr) {
@@ -359,20 +412,12 @@ bool onyx_decision::can_use_images() const {
 }
 
 bool onyx_decision::onyx_supports_media() const {
-    // the families that read label logits at the last token of a causal
-    // prompt: the engine prefills media through mtmd and reads one row.
-    // clef and lfm2-d1-omni read embeddings at positions after the media,
-    // and vllm-d3 needs the whole prompt in one non-causal batch; neither
-    // fits the mtmd chunk-by-chunk prefill yet.
-    switch (type_) {
-        case ONYX_DECISION_OPENJEV:
-        case ONYX_DECISION_PPLX_DECIDER:
-        case ONYX_DECISION_LFM2_D1:
-        case ONYX_DECISION_H2O_LIGHTNING:
-            return true;
-        default:
-            return false;
-    }
+    // every family whose template has a place for images: the label families
+    // that read the last row of a causal prompt prefill media through mtmd
+    // chunk by chunk; clef, lfm2-d1-omni and vllm-d3, which read rows after
+    // the media or need the whole prompt in one non-causal batch, get the
+    // media rows in the prompt itself (onyx_decision_prompt::chunks)
+    return can_use_images();
 }
 
 // ---------------------------------------------------------------------------
@@ -1012,8 +1057,11 @@ static const std::string D1OMNI_MARK_STATE    = "<<d1omni:state>>";
 static const std::string D1OMNI_MARK_QUESTION = "<<d1omni:question>>";
 static const std::string D1OMNI_MARK_OPTION   = "<<d1omni:option>>";
 
-// max_length of the model config, the converter checks it
-static const size_t D1OMNI_MAX_TOKENS = 16384;
+// max_length, image_text_length and audio_text_length of the model config,
+// the converter checks them
+static const size_t D1OMNI_MAX_TOKENS       = 16384;
+static const size_t D1OMNI_MAX_TOKENS_IMAGE = 896;
+static const size_t D1OMNI_MAX_TOKENS_AUDIO = 15360;
 
 // given to the clef template: text between the pieces of the prompt, and at
 // the start of the span of a question or of an option
@@ -1254,7 +1302,7 @@ onyx_decision_prompt onyx_decision::fill_prompt(const json & state,
 
     onyx_decision_prompt out;
     if (type_ == ONYX_DECISION_LFM2_D1_OMNI) {
-        fill_d1omni(state, questions, question, variant, out);
+        fill_d1omni(state, questions, question, variant, files, out);
         return out;
     }
 
@@ -1285,6 +1333,11 @@ onyx_decision_prompt onyx_decision::fill_prompt(const json & state,
             break;
     }
 
+    if (!files.empty() && type_ == ONYX_DECISION_VLLM_D3) {
+        // non-causal: the media are rows of the one batch the prompt runs in
+        tokenize_media(prompt, files, out);
+        return out;
+    }
     if (!files.empty()) {
         // the engine tokenizes the text with the media (see onyx_supports_media())
         out.text  = prompt;
@@ -1371,21 +1424,45 @@ void onyx_decision::fill_laya(std::vector<llama_token> & tokens, const onyx_deci
 }
 
 // each piece is cut to its budget as the model was trained (d1-omni
-// prompt.py: encode); the state gets the room that is left. Text only: with
-// media, the media budget and audio layout apply (not supported here yet).
+// prompt.py: encode); the state gets the room that is left. The media come
+// first, and the text after them has a budget of its own.
 void onyx_decision::fill_d1omni(const json & state,
                                 const std::vector<onyx_decision_question> & questions,
                                 const onyx_decision_question & question,
-                                size_t variant, onyx_decision_prompt & out) const {
+                                size_t variant, const std::vector<onyx_decision_media> & files,
+                                onyx_decision_prompt & out) const {
     const auto invalid = std::runtime_error("unexpected layout of the decision prompt");
 
-    const std::string        prompt = render(state, questions, question, variant, 0, false);
+    // the prompt depends on the kind of media; mtmd tells an audio clip from
+    // an image by its content
+    std::string markers;
+    bool        is_audio = false;
+    if (!files.empty()) {
+        for (size_t i = 0; i < files.size(); i++) {
+            markers += media_marker_;
+        }
+        tokenize_media(markers, files, out, &is_audio);
+    }
+    if (is_audio && files.size() > 1) {
+        throw std::invalid_argument("a request has images or one audio clip, not both");
+    }
+    const size_t n_media = out.tokens.size();
+
+    const std::string        prompt = render(state, questions, question, variant, files.size(), is_audio);
     std::vector<std::string> pieces = string_split(prompt, D1OMNI_SEP);
-    if (pieces.empty() || !pieces[0].empty()) {
+    if (pieces.empty() || pieces[0] != markers) {
         throw invalid;
     }
 
-    const size_t n_max = D1OMNI_MAX_TOKENS;
+    size_t n_max = D1OMNI_MAX_TOKENS;
+    if (!files.empty()) {
+        n_max = std::min(is_audio ? D1OMNI_MAX_TOKENS_AUDIO : D1OMNI_MAX_TOKENS_IMAGE,
+                         D1OMNI_MAX_TOKENS - std::min(D1OMNI_MAX_TOKENS, n_media));
+        if (n_max < 64) {
+            throw std::invalid_argument(string_format("the media take %zu of the %zu positions, send fewer images",
+                                                      n_media, D1OMNI_MAX_TOKENS));
+        }
+    }
 
     // the options get max(96, min(24 n + 32, max / 2)) tokens, shared evenly
     const int64_t n_options      = (int64_t) question.options.size();
@@ -1442,7 +1519,7 @@ void onyx_decision::fill_d1omni(const json & state,
 
     for (size_t i = 0; i < tokens.size(); i++) {
         if (tokens[i] == token_marker_) {
-            out.markers.push_back((int32_t) i);
+            out.markers.push_back((int32_t) (n_media + i));
         }
     }
     if ((int64_t) out.markers.size() != n_options) {
@@ -1451,16 +1528,12 @@ void onyx_decision::fill_d1omni(const json & state,
 
     // the output has one score per question type
     out.column = question.type;
-    out.tokens = std::move(tokens);
+    out.tokens.insert(out.tokens.end(), tokens.begin(), tokens.end());
 }
 
 onyx_decision_prompt onyx_decision::fill_prompt_joint(const json & state,
                                                       const std::vector<onyx_decision_question> & questions,
                                                       const std::vector<onyx_decision_media> & files) const {
-    if (!files.empty()) {
-        throw std::invalid_argument("image input is not supported for this decision model");
-    }
-
     json inp_questions = json::array();
     for (const auto & question : questions) {
         json options = json::array();
@@ -1484,7 +1557,15 @@ onyx_decision_prompt onyx_decision::fill_prompt_joint(const json & state,
     inp["questions"] = inp_questions;
     inp = replace_text(sort_keys(inp), CLEF_MARKER, "<<clef ");
 
-    inp["images"]        = json::array();
+    // the template puts one media marker per image
+    json images = json::array();
+    if (!files.empty()) {
+        inp = replace_text(inp, media_marker_, " ");
+        for (size_t i = 0; i < files.size(); i++) {
+            images.push_back(media_marker_);
+        }
+    }
+    inp["images"]        = images;
     inp["sep"]           = CLEF_SEP;
     inp["mark_question"] = CLEF_MARK_QUESTION;
     inp["mark_option"]   = CLEF_MARK_OPTION;
@@ -1493,9 +1574,27 @@ onyx_decision_prompt onyx_decision::fill_prompt_joint(const json & state,
     const auto invalid = std::runtime_error("unexpected layout of the decision prompt");
 
     // the model was trained with the pieces tokenized one by one
+    const std::vector<std::string> pieces = string_split(prompt, CLEF_SEP);
+    size_t i_piece = 0;
+
     onyx_decision_prompt out;
+    if (!files.empty()) {
+        // the text before the images is tokenized with them; a vision token
+        // separates the pieces anyway
+        std::string head;
+        while (i_piece < pieces.size() && head.find(media_marker_) == std::string::npos) {
+            head += pieces[i_piece++];
+        }
+        if (head.find(media_marker_) == std::string::npos || head.find(CLEF_MARKER) != std::string::npos) {
+            throw invalid;
+        }
+        tokenize_media(head, files, out);
+        out.order.resize(out.tokens.size(), LLAMA_DECISION_ORDER_NONE);
+    }
+
     size_t i_question = 0;
-    for (std::string piece : string_split(prompt, CLEF_SEP)) {
+    for (; i_piece < pieces.size(); i_piece++) {
+        std::string piece = pieces[i_piece];
         int32_t order = LLAMA_DECISION_ORDER_NONE;
         if (string_starts_with(piece, CLEF_MARK_QUESTION)) {
             piece = piece.substr(CLEF_MARK_QUESTION.size());

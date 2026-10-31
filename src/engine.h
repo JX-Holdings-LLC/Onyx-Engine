@@ -342,6 +342,9 @@ private:
                        std::vector<float> * out, std::string & err);
     bool decision_eval_media(const onyx_decision_prompt & p, std::vector<float> & scores,
                              int32_t & n_tokens, std::string & err);
+    bool decision_eval_rows(const onyx_decision_prompt & p, std::vector<float> & scores, std::string & err);
+    bool decision_read(const onyx_decision_prompt & p, int32_t out_from, std::vector<float> & scores,
+                       std::string & err);
 
     llama_model *   model_ = nullptr;
     llama_context * ctx_   = nullptr;
