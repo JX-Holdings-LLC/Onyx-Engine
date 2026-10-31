@@ -216,6 +216,15 @@ check "chat timings present" \
     -X POST "$BASE/v1/chat/completions" -d '{"messages":[{"role":"user","content":"Hi"}],"max_tokens":4}'
 check "json_schema constrained output is valid JSON" \
     bash -c "curl -sf -X POST '$BASE/v1/chat/completions' -d '{\"messages\":[{\"role\":\"user\",\"content\":\"person\"}],\"max_tokens\":40,\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"schema\":{\"type\":\"object\",\"properties\":{\"age\":{\"type\":\"integer\"}},\"required\":[\"age\"],\"additionalProperties\":false}}}}' | python3 -c 'import json,sys; d=json.load(sys.stdin); json.loads(d[\"choices\"][0][\"message\"][\"content\"])'"
+# The caller's own GBNF on chat holds the output (it used to be dropped by the
+# Jinja path), and a grammar that does not parse is a 400, streaming or not.
+check "chat grammar constrains the output" \
+    json_has 'd["choices"][0]["message"]["content"] in ("yes", "no")' \
+    -X POST "$BASE/v1/chat/completions" -d '{"messages":[{"role":"user","content":"x"}],"max_tokens":8,"grammar":"root ::= \"yes\" | \"no\""}'
+check "chat grammar that does not parse answers 400" http_status 400 -X POST "$BASE/v1/chat/completions" \
+    -d '{"messages":[{"role":"user","content":"x"}],"max_tokens":4,"grammar":"root ::= ("}'
+check "streamed chat grammar that does not parse answers 400" http_status 400 -X POST "$BASE/v1/chat/completions" \
+    -d '{"messages":[{"role":"user","content":"x"}],"max_tokens":4,"stream":true,"grammar":"root ::= ("}'
 # Structured output cut by max_tokens is an error, never half an object
 # (Song Deck's M1). The tiny model keeps writing keys, so a small budget
 # always cuts it.

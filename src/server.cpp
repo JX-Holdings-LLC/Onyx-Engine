@@ -924,6 +924,12 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
             !inputs.json_schema.empty() ? ONYX_GRAMMAR_OUTPUT_FORMAT
                                         : ONYX_GRAMMAR_TOOL_CALLS;
         apply_grammar(gp.sampling, cp, gtype, engine.vocab());
+        if (gp.sampling.grammar.empty() && !inputs.grammar.empty()) {
+            // the Jinja path builds no grammar from the caller's own GBNF
+            // (llama-server applies it from the request, as here)
+            gp.sampling.grammar_kind = ONYX_GRAMMAR_USER;
+            gp.sampling.grammar      = inputs.grammar;
+        }
         // response_format / json_schema: a length cut leaves invalid JSON, so
         // it is answered with an error instead of half an object
         const bool json_output = gtype == ONYX_GRAMMAR_OUTPUT_FORMAT;

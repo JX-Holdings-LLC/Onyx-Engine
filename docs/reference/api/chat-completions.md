@@ -49,8 +49,8 @@ prefilled at slot admission (see
 | `n` | only `1` is supported; other values return `400` |
 | `stream_options.include_usage` | `false` omits the final usage frame |
 | `parallel_tool_calls` | bool |
-| `grammar` | string; GBNF grammar, used as `COMMON_GRAMMAR_TYPE_USER` |
-| `json_schema` | object; used as `COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT` |
+| `grammar` | string; GBNF grammar the output must match (a user grammar: not advanced past the generation prompt); one that does not parse is a `400`, streaming or not; `400` together with `tools` |
+| `json_schema` | object; converted to an output-format grammar |
 | `response_format` | `{"type":"json_object"[,"schema":...]}` or `{"type":"json_schema","json_schema":{"schema":...}}` or `{"type":"text"}`; any other `type` is a `400` |
 | `chat_template_kwargs` | object; passed through to the jinja template |
 | `max_completion_tokens`, then `max_tokens`, then `n_predict` | first present, non-null one wins; default `-1` (until EOG or context limit) |
@@ -115,10 +115,11 @@ inside the thinking block (deepseek-style) starts already in the
 budget-counting state.
 
 `grammar`/`json_schema`/`response_format`/`tools` are mutually reinforcing,
-not independent: the chat template decides the actual grammar type applied
-(`COMMON_GRAMMAR_TYPE_USER` for a caller `grammar`, `_OUTPUT_FORMAT` for
-`json_schema`/`response_format`, otherwise `_TOOL_CALLS` so template-driven
-tool-call grammar can apply).
+not independent. The grammar kind is a user grammar for a caller `grammar`,
+an output format for `json_schema`/`response_format`, otherwise a tool-call
+grammar so the template's own tool-call grammar can apply. When the chat
+template builds no grammar for a caller `grammar` (the Jinja path never
+does), the caller's GBNF is applied as given; before 0.8.0 it was dropped.
 
 ## Non-streaming response
 
