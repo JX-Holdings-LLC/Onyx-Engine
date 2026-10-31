@@ -28,6 +28,7 @@
 
 #include "args.h"
 #include "decision.h"
+#include "sampler.h"
 
 #include "chat.h"
 #include "common.h"
@@ -86,7 +87,7 @@ struct onyx_gen_params {
     std::vector<llama_token> prompt_tokens;
     int32_t     n_predict = -1;          // -1 = until EOG or context limit
     std::vector<std::string> stop;       // stop sequences (matched on text)
-    common_params_sampling sampling;     // seed/temp/top_p/... and grammar
+    onyx_sampling_params sampling;       // seed/temp/top_p/... and grammar
     bool        cache_prompt = true;     // reuse common KV prefix when possible
 
     // multimodal: when `media` is non-empty the engine ignores prompt_tokens
@@ -150,7 +151,7 @@ using onyx_token_cb = std::function<bool(const std::string & text, const std::ve
 // thread blocked in generate() and the engine loop running it.
 struct onyx_gen_request {
     onyx_gen_params    params;
-    common_sampler * smpl = nullptr;      // owned; freed when the request finishes
+    std::unique_ptr<onyx_sampler> smpl;   // built by generate(); released when the request finishes
     bool             wants_pieces = false; // caller passed a token callback
 
     std::mutex               mu;

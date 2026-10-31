@@ -7,8 +7,6 @@
 #include "common.h"
 #include "json-schema-to-grammar.h"
 #include "json.h"
-#include "log.h"
-#include "sampling.h"
 
 #include "httplib.h"
 
@@ -175,15 +173,12 @@ static bool reject_unsupported_fields(const common_json & body, httplib::Respons
     return false;
 }
 
-static bool validate_stream_sampler(const onyx_engine & engine, onyx_gen_params params,
+// Builds (and drops) the request's sampler before a stream opens, so a bad
+// grammar or penalty is still a 400 rather than an error frame.
+static bool validate_stream_sampler(const onyx_engine & engine, const onyx_gen_params & params,
                                     httplib::Response & res) {
     try {
-        common_sampler * sampler = common_sampler_init(engine.model(), params.sampling);
-        if (!sampler) {
-            send_error(res, 400, "invalid sampling grammar", "invalid_request_error");
-            return false;
-        }
-        common_sampler_free(sampler);
+        onyx_sampler sampler(engine.model(), params.sampling);
         return true;
     } catch (const std::exception & e) {
         send_error(res, 400, e.what(), "invalid_request_error");
@@ -415,8 +410,8 @@ static int32_t parse_max_tokens(const common_json & body) {
     return -1;
 }
 
-static common_params_sampling parse_sampling(const common_json & body, uint32_t default_seed) {
-    common_params_sampling s;
+static onyx_sampling_params parse_sampling(const common_json & body, uint32_t default_seed) {
+    onyx_sampling_params s;
     s.seed = default_seed;
 
     if (body.contains("temperature") && !body.at("temperature").is_null()) s.temp = body.at("temperature").get<float>();
@@ -436,9 +431,9 @@ static common_params_sampling parse_sampling(const common_json & body, uint32_t 
 
 // applies grammar produced by the chat template (tool calls / json_schema) or
 // supplied directly by the caller
-static void apply_grammar(common_params_sampling &   sparams,
+static void apply_grammar(onyx_sampling_params &     sparams,
                           const common_chat_params & cp,
-                          common_grammar_type        type,
+                          onyx_grammar_kind          kind,
                           const llama_vocab *        vocab) {
     for (const auto & t : cp.preserved_tokens) {
         auto ids = onyx_tokenize(vocab, t, /* add_special */ false, /* parse_special */ true);
@@ -449,23 +444,32 @@ static void apply_grammar(common_params_sampling &   sparams,
     if (cp.grammar.empty()) {
         return;
     }
-    sparams.grammar           = common_grammar(type, cp.grammar);
+    sparams.grammar_kind      = kind;
+    sparams.grammar           = cp.grammar;
     sparams.grammar_lazy      = cp.grammar_lazy;
     sparams.generation_prompt = cp.generation_prompt;
 
     for (const auto & trigger : cp.grammar_triggers) {
-        if (trigger.type == COMMON_GRAMMAR_TRIGGER_TYPE_WORD) {
+        onyx_grammar_trigger t;
+        t.value = trigger.value;
+        switch (trigger.type) {
+            case COMMON_GRAMMAR_TRIGGER_TYPE_WORD:         t.kind = ONYX_TRIGGER_WORD;         break;
+            case COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN:      t.kind = ONYX_TRIGGER_PATTERN;      break;
+            case COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN_FULL: t.kind = ONYX_TRIGGER_PATTERN_FULL; break;
+            case COMMON_GRAMMAR_TRIGGER_TYPE_TOKEN:
+                t.kind  = ONYX_TRIGGER_TOKEN;
+                t.token = trigger.token;
+                break;
+        }
+        if (t.kind == ONYX_TRIGGER_WORD) {
+            // a word that is one preserved token triggers on that token
             auto ids = onyx_tokenize(vocab, trigger.value, false, true);
             if (ids.size() == 1 && sparams.preserved_tokens.count(ids[0]) > 0) {
-                common_grammar_trigger tok_trigger;
-                tok_trigger.type  = COMMON_GRAMMAR_TRIGGER_TYPE_TOKEN;
-                tok_trigger.value = trigger.value;
-                tok_trigger.token = ids[0];
-                sparams.grammar_triggers.push_back(std::move(tok_trigger));
-                continue;
+                t.kind  = ONYX_TRIGGER_TOKEN;
+                t.token = ids[0];
             }
         }
-        sparams.grammar_triggers.push_back(trigger);
+        sparams.grammar_triggers.push_back(std::move(t));
     }
 }
 
@@ -915,14 +919,14 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
         }
         gp.sampling = parse_sampling(body, args.seed);
 
-        const common_grammar_type gtype =
-            !inputs.grammar.empty()     ? COMMON_GRAMMAR_TYPE_USER :
-            !inputs.json_schema.empty() ? COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT
-                                        : COMMON_GRAMMAR_TYPE_TOOL_CALLS;
+        const onyx_grammar_kind gtype =
+            !inputs.grammar.empty()     ? ONYX_GRAMMAR_USER :
+            !inputs.json_schema.empty() ? ONYX_GRAMMAR_OUTPUT_FORMAT
+                                        : ONYX_GRAMMAR_TOOL_CALLS;
         apply_grammar(gp.sampling, cp, gtype, engine.vocab());
         // response_format / json_schema: a length cut leaves invalid JSON, so
         // it is answered with an error instead of half an object
-        const bool json_output = gtype == COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT;
+        const bool json_output = gtype == ONYX_GRAMMAR_OUTPUT_FORMAT;
         if (gp.reasoning.enabled && gp.reasoning.budget >= 0 &&
             !gp.sampling.grammar.empty() && !gp.sampling.grammar_lazy) {
             send_error(res, 400, "reasoning budget cannot force tokens through a non-lazy grammar",
@@ -1173,11 +1177,12 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
         }
 
         if (body.contains("grammar") && body.at("grammar").is_string()) {
-            gp.sampling.grammar = common_grammar(COMMON_GRAMMAR_TYPE_USER, body.at("grammar").get<std::string>());
+            gp.sampling.grammar_kind = ONYX_GRAMMAR_USER;
+            gp.sampling.grammar      = body.at("grammar").get<std::string>();
         } else if (body.contains("json_schema")) {
             try {
-                gp.sampling.grammar = common_grammar(COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT,
-                                                     json_schema_to_grammar(body.at("json_schema")));
+                gp.sampling.grammar_kind = ONYX_GRAMMAR_OUTPUT_FORMAT;
+                gp.sampling.grammar      = json_schema_to_grammar(body.at("json_schema"));
             } catch (const std::exception & e) {
                 send_error(res, 400, e.what(), "invalid_request_error");
                 return;
@@ -1185,7 +1190,7 @@ int onyx_server_run(onyx_engine & engine, const onyx_args & args, const std::fun
         }
 
         // a json_schema answer cut by length is an error, not half an object
-        const bool json_output = gp.sampling.grammar.type == COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT;
+        const bool json_output = gp.sampling.grammar_kind == ONYX_GRAMMAR_OUTPUT_FORMAT;
 
         const bool stream = body.value<bool>("stream", false);
         const bool include_usage = !body.contains("stream_options") ||

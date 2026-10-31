@@ -201,6 +201,7 @@ add_executable(onyx-engine
     src/engine.cpp
     src/http_util.cpp
     src/llama_util.cpp
+    src/sampler.cpp
     src/server.cpp
 )
 

@@ -1,9 +1,6 @@
 #include "engine.h"
 #include "llama_util.h"
 
-#include "log.h"
-#include "sampling.h"
-
 #include "mtmd-helper.h"
 
 #include "llama-cpp.h"
@@ -525,21 +522,16 @@ onyx_gen_result onyx_engine::generate(const onyx_gen_params & params, const onyx
     // the sampler is built on the calling thread so that a bad grammar fails
     // the request synchronously, before it ever reaches the engine loop
     try {
-        req->smpl = common_sampler_init(model_, req->params.sampling);
+        req->smpl = std::make_unique<onyx_sampler>(model_, req->params.sampling);
     } catch (const std::exception & e) {
         res.error = std::string("failed to initialize sampler: ") + e.what();
-        return res;
-    }
-    if (!req->smpl) {
-        res.error = "failed to initialize sampler (bad grammar?)";
         return res;
     }
 
     {
         std::lock_guard<std::mutex> lock(q_mutex_);
         if (max_queue_ > 0 && (int32_t) queue_.size() >= max_queue_) {
-            common_sampler_free(req->smpl);
-            req->smpl = nullptr;
+            req->smpl.reset();
             {
                 std::lock_guard<std::mutex> m_lock(metrics_mutex_);
                 metrics_.requests_rejected++;
@@ -753,10 +745,7 @@ void onyx_engine::loop() {
         pending.swap(queue_);
     }
     for (auto & req : pending) {
-        if (req->smpl) {
-            common_sampler_free(req->smpl);
-            req->smpl = nullptr;
-        }
+        req->smpl.reset();
         req->result.error = "engine is shutting down";
         {
             std::lock_guard<std::mutex> lock(req->mu);
@@ -810,10 +799,7 @@ void onyx_engine::sweep_queue() {
             std::lock_guard<std::mutex> m_lock(metrics_mutex_);
             metrics_.requests_timed_out++;
         }
-        if (req->smpl) {
-            common_sampler_free(req->smpl);
-            req->smpl = nullptr;
-        }
+        req->smpl.reset();
         {
             std::lock_guard<std::mutex> lock(req->mu);
             req->finished = true;
@@ -843,10 +829,7 @@ bool onyx_engine::admit_queued() {
                 queue_.pop_front();
                 req->finished = true;
                 req->result.finish = ONYX_FINISH_CANCEL;
-                if (req->smpl) {
-                    common_sampler_free(req->smpl);
-                    req->smpl = nullptr;
-                }
+                req->smpl.reset();
                 req->cv.notify_all();
                 continue;
             }
@@ -1211,17 +1194,23 @@ void onyx_engine::sample_slot(onyx_slot & slot, int32_t tok_idx) {
     const bool forcing = slot.rb_state == onyx_slot::RB_FORCING && slot.rb_forced_idx < rb.forced.size();
     if (forcing) {
         // still "decode" the forced token through the sampler's accept path
-        // so its penalty/repeat/grammar state stays consistent, but it is
-        // not sampled -- all other logits are irrelevant, we already know
-        // what comes next.
+        // so its penalty state stays consistent (the grammar does not see
+        // forced tokens), but it is not sampled -- all other logits are
+        // irrelevant, we already know what comes next.
         tok = rb.forced[slot.rb_forced_idx++];
-        common_sampler_accept(req.smpl, tok, false);
+        req.smpl->accept(tok, false);
         if (slot.rb_forced_idx >= rb.forced.size()) {
             slot.rb_state = onyx_slot::RB_DONE;
         }
     } else {
-        tok = common_sampler_sample(req.smpl, ctx_, tok_idx);
-        common_sampler_accept(req.smpl, tok, true);
+        try {
+            tok = req.smpl->sample(ctx_, tok_idx);
+            req.smpl->accept(tok, true);
+        } catch (const std::exception & e) {
+            // a grammar with no allowed token left fails this request only
+            finish(slot, ONYX_FINISH_STOP, std::string("sampling failed: ") + e.what());
+            return;
+        }
 
         if (slot.rb_state == onyx_slot::RB_IDLE && !rb.start_tag.empty()) {
             // rolling match: a mismatch restarts the match window at 1 if
@@ -1392,10 +1381,7 @@ void onyx_engine::finish(onyx_slot & slot, onyx_finish_reason reason, const std:
         emit(slot, res.text.substr(old_sent), collect_delivered_probs(slot, res));
     }
 
-    if (req->smpl) {
-        common_sampler_free(req->smpl);
-        req->smpl = nullptr;
-    }
+    req->smpl.reset();
 
     slot.req.reset();
     slot.state       = onyx_slot::ONYX_SLOT_IDLE;
