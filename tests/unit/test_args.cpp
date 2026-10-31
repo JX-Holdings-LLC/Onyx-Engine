@@ -4,6 +4,7 @@
 #include "args.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <initializer_list>
 #include <string>
 #include <vector>
@@ -215,4 +216,104 @@ TEST(args, override_tensor) {
     CHECK(onyx_parse_tensor_overrides("a=b=CPU", out));               // the last '=' splits
     CHECK_EQ(out[0].first, std::string("a=b"));
     CHECK_EQ(out[0].second, std::string("CPU"));
+}
+
+TEST(args, timeout) {
+    onyx_args a;
+    CHECK(parse({"-m", "x.gguf"}, a));
+    CHECK_EQ(a.timeout, 600);
+    CHECK(parse({"-m", "x.gguf", "--timeout", "45"}, a));
+    CHECK_EQ(a.timeout, 45);
+    CHECK(!parses({"-m", "x.gguf", "--timeout", "0"}));
+    CHECK(!parses({"-m", "x.gguf", "--timeout", "-5"}));
+    CHECK(!parses({"-m", "x.gguf", "--timeout", "soon"}));
+}
+
+TEST(args, max_request_bytes) {
+    onyx_args a;
+    CHECK(parse({"-m", "x.gguf"}, a));
+    CHECK_EQ(a.max_request_bytes, (int64_t) 100 * 1024 * 1024);
+    CHECK(parse({"-m", "x.gguf", "--max-request-bytes", "1048576"}, a));
+    CHECK_EQ(a.max_request_bytes, (int64_t) 1048576);
+    // above what an int32_t holds
+    CHECK(parse({"-m", "x.gguf", "--max-request-bytes", "4294967296"}, a));
+    CHECK_EQ(a.max_request_bytes, (int64_t) 4294967296LL);
+    CHECK(!parses({"-m", "x.gguf", "--max-request-bytes", "0"}));
+    CHECK(!parses({"-m", "x.gguf", "--max-request-bytes", "-1"}));
+    CHECK(!parses({"-m", "x.gguf", "--max-request-bytes", "1M"}));
+}
+
+namespace {
+
+void set_env(const char * name, const char * value) {
+#ifdef _WIN32
+    _putenv_s(name, value ? value : "");
+#else
+    if (value) {
+        setenv(name, value, 1);
+    } else {
+        unsetenv(name);
+    }
+#endif
+}
+
+std::string write_temp(const char * name, const std::string & content) {
+    const std::string path = std::string(name) + ".onyx-test";
+    FILE * f = fopen(path.c_str(), "wb");
+    if (f) {
+        fwrite(content.data(), 1, content.size(), f);
+        fclose(f);
+    }
+    return path;
+}
+
+} // namespace
+
+TEST(args, api_key_file) {
+    set_env(ONYX_API_KEY_ENV, nullptr);
+    onyx_args a;
+
+    const std::string lf = write_temp("key-lf", "sk-file\n");
+    CHECK(parse({"-m", "x.gguf", "--api-key-file", lf.c_str()}, a));
+    CHECK_EQ(a.api_key, std::string("sk-file"));
+
+    const std::string crlf = write_temp("key-crlf", "sk-crlf\r\n");
+    CHECK(parse({"-m", "x.gguf", "--api-key-file", crlf.c_str()}, a));
+    CHECK_EQ(a.api_key, std::string("sk-crlf"));
+
+    // only one trailing newline goes; inner whitespace is part of the key
+    const std::string bare = write_temp("key-bare", "sk a");
+    CHECK(parse({"-m", "x.gguf", "--api-key-file", bare.c_str()}, a));
+    CHECK_EQ(a.api_key, std::string("sk a"));
+
+    const std::string empty = write_temp("key-empty", "\n");
+    CHECK(!parses({"-m", "x.gguf", "--api-key-file", empty.c_str()}));
+    CHECK(!parses({"-m", "x.gguf", "--api-key-file", "no/such/key-file"}));
+    CHECK(!parses({"-m", "x.gguf", "--api-key", "sk", "--api-key-file", lf.c_str()}));
+
+    // a key from the file counts for the non-loopback --host rule
+    CHECK(parse({"-m", "x.gguf", "--host", "0.0.0.0", "--api-key-file", lf.c_str()}, a));
+
+    for (const auto & p : {lf, crlf, bare, empty}) {
+        remove(p.c_str());
+    }
+}
+
+TEST(args, api_key_environment) {
+    onyx_args a;
+    set_env(ONYX_API_KEY_ENV, "sk-env");
+    CHECK(parse({"-m", "x.gguf"}, a));
+    CHECK_EQ(a.api_key, std::string("sk-env"));
+    CHECK(parse({"-m", "x.gguf", "--host", "0.0.0.0"}, a));   // counts for the --host rule too
+    // the flag wins over the environment
+    CHECK(parse({"-m", "x.gguf", "--api-key", "sk-flag"}, a));
+    CHECK_EQ(a.api_key, std::string("sk-flag"));
+
+    set_env(ONYX_API_KEY_ENV, "");
+    CHECK(parse({"-m", "x.gguf"}, a));
+    CHECK(a.api_key.empty());
+    set_env(ONYX_API_KEY_ENV, nullptr);
+    CHECK(parse({"-m", "x.gguf"}, a));
+    CHECK(a.api_key.empty());
+    CHECK(!parses({"-m", "x.gguf", "--host", "0.0.0.0"}));
 }

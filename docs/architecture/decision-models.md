@@ -53,12 +53,29 @@ falling back to a fresh start when the memory cannot be cut back);
 
 ## Images
 
-For the label families (openjev, pplx-decider, lfm2-d1,
-h2o-lightning) a prompt with images is tokenized and prefilled by mtmd
-into a cleared seq 0, and the labels are read from the last row. clef,
-lfm2-d1-omni and vllm-d3 read positions after the media or need the whole
-prompt in one non-causal batch, which mtmd's chunk-by-chunk prefill does
-not give; they answer image requests with `501`.
+For the label families that read the last row of a causal prompt
+(openjev, pplx-decider, lfm2-d1, h2o-lightning), a prompt with images is
+tokenized and prefilled by mtmd into a cleared seq 0, chunk by chunk, and
+the labels are read from the last row.
+
+clef, lfm2-d1-omni and vllm-d3 read rows after the media, or need the
+whole prompt in one non-causal batch, which a chunk-by-chunk prefill does
+not give. For them the media become rows of the prompt itself,
+as in llama-server's `fill_task_d1omni`, `fill_task_joint` and mixed batch:
+`onyx_decision::tokenize_media` runs mtmd's tokenizer and leaves one
+`LLAMA_TOKEN_NULL` row per media embedding plus the chunk
+(`onyx_decision_prompt::chunks`), and every read position counts rows.
+lfm2-d1-omni puts the media first and cuts the text after them to the
+image or audio budget of the model config (896 or 15360 tokens); clef
+tokenizes the text before its images together with them; vllm-d3 renders
+its usual prompt with the media markers. `onyx_engine::decision_eval_rows`
+evaluates that prompt into a cleared seq 0: every row from the first one
+read to the end goes in one `llama_batch_ext`, media as embedding rows
+(`mtmd_encode_chunk`, at the positions `mtmd_helper_decode_image_chunk`
+would give them, M-RoPE included) next to the text tokens; in a non-causal
+context that is the whole prompt. Media before that point (lfm2-d1-omni's,
+which is causal) are decoded on their own by mtmd. Seq 0 is cleared after,
+since media rows cannot be prefix-matched.
 
 ## Answers
 
@@ -73,4 +90,8 @@ the answers are identical; with flash attention they agree to about 1e-3,
 since the kernel's accumulation order follows the batch layout, which
 differs between the two servers (and between llama-server's own `-np 1` and
 `-np 2`). `scripts/smoke-test.sh` covers the openjev path offline with a
-generated tiny model (`make-tiny-model.py --decision`).
+generated tiny model (`make-tiny-model.py --decision`). The media rows of
+clef, lfm2-d1-omni and vllm-d3 have no offline fixture (each needs its own
+architecture and projector); they were checked by hand on ggml-org's
+vllm-d3-edge, LiquidAI's d1-omni-600M and ggml-org's Clef-Flash with their
+projectors, by asking the main colour of solid red, green and blue images.

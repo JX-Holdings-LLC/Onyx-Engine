@@ -3,11 +3,25 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <cstring>
 #include <cerrno>
 #include <limits>
 #include <string>
 #include <vector>
+
+static bool parse_int64(const char * s, int64_t & out) {
+    char * end = nullptr;
+    errno = 0;
+    long long v = strtoll(s, &end, 10);
+    if (end == s || *end != '\0' || errno == ERANGE) {
+        fprintf(stderr, "error: invalid integer value '%s'\n", s);
+        return false;
+    }
+    out = (int64_t) v;
+    return true;
+}
 
 static bool parse_int(const char * s, int32_t & out) {
     char * end = nullptr;
@@ -53,9 +67,17 @@ void onyx_args_print_help() {
         "       --port PORT             port to listen on, 0 = any free port, reported\n"
         "                               on stderr and in /props (default: 8080)\n"
         "       --api-key KEY           require this bearer token except on /health\n"
+        "       --api-key-file PATH     read the --api-key token from a file (a trailing\n"
+        "                               newline is dropped); without either flag, the\n"
+        "                               " ONYX_API_KEY_ENV " environment variable is used\n"
         "       --allow-unauthenticated\n"
         "                               allow a non-loopback --host without --api-key\n"
         "       --metrics               serve Prometheus metrics on /metrics\n"
+        "       --timeout N             seconds a response may wait to be written, and the\n"
+        "                               most a request may take to arrive (that one is\n"
+        "                               capped at 30) (default: 600)\n"
+        "       --max-request-bytes N   largest request body accepted; larger ones get\n"
+        "                               413 (default: 104857600, 100 MiB)\n"
         "\n"
         "compute:\n"
         "  -c,  --ctx-size N            context size in tokens, 0 = model default (default: 4096)\n"
@@ -160,6 +182,28 @@ bool onyx_parse_tensor_overrides(const std::string & value,
     return true;
 }
 
+bool onyx_read_api_key_file(const std::string & path, std::string & key) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) {
+        fprintf(stderr, "error: cannot read --api-key-file '%s'\n", path.c_str());
+        return false;
+    }
+    std::stringstream ss;
+    ss << f.rdbuf();
+    key = ss.str();
+    if (!key.empty() && key.back() == '\n') {
+        key.pop_back();
+        if (!key.empty() && key.back() == '\r') {
+            key.pop_back();
+        }
+    }
+    if (key.empty()) {
+        fprintf(stderr, "error: --api-key-file '%s' holds no key\n", path.c_str());
+        return false;
+    }
+    return true;
+}
+
 bool onyx_host_is_loopback(const std::string & host) {
     return host == "localhost" || host == "::1" || host == "[::1]" || onyx_is_ipv4_loopback(host);
 }
@@ -207,6 +251,7 @@ bool onyx_args_parse(int argc, char ** argv, onyx_args & out) {
         if (is("--chat-template-file"))       { if (!(val = need_value(i, argv[i]))) return false; out.chat_template_file = val; continue; }
         if (is("--host"))                     { if (!(val = need_value(i, argv[i]))) return false; out.host = val; continue; }
         if (is("--api-key"))                  { if (!(val = need_value(i, argv[i]))) return false; out.api_key = val; continue; }
+        if (is("--api-key-file"))             { if (!(val = need_value(i, argv[i]))) return false; out.api_key_file = val; continue; }
         if (is("--pooling"))                  { if (!(val = need_value(i, argv[i]))) return false; out.pooling = val; continue; }
         if (is("--mmproj"))                   { if (!(val = need_value(i, argv[i]))) return false; out.mmproj_path = val; continue; }
         if (is("--convert-dir"))              { if (!(val = need_value(i, argv[i]))) return false; out.convert_dir = val; continue; }
@@ -256,6 +301,13 @@ bool onyx_args_parse(int argc, char ** argv, onyx_args & out) {
         if (is("--reasoning-budget"))         { if (!(val = need_value(i, argv[i])) || !parse_int(val, n)) return false; out.reasoning_budget = n; continue; }
         if (is("--queue-timeout"))            { if (!(val = need_value(i, argv[i])) || !parse_int(val, n)) return false; out.queue_timeout = n; continue; }
         if (is("-ncmoe", "--n-cpu-moe"))      { if (!(val = need_value(i, argv[i])) || !parse_int(val, n)) return false; out.n_cpu_moe = n; continue; }
+        if (is("--timeout"))                  { if (!(val = need_value(i, argv[i])) || !parse_int(val, n)) return false; out.timeout = n; continue; }
+        if (is("--max-request-bytes")) {
+            int64_t v = 0;
+            if (!(val = need_value(i, argv[i])) || !parse_int64(val, v)) return false;
+            out.max_request_bytes = v;
+            continue;
+        }
         if (is("-s", "--seed"))               { if (!(val = need_value(i, argv[i])) || !parse_int(val, n)) return false; out.seed = (uint32_t) n; continue; }
 
         fprintf(stderr, "error: unknown argument '%s' (see --help)\n", arg.c_str());
@@ -272,6 +324,30 @@ bool onyx_args_parse(int argc, char ** argv, onyx_args & out) {
         fprintf(stderr, "error: invalid port, parallel, max-queue, queue-timeout, tick-tokens, n-cpu-moe, "
                         "cache-reuse, batch or context value\n");
         return false;
+    }
+    if (out.timeout < 1) {
+        fprintf(stderr, "error: --timeout must be at least 1 second\n");
+        return false;
+    }
+    if (out.max_request_bytes < 1) {
+        fprintf(stderr, "error: --max-request-bytes must be at least 1\n");
+        return false;
+    }
+    // the key: --api-key, else --api-key-file, else the environment; the
+    // same constant-time compare and --host rule apply to all three
+    if (!out.api_key_file.empty()) {
+        if (!out.api_key.empty()) {
+            fprintf(stderr, "error: --api-key and --api-key-file are exclusive\n");
+            return false;
+        }
+        if (!onyx_read_api_key_file(out.api_key_file, out.api_key)) {
+            return false;
+        }
+    } else if (out.api_key.empty()) {
+        const char * env = getenv(ONYX_API_KEY_ENV);
+        if (env && *env) {
+            out.api_key = env;
+        }
     }
     if (onyx_cache_type_is_quantized(out.cache_type_v) && out.flash_attn == 0) {
         fprintf(stderr, "error: --cache-type-v %s needs flash attention; drop -fa off\n", out.cache_type_v.c_str());

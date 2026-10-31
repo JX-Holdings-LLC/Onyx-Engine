@@ -15,8 +15,10 @@ these fields gets `400 unsupported field: <name>`:
 
 - `logit_bias`, `typical_p`, `mirostat*`, `dynatemp_*`, `dry_*`, `xtc_*` on chat and completions;
 - `echo`, `suffix`, `best_of` on completions;
-- `n` other than 1;
-- `dimensions` on embeddings.
+- `n` other than 1.
+
+`dimensions` on embeddings is accepted (truncate and renormalise); a value outside 1 to
+the model's `n_embd` is a `400`.
 
 Most clients send none of these unless you set them. If a client returns a `400` naming a field,
 turn that setting off in the client. The full list is in [compatibility and limits](../reference/compatibility.md).

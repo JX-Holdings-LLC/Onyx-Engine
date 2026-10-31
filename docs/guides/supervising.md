@@ -257,7 +257,7 @@ async function startOnyx({ bin, model, alias, ctx = 4096, slots = 1 }) {
 | `400` | The request is wrong (an unsupported field, a prompt too long for a slot) | Fix the request; do not retry |
 | `401` | Missing or wrong API key | Fix the key |
 | `403` | The request carried `Origin`, or a `Host` that is not loopback on a loopback bind | Call it from your server process, by `127.0.0.1` or `localhost` |
-| `413` | Body over 100 MiB | Send smaller media |
+| `413` | Body over `--max-request-bytes` (default 100 MiB) | Send smaller media, or raise the cap |
 | `501` | The route is outside this process's mode (for example chat on an embedding model) | Start an engine in the right mode |
 | `503` | Still loading, `--max-queue` is full, or `--queue-timeout` passed (both with `Retry-After`) | Wait and retry |
 | `500` | The engine failed the request | Retry once; keep the stderr tail if it repeats |

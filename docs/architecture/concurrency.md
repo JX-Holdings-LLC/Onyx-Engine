@@ -65,7 +65,7 @@ it can fire up to one tick late when a long prompt chunk is being decoded.
   slot's logits row index recorded in `onyx_slot::i_batch`), issues a single
   `llama_decode` for it (split into `n_batch`-sized views, halving the view
   size and retrying on `llama_decode() == 1`, fatal at size 1), and then
-  samples each slot from its own `common_sampler` at its own row. `kv_unified`
+  samples each slot from its own `onyx_sampler` at its own row. `kv_unified`
   stays at llama.cpp's default `false`, so `n_ctx` is divided evenly across
   the slots: the per-slot budget is `llama_n_ctx_seq()`
   (`onyx_engine::n_ctx_slot()`), and that — not `n_ctx` — is what a prompt has
