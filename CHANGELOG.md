@@ -6,29 +6,107 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-## [0.7.1] — 2026-10-31
+## [0.8.0] — 2026-10-31
 
-### Cross-repo review action items — 2026-10-31 (0.7.1)
+### Stage 1 of the `common/` plan, decision images, operator flags — 2026-10-31 (0.8.0)
 
-Agent: Claude Code (Claude). Documentation only; the binary is unchanged from 0.7.0.
+The rest of the roadmap's "Now" engineering items: the Onyx sampler, the memory-capability
+probe, the chat seam and the `common_json` → nlohmann swap (Stage 1 of the
+[`common/` plan](reports/Replacing%20llama%20cpp%20common%20code.md), #84), decision images (#79),
+and good-first issues #60, #61, #62, #81 and #82. Agent: Claude Code (Claude).
 
-- **`reports/2026-10-31-cross-repo-action-items.md`** (indexed in `reports/README.md`): what Onyx
-  Engine could adopt from Media Engine so JX Runtime can check the engine it supervises (a
-  machine-readable capability document with a contract version, a conformance suite runnable
-  against any URL, graceful SIGTERM drain, an opt-in JSON startup record, `--model-sha256`), the
-  maintainer decisions that needs, and four inconsistencies. Tracked in
-  [#89](https://github.com/JX-Holdings-LLC/Onyx-Engine/issues/89). Dated analysis from a
-  read-only review: nothing in it was run, and `ROADMAP.md` still decides what is scheduled.
+#### Breaking
+
+See the [stability page](docs/reference/stability.md) for the rule this follows.
+
+- **A chat request's `grammar` is applied, and a bad one is a `400`.** On the Jinja path
+  `common_chat_templates_apply` builds no grammar from the caller's own GBNF, so chat completions
+  dropped it: the output was unconstrained and a grammar that did not parse streamed a `200`. The
+  handler now applies it as a user grammar when the template builds none (llama-server applies it
+  from the request too). Callers that sent `grammar` to chat and relied on it being ignored must
+  drop it.
+
+#### Added
+
+- **Decision images for clef, lfm2-d1-omni and vllm-d3** (#79), which answered `501`. Their media
+  become rows of the prompt itself, as llama-server builds them (`onyx_decision::tokenize_media`,
+  `onyx_decision_prompt::chunks`): lfm2-d1-omni puts the media first with the model's image or
+  audio text budget (896 or 15360 tokens) and takes one audio clip instead of images, clef
+  tokenizes the text before its images with them, vllm-d3 renders its prompt with the markers.
+  `onyx_engine::decision_eval_rows` puts every row from the first one read in one
+  `llama_batch_ext`, media as encoder embedding rows (M-RoPE positions included) beside the text;
+  the whole prompt in a non-causal context. Earlier media are decoded by mtmd on their own.
+- **`dimensions` on `/v1/embeddings`** (#62): an integer from 1 to `n_embd` keeps each vector's
+  first N values and L2-normalises them again, before the `float`/`base64` encoding. Out of
+  range, non-integer, or under `--pooling rank` it is a `400`.
+- **`--api-key-file PATH` and `ONYX_ENGINE_API_KEY`** (#82): the key from a file (one trailing
+  LF or CRLF dropped; unreadable, empty or combined with `--api-key` exits 1), or from the
+  environment when neither flag is given. Both count for the non-loopback `--host` rule.
+- **`--timeout N`** (#60, default 600, at least 1): the write timeout, and the ceiling of the read
+  timeout, which stays 30 s unless `N` is lower. llama-server's flag sets both to `N`; 0.7.0
+  shortened the read timeout on purpose, so Onyx keeps it.
+- **`--max-request-bytes N`** (#81, default 100 MiB, at least 1): the request body cap, `413`
+  beyond, in place of a compile-time constant. The default is unchanged.
+- **`/props` `memory_seq_rm`**: `partial`, `full`, `bounded` or `none`, from a load-time probe
+  (`null` in embedding and decision mode).
+- **`src/request.*` and `tests/unit/test_request.cpp`** (#61): `stop`, max-token precedence,
+  sampling fields and `dimensions` truncation as pure functions, unit-tested with the sampler's
+  trigger patterns; ctest gains `unit.request`. The unit-test binary links libllama for its types.
+- **`third_party/nlohmann`:** nlohmann/json 3.12.0 with llama.cpp's deep-nesting backport, byte
+  for byte the copy the pin vendors; the Docker image ships its licence.
+
+#### Changed
+
+- **The sampler is Onyx's** (`src/sampler.*`): upstream's default chain for the parameters Onyx
+  accepts (suppress-token bias, penalties, top-k, top-p, min-p, temperature, then greedy at
+  temperature 0 or a seeded `dist`), the grammar applied by rejection with a full-vocabulary
+  fallback, lazy triggers converted as upstream does (escaped words, anchored full patterns,
+  token ids), and the generation prompt fed only to schema and tool-call grammars.
+  `common_sampler` is no longer used. A grammar that leaves no token allowed now fails its own
+  request instead of the whole engine tick.
+- **Memory-capability probe** (`onyx_probe_seq_rm`, the port of `common_context_can_seq_rm`):
+  decode two tokens, try to remove the second. On memory that removes only whole sequences
+  (recurrent), a partial prefix match no longer wins a slot, so the slot whose state the prompt
+  extends is chosen; on Mamba-130M at `-np 2` a third request reused 8 tokens where 0.7.0 reused
+  none.
+- **The chat seam** (`src/onyx_chat.*`): template rendering, the chat grammar, output parsing
+  (whole and streamed) and raw Jinja go through Onyx types; `onyx_chat.cpp` is the only file that
+  includes `common/chat.h` or the Jinja headers, so a pin bump that reshapes `common_chat_*` (or
+  Stage 3) lands there.
+- **JSON is `nlohmann::ordered_json`** (`src/onyx_json.h`) in `server.cpp` and `decision.cpp`
+  (about 130 call sites), not `common_json`; values cross into `common_json` as text in the seam
+  only. Ordered objects keep insertion order, so response bodies are unchanged.
+- Docs: architecture (chat seam and sampling, KV cache probe, decision images, build layering,
+  source layout), code map, CLI reference, API pages (chat, embeddings, systemone, service
+  endpoints, compatibility), stability limits, security, supervising, troubleshooting, testing,
+  README and ROADMAP "Now". The smoke test uses ports 18190 to 18202. The roadmap diagram
+  (`assets/diagrams/svg/roadmap-map.svg`) was not regenerated.
 
 #### Not completed
 
-- None of the action items; they are a list, not work done.
+- **#59** (context and modalities in `/v1/models`) was left to the open contributor PR #86, which
+  implements it.
+- **Decision images have no offline fixture:** each family needs its own architecture and
+  projector, which `make-tiny-model.py` does not generate, so the smoke test does not cover them.
+- **Release archives do not carry nlohmann's licence file;** adding it means a workflow change
+  (and advancing the vendor packages under the shared release policy). The library was already
+  in the binary before, through `llama-common`.
+- `decision.cpp` still takes `common.h`'s string helpers (`string_format`, `string_split`, ...).
+- Skipped as asked: `logit_bias` (owner decision) and publishing a release.
 
 #### Validation
 
-- The documented link check (`docs/development/documentation.md`) reports no missing target in
-  the new report. It still exits 1 on 9 targets that predate this change (item D4 of the report).
-- No build or test run: no code changed.
+- Linux x64, CMake + Ninja Release build of the pinned b11820: unit tests 4/4 suites (42
+  tests); `scripts/smoke-test.sh` 143/143 (20 new).
+- Sampler, seam and JSON swap: 23 requests (greedy, seeded, penalties, `top_k` 1, negative
+  temperature, logprobs, user grammars, `json_schema`, `response_format`, lazy and required
+  tool-call grammars, streaming and the error cases) gave identical responses to 0.7.0's binary on
+  SmolLM2-135M-Instruct (Q8_0), Qwen2.5-0.5B-Instruct (Q4_K_M) and the tiny smoke model at
+  `-np 2`, apart from the two chat-grammar cases the fix above changes.
+- Decision images by hand on real models with their projectors, asking the main colour of solid
+  red, green and blue images: ggml-org vllm-d3-edge (Q8_0), LiquidAI d1-omni-600M (Q8_0) and
+  ggml-org Clef-Flash (Q4_K_M) each picked the right colour (p 0.57 to 1.0). Not compared with
+  llama-server's numbers; audio for lfm2-d1-omni was not exercised.
 
 ## [0.7.0] — 2026-10-28
 

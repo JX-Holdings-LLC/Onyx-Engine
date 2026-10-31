@@ -1,9 +1,6 @@
 #include "engine.h"
 #include "llama_util.h"
 
-#include "log.h"
-#include "sampling.h"
-
 #include "mtmd-helper.h"
 
 #include "llama-cpp.h"
@@ -300,7 +297,7 @@ bool onyx_engine::load(const onyx_args & args) {
     }
 
     try {
-        chat_templates_ = common_chat_templates_init(model_, template_override);
+        chat_templates_ = std::make_unique<onyx_chat_templates>(model_, template_override);
     } catch (const std::exception & e) {
         load_error_ = std::string("failed to initialize chat template: ") + e.what();
         return false;
@@ -308,7 +305,7 @@ bool onyx_engine::load(const onyx_args & args) {
 
     if (is_decision) {
         try {
-            decision_.init(model_, media_marker());
+            decision_.init(model_, media_marker(), mctx_);
         } catch (const std::exception & e) {
             load_error_ = std::string("failed to set up the decision model: ") + e.what();
             return false;
@@ -318,6 +315,11 @@ bool onyx_engine::load(const onyx_args & args) {
     }
 
     if (!embedding_mode_) {
+        // before any slot holds state: the probe clears the memory
+        seq_rm_ = onyx_probe_seq_rm(ctx_);
+        if (args.verbose) {
+            fprintf(stderr, "memory: sequence removal is %s\n", onyx_seq_rm_kind_name(seq_rm_));
+        }
         slots_.resize((size_t) n_parallel_);
         for (int32_t i = 0; i < n_parallel_; i++) {
             slots_[(size_t) i].seq_id = (llama_seq_id) i;
@@ -326,6 +328,10 @@ bool onyx_engine::load(const onyx_args & args) {
     }
 
     return true;
+}
+
+bool onyx_engine::rank_pooling() const {
+    return embedding_mode_ && ctx_ && llama_pooling_type(ctx_) == LLAMA_POOLING_TYPE_RANK;
 }
 
 int32_t  onyx_engine::n_ctx_train() const { return llama_model_n_ctx_train(model_); }
@@ -340,14 +346,14 @@ std::string onyx_engine::model_desc() const {
 }
 
 std::string onyx_engine::chat_template_source() const {
-    return chat_templates_ ? common_chat_templates_source(chat_templates_.get()) : "";
+    return chat_templates_ ? chat_templates_->source() : "";
 }
 
 std::vector<llama_token> onyx_engine::tokenize(const std::string & text, bool add_special, bool parse_special) const {
     return onyx_tokenize(vocab_, text, add_special, parse_special);
 }
 
-std::vector<llama_token> onyx_engine::tokenize_prompt(const common_chat_prompt & prompt) const {
+std::vector<llama_token> onyx_engine::tokenize_prompt(const onyx_prompt & prompt) const {
     // template text is parsed for special tokens; text that came from the
     // request (message content) is not, so a client cannot write "<|im_end|>"
     // and get the control token. BOS, if the vocab adds one, comes once.
@@ -525,21 +531,16 @@ onyx_gen_result onyx_engine::generate(const onyx_gen_params & params, const onyx
     // the sampler is built on the calling thread so that a bad grammar fails
     // the request synchronously, before it ever reaches the engine loop
     try {
-        req->smpl = common_sampler_init(model_, req->params.sampling);
+        req->smpl = std::make_unique<onyx_sampler>(model_, req->params.sampling);
     } catch (const std::exception & e) {
         res.error = std::string("failed to initialize sampler: ") + e.what();
-        return res;
-    }
-    if (!req->smpl) {
-        res.error = "failed to initialize sampler (bad grammar?)";
         return res;
     }
 
     {
         std::lock_guard<std::mutex> lock(q_mutex_);
         if (max_queue_ > 0 && (int32_t) queue_.size() >= max_queue_) {
-            common_sampler_free(req->smpl);
-            req->smpl = nullptr;
+            req->smpl.reset();
             {
                 std::lock_guard<std::mutex> m_lock(metrics_mutex_);
                 metrics_.requests_rejected++;
@@ -753,10 +754,7 @@ void onyx_engine::loop() {
         pending.swap(queue_);
     }
     for (auto & req : pending) {
-        if (req->smpl) {
-            common_sampler_free(req->smpl);
-            req->smpl = nullptr;
-        }
+        req->smpl.reset();
         req->result.error = "engine is shutting down";
         {
             std::lock_guard<std::mutex> lock(req->mu);
@@ -810,10 +808,7 @@ void onyx_engine::sweep_queue() {
             std::lock_guard<std::mutex> m_lock(metrics_mutex_);
             metrics_.requests_timed_out++;
         }
-        if (req->smpl) {
-            common_sampler_free(req->smpl);
-            req->smpl = nullptr;
-        }
+        req->smpl.reset();
         {
             std::lock_guard<std::mutex> lock(req->mu);
             req->finished = true;
@@ -843,10 +838,7 @@ bool onyx_engine::admit_queued() {
                 queue_.pop_front();
                 req->finished = true;
                 req->result.finish = ONYX_FINISH_CANCEL;
-                if (req->smpl) {
-                    common_sampler_free(req->smpl);
-                    req->smpl = nullptr;
-                }
+                req->smpl.reset();
                 req->cv.notify_all();
                 continue;
             }
@@ -862,10 +854,18 @@ bool onyx_engine::admit_queued() {
             }
             size_t lcp = 0;
             // media prompts are never prefix-matched (see prefill_media)
-            if (cache_reuse_ > 0 && req->params.cache_prompt && req->params.media.empty()) {
+            if (cache_reuse_ > 0 && req->params.cache_prompt && req->params.media.empty() &&
+                seq_rm_ != ONYX_SEQ_RM_NONE) {
                 const size_t max_lcp = std::min(slot.cache_tokens.size(), req->params.prompt_tokens.size() - 1);
                 while (lcp < max_lcp && slot.cache_tokens[lcp] == req->params.prompt_tokens[lcp]) {
                     lcp++;
+                }
+                // memory that removes only whole sequences keeps a slot's
+                // state only for a prompt that extends all of it, so a
+                // partial match is worth nothing there (and would cost the
+                // slot whose state could be extended)
+                if (seq_rm_ == ONYX_SEQ_RM_FULL && lcp < slot.cache_tokens.size()) {
+                    lcp = 0;
                 }
             }
             if (!best || lcp > best_lcp || (lcp == best_lcp && slot.t_last_used < best->t_last_used)) {
@@ -1211,17 +1211,23 @@ void onyx_engine::sample_slot(onyx_slot & slot, int32_t tok_idx) {
     const bool forcing = slot.rb_state == onyx_slot::RB_FORCING && slot.rb_forced_idx < rb.forced.size();
     if (forcing) {
         // still "decode" the forced token through the sampler's accept path
-        // so its penalty/repeat/grammar state stays consistent, but it is
-        // not sampled -- all other logits are irrelevant, we already know
-        // what comes next.
+        // so its penalty state stays consistent (the grammar does not see
+        // forced tokens), but it is not sampled -- all other logits are
+        // irrelevant, we already know what comes next.
         tok = rb.forced[slot.rb_forced_idx++];
-        common_sampler_accept(req.smpl, tok, false);
+        req.smpl->accept(tok, false);
         if (slot.rb_forced_idx >= rb.forced.size()) {
             slot.rb_state = onyx_slot::RB_DONE;
         }
     } else {
-        tok = common_sampler_sample(req.smpl, ctx_, tok_idx);
-        common_sampler_accept(req.smpl, tok, true);
+        try {
+            tok = req.smpl->sample(ctx_, tok_idx);
+            req.smpl->accept(tok, true);
+        } catch (const std::exception & e) {
+            // a grammar with no allowed token left fails this request only
+            finish(slot, ONYX_FINISH_STOP, std::string("sampling failed: ") + e.what());
+            return;
+        }
 
         if (slot.rb_state == onyx_slot::RB_IDLE && !rb.start_tag.empty()) {
             // rolling match: a mismatch restarts the match window at 1 if
@@ -1392,10 +1398,7 @@ void onyx_engine::finish(onyx_slot & slot, onyx_finish_reason reason, const std:
         emit(slot, res.text.substr(old_sent), collect_delivered_probs(slot, res));
     }
 
-    if (req->smpl) {
-        common_sampler_free(req->smpl);
-        req->smpl = nullptr;
-    }
+    req->smpl.reset();
 
     slot.req.reset();
     slot.state       = onyx_slot::ONYX_SLOT_IDLE;
@@ -1501,9 +1504,14 @@ bool onyx_engine::decision_eval(const onyx_decision_prompt & p, llama_seq_id seq
     if (!want_out) {
         return true;
     }
+    return decision_read(p, out_from, *out, err);
+}
 
-    // outputs of the last batch: batch index == position - out_from
-    std::vector<float> & scores = *out;
+// Reads p's outputs from the last batch, which holds rows [out_from, end) of
+// the prompt in order: batch index == row - out_from.
+bool onyx_engine::decision_read(const onyx_decision_prompt & p, int32_t out_from, std::vector<float> & scores,
+                                std::string & err) {
+    const int32_t n = (int32_t) p.tokens.size();
     scores.clear();
     if (!p.labels.empty()) {
         const float * logits = llama_get_logits_ith(ctx_, n - 1 - out_from);
@@ -1565,6 +1573,186 @@ bool onyx_engine::decision_eval(const onyx_decision_prompt & p, llama_seq_id seq
         scores.push_back(dot / std::sqrt((float) n_half));
     }
     return true;
+}
+
+// A prompt whose media are rows of its own (clef, lfm2-d1-omni, vllm-d3),
+// evaluated into a cleared seq 0, which is cleared again after. As in
+// decision_eval(), every row from the first one read to the end goes in one
+// batch, the media as embedding rows next to the text (llama-server's mixed
+// batch); in a non-causal context that is the whole prompt. Media before
+// that point are decoded on their own through mtmd, text in --batch-size
+// chunks.
+bool onyx_engine::decision_eval_rows(const onyx_decision_prompt & p, std::vector<float> & scores, std::string & err) {
+    llama_memory_t mem = llama_get_memory(ctx_);
+    decision_reuse(p.tokens, 0);
+    if (!mctx_) {
+        err = "prompt: image input needs a projector (--mmproj)";
+        return false;
+    }
+
+    const int32_t n = (int32_t) p.tokens.size();
+    int32_t out_from = n - 1;
+    {
+        const int32_t first = p.pos_first();
+        if (first >= 0) {
+            out_from = first;
+        }
+        if (!llama_get_causal_attn(ctx_) || !mem) {
+            out_from = 0;
+        }
+    }
+    if (n - out_from > n_batch_) {
+        err = "prompt: the question, its options and the media they read (" + std::to_string(n - out_from) +
+              " rows) do not fit in one batch; raise --batch-size (now " + std::to_string(n_batch_) + ")";
+        return false;
+    }
+
+    // which media chunk starts at a row
+    std::vector<int32_t> chunk_at((size_t) n, -1);
+    for (size_t c = 0; c < p.chunks.size(); c++) {
+        if (p.chunks[c].row >= (size_t) n) {
+            err = "the decision prompt's media rows are out of range";
+            return false;
+        }
+        chunk_at[p.chunks[c].row] = (int32_t) c;
+    }
+
+    const int32_t n_embd = llama_model_n_embd_inp(model_);
+    const bool    mrope  = mtmd_decode_use_mrope(mctx_);
+    auto clear = [&]() {
+        if (mem) {
+            llama_memory_seq_rm(mem, 0, -1, -1);
+        }
+    };
+
+    llama_pos           n_past   = 0;
+    int32_t             n_queued = 0;   // rows in `batch`
+    llama_batch_ext_ptr batch(llama_batch_ext_init(ctx_));
+    std::vector<std::vector<float>> embd_keep; // encoder outputs referenced by the batch
+    auto decode = [&]() -> bool {
+        const int32_t rc = llama_process(ctx_, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+        if (rc != 0) {
+            err = rc == 1 ? "prompt does not fit in the context window (no free KV slot)" : "decision evaluation failed";
+            return false;
+        }
+        llama_batch_ext_clear(batch.get());
+        embd_keep.clear();
+        n_queued = 0;
+        return true;
+    };
+    auto add_token = [&](int32_t row) -> bool {
+        const int32_t   idx = llama_batch_ext_add_token(batch.get(), 0, p.tokens[(size_t) row]);
+        const llama_pos pos = n_past++;
+        if (idx < 0 || !llama_batch_ext_set_pos(batch.get(), idx, &pos)) {
+            return false;
+        }
+        n_queued++;
+        if (row >= out_from && (p.reads_embeddings() || row == n - 1)) {
+            llama_batch_ext_set_output_logits(batch.get(), idx, true);
+        }
+        if (!p.order.empty() && p.order[(size_t) row] != LLAMA_DECISION_ORDER_NONE) {
+            llama_batch_ext_set_decision_order(batch.get(), idx, (llama_decision_order) p.order[(size_t) row]);
+        }
+        return true;
+    };
+
+    int32_t row = 0;
+    while (row < n) {
+        const int32_t c = chunk_at[(size_t) row];
+        if (c < 0) {
+            if (!add_token(row)) {
+                clear();
+                err = "failed to build the decision batch";
+                return false;
+            }
+            row++;
+            // before the rows read, text goes in --batch-size chunks
+            if (row <= out_from && (n_queued >= n_batch_ || row == out_from)) {
+                if (!decode()) {
+                    clear();
+                    return false;
+                }
+            }
+            continue;
+        }
+
+        const mtmd_input_chunk * chunk  = p.chunks[(size_t) c].chunk.get();
+        const int32_t            n_rows = (int32_t) mtmd_input_chunk_get_n_tokens(chunk);
+        if (row + n_rows > n) {
+            clear();
+            err = "the decision prompt's media rows are out of range";
+            return false;
+        }
+        if (row < out_from) {
+            // before the rows read: mtmd decodes the chunk on its own, after
+            // any text already queued
+            if (n_queued > 0 && !decode()) {
+                clear();
+                return false;
+            }
+            llama_pos new_n_past = n_past;
+            if (mtmd_helper_eval_chunk_single(mctx_, ctx_, chunk, n_past, 0, n_batch_,
+                                              /* logits_last */ false, &new_n_past) != 0) {
+                clear();
+                err = "failed to evaluate media prompt";
+                return false;
+            }
+            n_past = new_n_past;
+            row   += n_rows;
+            if (row > out_from) {
+                clear();
+                err = "a decision prompt reads a row inside its media";
+                return false;
+            }
+            continue;
+        }
+
+        // in the batch read: the encoder's rows as embeddings, at the
+        // positions mtmd_helper_decode_image_chunk would give them
+        if (mtmd_encode_chunk(mctx_, chunk) != 0) {
+            clear();
+            err = "prompt: failed to encode media input";
+            return false;
+        }
+        const float * enc = mtmd_get_output_embd(mctx_);
+        embd_keep.emplace_back(enc, enc + (size_t) n_rows * (size_t) n_embd);
+        const float * embd = embd_keep.back().data();
+
+        const mtmd_image_tokens * image = mtmd_input_chunk_get_tokens_image(chunk);
+        const llama_pos           pos_0 = n_past;
+        for (int32_t i = 0; i < n_rows; i++) {
+            llama_pos pos[4] = { pos_0 + i, pos_0 + i, pos_0 + i, pos_0 + i };
+            if (mrope && image) {
+                const mtmd_decoder_pos rel = mtmd_image_tokens_get_decoder_pos(image, pos_0, (size_t) i);
+                pos[0] = (llama_pos) rel.t;
+                pos[1] = (llama_pos) rel.y;
+                pos[2] = (llama_pos) rel.x;
+                pos[3] = (llama_pos) rel.z;
+            }
+            const int32_t idx = llama_batch_ext_add_embd(batch.get(), 0,
+                                                         { embd + (size_t) i * (size_t) n_embd, 1, (size_t) n_embd });
+            if (idx < 0 || !llama_batch_ext_set_pos(batch.get(), idx, pos)) {
+                clear();
+                err = "failed to build the decision batch";
+                return false;
+            }
+            n_queued++;
+            if (p.reads_embeddings()) {
+                llama_batch_ext_set_output_logits(batch.get(), idx, true);
+            }
+        }
+        n_past += mtmd_input_chunk_get_n_pos(chunk);
+        row    += n_rows;
+    }
+    if (n_queued > 0 && !decode()) {
+        clear();
+        return false;
+    }
+
+    const bool ok = decision_read(p, out_from, scores, err);
+    // media rows cannot be prefix-matched, so nothing is kept
+    clear();
+    return ok;
 }
 
 // A prompt with media, label families only: prefilled through mtmd into a
@@ -1660,7 +1848,7 @@ bool onyx_engine::decide(const std::vector<onyx_decision_prompt> & prompts, bool
     const int32_t n_vocab = llama_vocab_n_tokens(vocab_);
     bool has_media = false;
     for (const auto & p : prompts) {
-        has_media = has_media || !p.media.empty();
+        has_media = has_media || !p.media.empty() || !p.chunks.empty();
         if (!p.media.empty()) {
             continue;
         }
@@ -1738,6 +1926,13 @@ bool onyx_engine::decide(const std::vector<onyx_decision_prompt> & prompts, bool
             if (!decision_eval_media(p, scores[i], n_tokens, err)) {
                 return false;
             }
+            continue;
+        }
+        if (!p.chunks.empty()) {
+            if (!decision_eval_rows(p, scores[i], err)) {
+                return false;
+            }
+            n_tokens += (int32_t) p.tokens.size();
             continue;
         }
         // reuse only what comes before the first position read, and never

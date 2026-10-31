@@ -13,7 +13,7 @@ Onyx Engine is built to sit behind something you control, on the same machine or
 - **Refuses browsers.** Any request with an `Origin` header gets `403`, on every route, `/health` included, before the key is even checked. `OPTIONS` gets `403`. A web page cannot call the engine directly.
 - **Does no I/O on a request's behalf.** A request can name no URL and no file for the engine to open. Images and audio arrive as inline base64; `http://`, `https://` and `file://` are refused with `400`. There is no server-side request forgery surface to defend.
 - **Treats control tokens in messages as text.** Special tokens are parsed only in template text, never in message content, so a user cannot smuggle in `<|im_end|>` and forge a turn boundary.
-- **Validates its inputs.** Unsupported fields, bad token ids, oversized prompts and malformed grammars are `400`s, not crashes. Request bodies are capped at 100 MiB (`413` beyond).
+- **Validates its inputs.** Unsupported fields, bad token ids, oversized prompts and malformed grammars are `400`s, not crashes. Request bodies are capped at 100 MiB by default (`413` beyond); `--max-request-bytes` lowers the cap where large inline media have no use.
 - **Can shed load.** `--max-queue N` bounds the wait queue; beyond it, generation requests get `503` with `Retry-After`.
 - **Cancels abandoned work.** A client that disconnects mid-stream has its request cancelled and its slot freed at the next tick.
 
@@ -23,7 +23,7 @@ Onyx Engine is built to sit behind something you control, on the same machine or
 |---|---|
 | **Transport encryption** | The engine speaks plain HTTP. Terminate TLS in a reverse proxy, or keep the traffic on loopback or an encrypted private network. |
 | **Binding beyond loopback** | If you pass `--host 0.0.0.0` (or a LAN address), the engine requires `--api-key`. Firewall the port as well. The `Host` check applies only to loopback binds; on a public bind the key is the guard. |
-| **Key hygiene** | `--api-key` appears in the process's argument list, which other local users may be able to read. Pass it from your supervisor's secret store, restrict who can list processes, and rotate it by restarting. |
+| **Key hygiene** | `--api-key` appears in the process's argument list, which other local users may be able to read. Pass the key with `--api-key-file PATH` (a file only the service user can read) or the `ONYX_ENGINE_API_KEY` environment variable instead: another user cannot read either by default, though processes of the same user can read the environment. Rotate the key by restarting. |
 | **Rate limits** | There are none per client. `--max-queue` bounds the total queue, but one client with a key can still fill it. Put per-client limits in the proxy. |
 | **Who may use the key** | There is one key and no per-user identity or audit log. If you need either, authenticate in the proxy. |
 | **Untrusted model files** | A GGUF is parsed by llama.cpp. Load models you trust, from sources you trust. |

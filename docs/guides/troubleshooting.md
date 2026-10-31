@@ -39,7 +39,7 @@ The port opens at once and `GET /health` answers `503` (`Loading model`) until l
 | `400 the response stopped at max_tokens ... before the JSON required by the response format was complete` | A `response_format` or `json_schema` answer ran out of tokens mid-object. Raise `max_tokens`, or `-c` when the message names the context limit. |
 | `failed to create inference context (... cache types q8_0/q8_0)` | The model's head size is not a multiple of the cache type's block size, or the type needs flash attention the backend lacks. Use `f16`, `bf16` or a type that fits. |
 | `--override-tensor: unknown buffer type` | The name after `=` is not a buffer type of any device in this build; the message lists the ones that exist. |
-| `413` (empty body) | The request body is over 100 MiB. |
+| `413` (empty body) | The request body is over `--max-request-bytes` (default 100 MiB). |
 | `400 unsupported field: logit_bias` (or `mirostat`, `dry_*`, `xtc_*`, `typical_p`, `dynatemp_*`) | Not implemented. Remove the field. See [compatibility](../reference/compatibility.md). |
 | `400 only n=1 is supported` | Send one request per choice. |
 | `400 prompt does not fit in the context window` | The prompt is longer than **one slot's** window. Read `n_ctx` from `/props`, shorten the prompt, or raise `-c` (or lower `-np`). |

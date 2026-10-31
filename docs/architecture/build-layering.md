@@ -50,7 +50,16 @@ building any of upstream's own CLI tools. `MTMD_VIDEO` is forced `OFF`:
 mtmd's video path shells out to an `ffmpeg` binary at runtime, and
 `onyx-engine` takes no runtime dependency on external processes.
 `onyx-engine`'s include paths pull from exactly two places in that tree:
-`<llama src>/common` and `<llama src>/tools/mtmd`.
+`<llama src>/common` and `<llama src>/tools/mtmd`. Of `common/`, only the
+chat seam (`src/onyx_chat.cpp`: chat, Jinja, the schema converter) and
+`src/decision.cpp` (`common.h`'s string helpers) include anything, plus
+`src/llama_util.cpp` for the log threshold.
+
+JSON in Onyx's own code is `nlohmann::ordered_json` from
+[`third_party/nlohmann`](../../third_party/nlohmann) (the header-only 3.12.0 copy the pin
+vendors, byte for byte, with its deep-nesting backport), reached through
+`src/onyx_json.h`. Values cross into `common/`'s `common_json` as text, in the
+chat seam only.
 
 `cpp-httplib` (the HTTP server used in `server.cpp`) is **not** one of them
 any more. It is onyx-engine's own vendored copy under

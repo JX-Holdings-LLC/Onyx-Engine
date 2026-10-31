@@ -39,6 +39,7 @@ FROM ubuntu:${UBUNTU_VERSION} AS cpu
 COPY --from=build /src/build/onyx-engine /usr/local/bin/onyx-engine
 COPY --from=build /src/LICENSE /usr/share/doc/onyx-engine/LICENSE
 COPY --from=build /src/third_party/cpp-httplib/LICENSE /usr/share/doc/onyx-engine/LICENSE-cpp-httplib
+COPY --from=build /src/third_party/nlohmann/LICENSE.MIT /usr/share/doc/onyx-engine/LICENSE-nlohmann-json
 COPY --from=build /src/.deps/llama.cpp/LICENSE /usr/share/doc/onyx-engine/LICENSE-llama.cpp
 RUN useradd --system --uid 10001 --no-create-home onyx
 USER onyx
@@ -65,6 +66,7 @@ FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION} AS cuda
 COPY --from=build-cuda /src/build/onyx-engine /usr/local/bin/onyx-engine
 COPY --from=build-cuda /src/LICENSE /usr/share/doc/onyx-engine/LICENSE
 COPY --from=build-cuda /src/third_party/cpp-httplib/LICENSE /usr/share/doc/onyx-engine/LICENSE-cpp-httplib
+COPY --from=build-cuda /src/third_party/nlohmann/LICENSE.MIT /usr/share/doc/onyx-engine/LICENSE-nlohmann-json
 COPY --from=build-cuda /src/.deps/llama.cpp/LICENSE /usr/share/doc/onyx-engine/LICENSE-llama.cpp
 RUN useradd --system --uid 10001 --no-create-home onyx
 USER onyx

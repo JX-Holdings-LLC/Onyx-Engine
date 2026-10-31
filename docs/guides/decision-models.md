@@ -42,7 +42,7 @@ curl http://127.0.0.1:8083/v1/systemone -H 'Content-Type: application/json' -d '
 
 ## Images
 
-With a projector (`--mmproj`) the label families accept `images` (data URLs, at most 8), or `image_url` parts inside a `state` made of chat messages. Four families take images: `openjev`, `pplx-decider`, `lfm2-d1` and `h2o-lightning`. `clef`, `lfm2-d1-omni` and `vllm-d3` answer image requests with `501` because they read positions after the media, or need the whole prompt in one non-causal batch, which the engine's chunk-by-chunk media prefill cannot give them. Lifting that is on the [roadmap](../../ROADMAP.md#now).
+With a projector (`--mmproj`) the families whose template has a place for images accept `images` (data URLs, at most 8), or `image_url` parts inside a `state` made of chat messages: `openjev`, `pplx-decider`, `lfm2-d1`, `h2o-lightning`, `vllm-d3`, `lfm2-d1-omni` and `clef`. `lfm2-d1-omni` also takes one audio clip instead of images; its media answers are not calibrated (temperature 1). The other families answer image requests with `501`. A prompt with media is never reused by the next request.
 
 ## Speed
 
@@ -52,7 +52,7 @@ Questions in one request that share a prompt prefix (the causal families) evalua
 
 | Status | Meaning |
 |---|---|
-| `400` | malformed request, too many options for the family (52 for openjev, 255 for most), or a question whose options do not fit one `--batch-size` batch |
+| `400` | malformed request, too many options for the family (52 for openjev, 255 for most), a question whose options (and, for clef, lfm2-d1-omni and vllm-d3, the media they read) do not fit one `--batch-size` batch, or media that cannot be decoded |
 | `501` | not a decision model; or a family that cannot take images; or a build that cannot take them |
 
 Mechanism, family by family: [decision models architecture](../architecture/decision-models.md).

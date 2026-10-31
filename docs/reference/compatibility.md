@@ -11,7 +11,7 @@ Onyx Engine implements a subset of the OpenAI API and a few llama-server conveni
 | `n` other than 1, on chat or completions | `400 only n=1 is supported` |
 | `logit_bias`, `typical_p`, `mirostat`, `mirostat_tau`, `mirostat_eta`, `dynatemp_range`, `dynatemp_exponent`, `dry_multiplier`, `dry_base`, `dry_allowed_length`, `dry_penalty_last_n`, `xtc_probability`, `xtc_threshold` | `400 unsupported field: <name>` |
 | `echo`, `suffix`, `best_of` on `/v1/completions` | `400 unsupported field: <name>` |
-| `dimensions` on `/v1/embeddings` | `400 dimensions is not supported` |
+| `dimensions` on `/v1/embeddings` outside 1 to `n_embd`, not an integer, or under `--pooling rank` | `400`; within the range the vector is truncated and renormalised |
 | an `encoding_format` other than `float` or `base64` | `400 encoding_format must be float or base64` |
 | `top_logprobs` without `logprobs: true`, or outside 0 to 20 | `400` |
 | a prompt longer than one slot's context | `400 prompt does not fit in the context window` |
@@ -23,7 +23,7 @@ Onyx Engine implements a subset of the OpenAI API and a few llama-server conveni
 | a `Host` header that is not a loopback name, when bound to loopback | `403` |
 | any route but `/health` while the model is loading | `503 Loading model` (`unavailable_error`) |
 | a chat or text completion when `--max-queue` requests are already waiting | `503` with `Retry-After: 1` |
-| a request body over 100 MiB | `413` |
+| a request body over `--max-request-bytes` (default 100 MiB) | `413` |
 | a route that the process's mode does not serve | `501`; see [which routes answer](api/README.md#which-routes-answer) |
 
 `model` and `user` are accepted as client metadata and otherwise ignored: the process always uses the model it loaded.

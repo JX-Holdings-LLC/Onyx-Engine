@@ -71,15 +71,17 @@ Families (from `<arch>.decision.type`):
 | Family | Reads | Images |
 |---|---|---|
 | `openjev`, `lev`, `nimble`, `pplx-decider`, `granite-switch`, `lfm2-d1`, `h2o-lightning` | logits of one label token per option, at the last prompt token | openjev, pplx-decider, lfm2-d1, h2o-lightning |
-| `vllm-d3` | same, non-causal: the whole prompt is one batch | not in onyx-engine yet (`501`) |
-| `laya`, `lfm2-d1-omni` | embeddings at one marker token per option; the whole prompt is one batch | lfm2-d1-omni: not in onyx-engine yet (`501`) |
+| `vllm-d3` | same, non-causal: the whole prompt is one batch | yes |
+| `laya`, `lfm2-d1-omni` | embeddings at one marker token per option; the whole prompt is one batch | lfm2-d1-omni: images, or one audio clip |
 | `kev` | dot product of the last token's and each option's hidden state | no |
-| `clef`, `vllm-decision2` | a joint head over marked spans (all of a request's questions in one prompt, for clef) | clef: not in onyx-engine yet (`501`) |
+| `clef`, `vllm-decision2` | a joint head over marked spans (all of a request's questions in one prompt, for clef) | clef |
 
 Questions of one request that share a prompt prefix (the causal families)
 evaluate it once, and a later request that starts the same way reuses it,
 unless `--cache-reuse 0`. Requests run one at a time.
 
-Errors: `400` for a malformed request, too many options, or a question
-whose options do not fit in one `--batch-size` batch; `501` as above, and
-for images on a model or build that cannot take them.
+Errors: `400` for a malformed request, too many options, a question
+whose options do not fit in one `--batch-size` batch (for clef,
+lfm2-d1-omni and vllm-d3 with media, counting the media rows read in that
+batch), or media that cannot be decoded; `501` as above, and for images on
+a model or build that cannot take them.

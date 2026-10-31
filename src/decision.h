@@ -13,7 +13,7 @@
 // the prompts is onyx_engine::decide() (engine.cpp).
 #pragma once
 
-#include "json.h"
+#include "onyx_json.h"
 #include "llama.h"
 
 #include <functional>
@@ -22,7 +22,9 @@
 #include <string>
 #include <vector>
 
-struct common_chat_template;
+class onyx_jinja_template;
+struct mtmd_context;
+struct mtmd_input_chunk;
 
 // one decoded media file, same as onyx_media_buffer in engine.h
 using onyx_decision_media = std::vector<unsigned char>;
@@ -64,13 +66,13 @@ enum onyx_decision_question_type {
 
 struct onyx_decision_option {
     std::string key;
-    common_json description; // null if not provided
+    onyx_json description; // null if not provided
 };
 
 struct onyx_decision_question {
     std::string                        id;
     onyx_decision_question_type        type = ONYX_DECISION_QUESTION_CHOICE;
-    common_json                        instructions;
+    onyx_json                        instructions;
     std::vector<onyx_decision_option>  options; // in the order of the model outputs
 };
 
@@ -79,10 +81,22 @@ struct onyx_decision_question {
 // (embeddings rows at prompt positions) or `n_scores` (a joint head's first
 // embeddings rows, with `order` marking the spans it reads).
 struct onyx_decision_prompt {
-    std::vector<llama_token> tokens;      // text-only prompt
+    // The prompt's rows. With `chunks` (clef, lfm2-d1-omni and vllm-d3 with
+    // media), LLAMA_TOKEN_NULL marks each row a media chunk fills, and every
+    // read position (markers, order) counts rows.
+    std::vector<llama_token> tokens;
 
-    // with media: the text (one media marker per buffer) and the buffers;
-    // `tokens` is then empty and only `labels` reading is used
+    // one media chunk (image or audio) of the prompt, already tokenized by
+    // mtmd; it fills rows [row, row + its token count)
+    struct media_chunk {
+        size_t                            row = 0;
+        std::shared_ptr<mtmd_input_chunk> chunk;
+    };
+    std::vector<media_chunk> chunks;
+
+    // with media, label families that read the last row only: the text (one
+    // media marker per buffer) and the buffers, prefilled by mtmd chunk by
+    // chunk; `tokens` is then empty
     std::string                      text;
     std::vector<onyx_decision_media> media;
 
@@ -109,7 +123,8 @@ public:
     // Reads the "<arch>.decision.*" metadata. Leaves type() at NONE for a
     // model that is not a decision model; throws std::runtime_error for one
     // that is, but cannot be served.
-    void init(const llama_model * model, const std::string & media_marker);
+    // `mctx` is the projector (--mmproj), null without one.
+    void init(const llama_model * model, const std::string & media_marker, mtmd_context * mctx);
 
     onyx_decision_type type() const { return type_; }
 
@@ -127,31 +142,31 @@ public:
     bool onyx_supports_media() const;
 
     // All of these throw std::invalid_argument on a bad request.
-    std::vector<onyx_decision_question> parse_questions(const common_json & body) const;
+    std::vector<onyx_decision_question> parse_questions(const onyx_json & body) const;
 
     // The state without its media parts; media go to `files`, in order.
-    common_json parse_state(const common_json & body, std::vector<onyx_decision_media> & files,
+    onyx_json parse_state(const onyx_json & body, std::vector<onyx_decision_media> & files,
                             const onyx_decision_decoder & decode) const;
 
     // The state as the model reads it; done once per request.
-    common_json prepare_state(const common_json & state) const;
+    onyx_json prepare_state(const onyx_json & state) const;
 
     // prompts evaluated for one question, each shows the options in another order
     size_t n_variants(const onyx_decision_question & question) const;
 
-    onyx_decision_prompt fill_prompt(const common_json & state,
+    onyx_decision_prompt fill_prompt(const onyx_json & state,
                                      const std::vector<onyx_decision_question> & questions,
                                      const onyx_decision_question & question,
                                      size_t variant,
                                      const std::vector<onyx_decision_media> & files) const;
 
     // clef: one prompt for all the questions; the scores of all their options, in order
-    onyx_decision_prompt fill_prompt_joint(const common_json & state,
+    onyx_decision_prompt fill_prompt_joint(const onyx_json & state,
                                            const std::vector<onyx_decision_question> & questions,
                                            const std::vector<onyx_decision_media> & files) const;
 
     // scores: the raw model outputs of each variant
-    common_json format_answer(const onyx_decision_question & question,
+    onyx_json format_answer(const onyx_decision_question & question,
                               const std::vector<std::vector<float>> & scores,
                               bool has_media) const;
 
@@ -159,7 +174,8 @@ private:
     onyx_decision_type type_  = ONYX_DECISION_NONE;
     const llama_vocab * vocab_ = nullptr;
     std::string         media_marker_;
-    std::unique_ptr<common_chat_template> tmpl_; // the "systemone" template
+    mtmd_context *      mctx_  = nullptr;
+    std::unique_ptr<onyx_jinja_template> tmpl_; // the "systemone" template
 
     std::map<std::string, float>          temperatures_; // "<type>" or "<type>.<bucket>"
     std::map<size_t, std::vector<float>>  score_bias_;   // by number of score levels
@@ -186,25 +202,31 @@ private:
     std::string              quoted_first_;     // their first bytes
 
     std::vector<llama_token> tokenize(const std::string & text, bool parse_special) const;
-    std::string render_template(const common_json & inp) const;
-    std::string render(const common_json & state,
+    // Tokenizes text with its media markers through mtmd and appends the
+    // rows to `out` (media rows as LLAMA_TOKEN_NULL, the chunks to
+    // out.chunks). Sets `is_audio` when a chunk is audio.
+    void tokenize_media(const std::string & text, const std::vector<onyx_decision_media> & files,
+                        onyx_decision_prompt & out, bool * is_audio = nullptr) const;
+    std::string render_template(const onyx_json & inp) const;
+    std::string render(const onyx_json & state,
                        const std::vector<onyx_decision_question> & questions,
                        const onyx_decision_question & question,
                        size_t variant, size_t n_images, bool is_audio = false) const;
-    common_json render_options(const onyx_decision_question & question, size_t variant) const;
+    onyx_json render_options(const onyx_decision_question & question, size_t variant) const;
     size_t      n_outputs(const onyx_decision_question & question) const;
     void        d1_labels(const onyx_decision_question & question,
                           std::vector<std::string> & texts,
                           std::vector<std::vector<llama_token>> & groups) const;
-    common_json render_h2o(const common_json & state, const onyx_decision_question & question) const;
+    onyx_json render_h2o(const onyx_json & state, const onyx_decision_question & question) const;
     std::string h2o_cut_state(const std::string & text) const;
     std::string h2o_quote(const std::string & text) const;
     void        fill_laya(std::vector<llama_token> & tokens, const onyx_decision_question & question,
                           onyx_decision_prompt & out) const;
-    void        fill_d1omni(const common_json & state,
+    void        fill_d1omni(const onyx_json & state,
                             const std::vector<onyx_decision_question> & questions,
                             const onyx_decision_question & question,
-                            size_t variant, onyx_decision_prompt & out) const;
+                            size_t variant, const std::vector<onyx_decision_media> & files,
+                            onyx_decision_prompt & out) const;
 
     float  get_temperature(const onyx_decision_question & question) const;
     double get_confidence(onyx_decision_question_type question_type, const std::vector<double> & probs) const;
