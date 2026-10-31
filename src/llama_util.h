@@ -1,5 +1,6 @@
 // Onyx-owned helpers over the public llama.h API: tokenize, detokenize,
-// token-to-piece, llama_batch filling and log filtering.
+// token-to-piece, llama_batch filling, the memory-capability probe and log
+// filtering.
 //
 // Stage 1 of the plan to stop linking llama.cpp's common/ library
 // (reports/Replacing llama cpp common code.md): these replace
@@ -29,6 +30,22 @@ std::string onyx_detokenize(const llama_vocab * vocab, const std::vector<llama_t
 void onyx_batch_clear(llama_batch & batch);
 void onyx_batch_add(llama_batch & batch, llama_token id, llama_pos pos,
                     const std::vector<llama_seq_id> & seq_ids, bool logits);
+
+// What llama_memory_seq_rm can do on a context's memory, found by trying it
+// (common_context_can_seq_rm's probe, on llama.h only).
+enum onyx_seq_rm_kind {
+    ONYX_SEQ_RM_NONE,    // no memory, or the probe decode failed
+    ONYX_SEQ_RM_PARTIAL, // any tail of a sequence can be removed (KV caches)
+    ONYX_SEQ_RM_FULL,    // only whole sequences (recurrent state without rollback)
+    ONYX_SEQ_RM_BOUNDED, // a tail of up to llama_n_rs_seq tokens (recurrent rollback)
+};
+
+const char * onyx_seq_rm_kind_name(onyx_seq_rm_kind kind);
+
+// Decodes two tokens into sequence 0 and tries to cut the second off.
+// Clears the context's memory before and after, so call it before any
+// sequence holds state.
+onyx_seq_rm_kind onyx_probe_seq_rm(llama_context * ctx);
 
 // Routes llama.cpp's, ggml's and mtmd's logging to stderr at warning level
 // and above, so a supervised process's log stays readable. common/'s own

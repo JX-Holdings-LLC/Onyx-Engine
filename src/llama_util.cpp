@@ -77,6 +77,57 @@ void onyx_batch_add(llama_batch & batch, llama_token id, llama_pos pos,
     batch.n_tokens++;
 }
 
+const char * onyx_seq_rm_kind_name(onyx_seq_rm_kind kind) {
+    switch (kind) {
+        case ONYX_SEQ_RM_PARTIAL: return "partial";
+        case ONYX_SEQ_RM_FULL:    return "full";
+        case ONYX_SEQ_RM_BOUNDED: return "bounded";
+        case ONYX_SEQ_RM_NONE:    break;
+    }
+    return "none";
+}
+
+onyx_seq_rm_kind onyx_probe_seq_rm(llama_context * ctx) {
+    llama_memory_t mem = llama_get_memory(ctx);
+    if (!mem) {
+        return ONYX_SEQ_RM_NONE;
+    }
+    if (llama_n_rs_seq(ctx) > 0) {
+        return ONYX_SEQ_RM_BOUNDED;
+    }
+
+    llama_memory_clear(mem, true);
+
+    onyx_seq_rm_kind kind = ONYX_SEQ_RM_PARTIAL;
+    {
+        llama_batch_ext * batch = llama_batch_ext_init(ctx);
+        // contexts that take a state embedding per token (MTP drafts) get
+        // zeros; the call is a no-op false for every other context
+        const llama_model * model = llama_get_model(ctx);
+        std::vector<float> zeros((size_t) std::max(1, llama_model_n_embd_out(model)), 0.0f);
+        bool ok = batch != nullptr;
+        for (llama_pos pos = 0; ok && pos < 2; pos++) {
+            const int32_t idx = llama_batch_ext_add_token(batch, 0, 0);
+            ok = idx >= 0 && llama_batch_ext_set_pos(batch, idx, &pos);
+            if (ok) {
+                llama_batch_ext_set_embd_state(batch, idx, { zeros.data(), 1, zeros.size() });
+            }
+        }
+        if (!ok || llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch) != 0) {
+            kind = ONYX_SEQ_RM_NONE;
+        } else if (!llama_memory_seq_rm(mem, 0, 1, -1)) {
+            kind = ONYX_SEQ_RM_FULL;
+        }
+        if (batch) {
+            llama_batch_ext_free(batch);
+        }
+    }
+
+    llama_memory_clear(mem, true);
+    llama_synchronize(ctx);
+    return kind;
+}
+
 static void onyx_quiet_log(ggml_log_level level, const char * text, void *) {
     // GGML_LOG_LEVEL_CONT (above ERROR) continues a line, so it passes too,
     // as it always has

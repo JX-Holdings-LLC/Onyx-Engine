@@ -28,9 +28,10 @@
 
 #include "args.h"
 #include "decision.h"
+#include "llama_util.h"
+#include "onyx_chat.h"
+#include "sampler.h"
 
-#include "chat.h"
-#include "common.h"
 #include "llama.h"
 #include "mtmd.h"
 
@@ -86,7 +87,7 @@ struct onyx_gen_params {
     std::vector<llama_token> prompt_tokens;
     int32_t     n_predict = -1;          // -1 = until EOG or context limit
     std::vector<std::string> stop;       // stop sequences (matched on text)
-    common_params_sampling sampling;     // seed/temp/top_p/... and grammar
+    onyx_sampling_params sampling;       // seed/temp/top_p/... and grammar
     bool        cache_prompt = true;     // reuse common KV prefix when possible
 
     // multimodal: when `media` is non-empty the engine ignores prompt_tokens
@@ -150,7 +151,7 @@ using onyx_token_cb = std::function<bool(const std::string & text, const std::ve
 // thread blocked in generate() and the engine loop running it.
 struct onyx_gen_request {
     onyx_gen_params    params;
-    common_sampler * smpl = nullptr;      // owned; freed when the request finishes
+    std::unique_ptr<onyx_sampler> smpl;   // built by generate(); released when the request finishes
     bool             wants_pieces = false; // caller passed a token callback
 
     std::mutex               mu;
@@ -264,6 +265,11 @@ public:
     uint64_t model_n_params()       const;
     std::string model_desc()        const;
     bool embedding_mode()           const { return embedding_mode_; }
+    // embedding mode with rank pooling: /v1/embeddings returns scores
+    bool rank_pooling()             const;
+    // what the batching loop's memory can cut back, probed at load
+    // (generation mode only; NONE otherwise)
+    onyx_seq_rm_kind seq_rm()       const { return seq_rm_; }
     bool decision_mode()            const { return decision_.type() != ONYX_DECISION_NONE; }
     const onyx_decision & decision() const { return decision_; }
 
@@ -275,7 +281,7 @@ public:
     std::string media_marker() const { return mctx_ ? mtmd_get_marker(mctx_) : std::string(); }
 
     std::string chat_template_source() const;
-    const common_chat_templates * chat_templates() const { return chat_templates_.get(); }
+    const onyx_chat_templates & chat_templates() const { return *chat_templates_; }
     const llama_vocab * vocab()     const { return vocab_; }
     const llama_model * model()     const { return model_; }
 
@@ -312,7 +318,7 @@ public:
     std::vector<llama_token> tokenize(const std::string & text, bool add_special, bool parse_special = true) const;
     // Rendered chat prompt: special tokens are parsed in template text only,
     // never in request input parts. Adds BOS if the vocab wants one.
-    std::vector<llama_token> tokenize_prompt(const common_chat_prompt & prompt) const;
+    std::vector<llama_token> tokenize_prompt(const onyx_prompt & prompt) const;
     std::string detokenize(const std::vector<llama_token> & tokens, bool special = false) const;
 
 private:
@@ -338,12 +344,15 @@ private:
                        std::vector<float> * out, std::string & err);
     bool decision_eval_media(const onyx_decision_prompt & p, std::vector<float> & scores,
                              int32_t & n_tokens, std::string & err);
+    bool decision_eval_rows(const onyx_decision_prompt & p, std::vector<float> & scores, std::string & err);
+    bool decision_read(const onyx_decision_prompt & p, int32_t out_from, std::vector<float> & scores,
+                       std::string & err);
 
     llama_model *   model_ = nullptr;
     llama_context * ctx_   = nullptr;
     mtmd_context *  mctx_  = nullptr;   // multimodal projector, null without --mmproj
     const llama_vocab * vocab_ = nullptr;
-    common_chat_templates_ptr chat_templates_;
+    std::unique_ptr<onyx_chat_templates> chat_templates_;
 
     std::string alias_;
     std::string load_error_;
@@ -360,6 +369,7 @@ private:
     bool        ctx_shift_      = false;
     int32_t     n_keep_         = 0;
     bool        add_bos_        = false;
+    onyx_seq_rm_kind seq_rm_    = ONYX_SEQ_RM_NONE;
 
     std::vector<onyx_slot> slots_;
 

@@ -30,7 +30,7 @@ bash scripts/smoke-test.sh                       # end to end, a few minutes
 ```
 
 The unit tests need nothing else. The smoke test needs Python 3 with numpy, and curl; it
-generates tiny random-weight models, starts several engines on ports 18190 to 18200 and checks
+generates tiny random-weight models, starts several engines on ports 18190 to 18202 and checks
 the shape of every response (the words are random). `ONYX_SMOKE_PORT` moves the ports. On
 Windows, run it from Git Bash with the binary's path: `bash scripts/smoke-test.sh build/Release/onyx-engine.exe`.
 `bash scripts/safetensors-test.sh` covers the converter (Linux and macOS).

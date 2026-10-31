@@ -38,7 +38,10 @@ When `--alias` is absent the engine strips directories, trailing slashes and a `
 |---|---|---|
 | `--host HOST` | `127.0.0.1` | Address to bind. Anything but a loopback address (`127.x.x.x`, `localhost`, `::1`) requires `--api-key` or `--allow-unauthenticated`. |
 | `--port PORT` | `8080` | Port to listen on (0 to 65535). `0` lets the operating system pick a free port; the bound port is printed on stderr and reported by `/props` as `port`. |
-| `--api-key KEY` | none | Require `Authorization: Bearer KEY` on every route except `GET /health`. The comparison takes the same time however much of the key matches. |
+| `--api-key KEY` | none | Require `Authorization: Bearer KEY` on every route except `GET /health`. The comparison takes the same time however much of the key matches. The key shows in the process list; prefer `--api-key-file` or `ONYX_ENGINE_API_KEY`. |
+| `--api-key-file PATH` | none | Read the key from a file instead: its contents with one trailing newline (LF or CRLF) dropped. A file that cannot be read or holds no key exits 1, and so does passing it together with `--api-key`. |
+| `--timeout N` | `600` | Seconds a response may wait to be written (the write timeout; a stream can go quiet while a long prompt is processed), and the ceiling of the read timeout, which is 30 seconds or `N`, whichever is less. At least `1`. llama-server's flag of the same name sets both to `N`; Onyx keeps its short read timeout so slow or idle clients cannot hold the worker threads. |
+| `--max-request-bytes N` | `104857600` (100 MiB) | Largest request body accepted; a larger one gets `413` before it is read. At least `1`. Inline base64 media are the only reason to keep it high; a text-only deployment can lower it. |
 | `--allow-unauthenticated` | off | Allow a non-loopback `--host` without `--api-key`. Without it, that combination exits 1 before anything is bound. |
 | `--metrics` | off | Serve Prometheus metrics on `GET /metrics` (behind `--api-key` like any other route). See [service endpoints](api/service-endpoints.md#get-metrics). |
 
@@ -102,7 +105,8 @@ The MoE flags match tensors named `blk.N.ffn_{up,down,gate,gate_up}_{ch,}exps`, 
 The parser refuses, with a one-line `error:` on stderr and exit status 1:
 
 - a missing `-m`;
-- a port outside 0 to 65535, `-np` below 1, `-b` or `-ub` below 1, a negative `--cache-reuse`, `--max-queue`, `--queue-timeout`, `--tick-tokens`, `--n-cpu-moe` or `-c`;
+- a port outside 0 to 65535, `-np` below 1, `-b` or `-ub` below 1, a negative `--cache-reuse`, `--max-queue`, `--queue-timeout`, `--tick-tokens`, `--n-cpu-moe` or `-c`, a `--timeout` or `--max-request-bytes` below 1;
+- an `--api-key-file` that cannot be read or holds no key, or one passed together with `--api-key`;
 - a `--cache-type-k` or `--cache-type-v` outside the list above, a quantized `--cache-type-v` with `-fa off`, or an `--override-tensor` item that is not `PATTERN=BUFFER_TYPE`;
 - a non-loopback `--host` without `--api-key` or `--allow-unauthenticated`;
 - an unknown `--pooling` value, or `--pooling` without `--embedding`;
@@ -113,6 +117,7 @@ The parser refuses, with a one-line `error:` on stderr and exit status 1:
 
 | Variable | Read by | Meaning |
 |---|---|---|
+| `ONYX_ENGINE_API_KEY` | the engine | The API key, when neither `--api-key` nor `--api-key-file` is given. An empty value means no key. It counts for the non-loopback `--host` rule like the flag. |
 | `ONYX_ENGINE_CONVERT_SCRIPT` | the engine | Path to `convert-safetensors.py`, when it is not found beside the binary. |
 | `ONYX_BUILD_JOBS` | `npm run build` | Parallel compile jobs. The default is one per CPU. |
 | `ONYX_SMOKE_PORT` | `scripts/smoke-test.sh` | Base port for the test instances (default `18190`). |

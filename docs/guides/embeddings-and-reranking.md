@@ -28,7 +28,7 @@ curl http://127.0.0.1:8082/v1/embeddings -H 'Content-Type: application/json' \
 
 `input` may be a string, an array of strings, an array of token ids (one pre-tokenized input) or an array of arrays of token ids. Each item gets `{"object":"embedding","index":i,"embedding":[...]}`, and the vectors are L2-normalized, so a dot product is a cosine similarity. `usage` counts input tokens only.
 
-`encoding_format: "base64"`, which the official OpenAI Python and JS clients send by default, works and is decoded by the client. Not supported, and refused with `400`: `dimensions`, and an `encoding_format` other than `float` or `base64`. Clients that always send `dimensions` need a proxy that drops it, or a client setting that omits it.
+`encoding_format: "base64"`, which the official OpenAI Python and JS clients send by default, works and is decoded by the client. `dimensions` keeps the first N values of each vector and renormalises them (OpenAI's Matryoshka truncation); it only makes sense for models trained for it, such as nomic-embed or the text-embedding-3 style models, and Onyx cannot tell whether yours was. It must be an integer from 1 to the model's `n_embd`, and is refused under `--pooling rank`. An `encoding_format` other than `float` or `base64` is refused with `400`.
 
 ## Reranking
 

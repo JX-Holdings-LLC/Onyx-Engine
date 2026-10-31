@@ -49,7 +49,14 @@ queued request (`onyx_engine::admit_queued`):
    from scratch.
 
 Whether a slot's state can be cut back to that prefix depends on the memory
-type, and is decided per request with llama-server's rule rather than once per
+type. At load, generation mode probes it (`onyx_probe_seq_rm` in
+`src/llama_util.cpp`, the port of `common_context_can_seq_rm`): it decodes two
+tokens, tries to remove the second and reports `partial`, `full`, `bounded` or
+`none` (`/props` `memory_seq_rm`). With `full` (recurrent state, no rollback)
+a slot only counts as a match when the new prompt extends all of its cached
+tokens, so slot choice prefers the slot whose state can actually be extended
+over one that merely shares more tokens; with `none` there is no reuse. The
+rest is decided per request with llama-server's rule rather than once per
 process. Before trimming, the engine reads the sequence's lowest position
 (`llama_memory_seq_pos_min`). The first new token sits at position `prefix`;
 with a pruned sliding-window cache it attends to the positions after
