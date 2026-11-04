@@ -6,6 +6,76 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-11-04
+
+### Pin-bump pipeline and CI hardening — 2026-11-04 (0.8.2)
+
+Agent: Claude Code (Claude). Build, CI and docs only; the server behaves as in 0.8.1. The first
+two items under the roadmap's "Next": the pin-bump pipeline (R1's ranking #9 and #84's third
+ask) and part of CI hardening (R1's hardening section).
+
+#### Added
+
+- **`scripts/bump-llama-pin.sh`:** moves the llama.cpp pin to upstream's newest `bNNNN` release
+  (or `--build bNNNN`) and the ggml pin to the revision that release's `scripts/sync-ggml.last`
+  records, reading each upstream's CMake version for the package versions. It writes
+  `headers.diff` (every upstream header Onyx compiles against: all of `common/`, `llama.h`,
+  `llama-cpp.h`, `llama-ext.h`, `mtmd.h`, `mtmd-helper.h`) and a pull-request body that lists the
+  files naming the old pin. Without `--dry-run` it edits both specs, advances `vendor-llama-cpp`,
+  `vendor-ggml` and `onyx-engine` (patch) through the pinned release toolkit, writes their notes
+  and a changelog entry, and runs `scripts/check-ggml-pin.sh`; it never commits.
+- **`.github/workflows/pin-bump.yml`:** runs the script at 04:17 UTC on the 1st of each month (and
+  on dispatch, dry run by default), commits to `pin-bump/bNNNN`, runs `release.mjs validate`, opens
+  a draft pull request and uploads the whole diff as an artifact. Because a pull request opened
+  with `GITHUB_TOKEN` starts no workflow, it dispatches `ci.yml` on the branch; an optional
+  `PIN_BUMP_TOKEN` secret makes the pull request's own checks run. A release already proposed is
+  skipped.
+- **The RPC backend stays off:** `CMakeLists.txt` forces `GGML_RPC` off and stops the configure if
+  a `ggml-rpc` target exists; `scripts/check-no-rpc.sh` checks the cache and every built binary and
+  library for the backend's functions, and runs on every `build-and-test` leg.
+- **ASan + UBSan:** a `sanitize` CMake preset (`RelWithDebInfo`, both sanitizers over Onyx and
+  llama.cpp, no OpenMP, unit tests included) and a `sanitizers` CI job that runs ctest and
+  `scripts/smoke-test.sh` on it, with reports written to files and any report failing the job.
+  Undefined behaviour aborts at the first finding; leak checking is off, because the smoke suite
+  checks exit codes LeakSanitizer would change.
+
+#### Changed
+
+- Docs: [vendoring](docs/development/vendoring.md#moving-the-pin) describes moving the pin and the
+  scheduled pull request; [testing and CI](docs/development/testing-and-ci.md#ci) the RPC check and
+  the sanitizer job; [building](docs/development/building.md#presets) the `sanitize` preset;
+  `ROADMAP.md` moves both items out of "Next"; the README's CI paragraph.
+- **Vendor packages advanced without a source change** to `0.7.0-b11820.gd77256999.3` and
+  `0.27.0-gf1aa6a346.3`: the shared release policy requires every app to advance when a workflow
+  changes.
+
+#### Not completed
+
+- The pin-bump workflow has not run on GitHub: its first scheduled run is 2026-12-01, and a
+  dispatch needs it on `main`. Whether the dispatched `ci.yml` run shows on the pull request's
+  head commit, and whether the repository allows Actions to open pull requests, are unverified.
+- The first proposal will be llama.cpp b12111 (`52e53a76d`, ggml `57e2c2c`); 17 headers Onyx
+  includes changed. Whether Onyx builds against it was not tried here.
+- Golden-output checks across a bump (the rest of R1 #9), fuzz harnesses, build attestations and
+  immutable releases are still under "Next". `logit_bias` (decision 1) and the first release from
+  the unified workflow (an owner-run publish) were left alone, as was the client-compatibility
+  work in PR #86.
+- `assets/diagrams/svg/roadmap-map.svg` still lists the two items under "Next" (it was already
+  behind the roadmap); rebuilding it needs `vixl`, which is not installed here.
+
+#### Validation
+
+- `scripts/bump-llama-pin.sh --dry-run` against GitHub (b11820 → b12111), and a full run in a
+  scratch worktree: the commit it produced passed `release.mjs validate` (pinned toolkit
+  `d7f42f99`) and `check-ggml-pin.sh`, and a second run printed `up to date`.
+- `cmake --preset release` built `onyx-engine` (3.5 minutes, 4 cores) and `check-no-rpc.sh`
+  passed on it and failed on a planted `GGML_RPC=ON` cache and `libggml-rpc.so`.
+- The `sanitize` preset built with GCC 13 (10 minutes); ctest (4 suites) and the smoke suite
+  (143 checks) passed under ASan and UBSan with no report.
+- `actionlint` 1.7.12 on `ci.yml` and `pin-bump.yml` (no shellcheck installed), and
+  `release.mjs validate` against `main`. The documented link check reports the same 12 missing
+  targets as 0.8.1 and none from this change.
+
 ## [0.8.1] — 2026-10-31
 
 ### Cross-repo review action items — 2026-10-31 (0.8.1)

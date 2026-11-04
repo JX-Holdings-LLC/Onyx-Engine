@@ -59,9 +59,29 @@ leg first existed so an MSVC toolchain break is caught on a pull request rather 
 release (the first `v0.3.0` release run failed at exactly that step; see
 [releasing](releasing.md#lessons-from-the-first-release-attempt)).
 
+Every leg also runs `scripts/check-no-rpc.sh build` after the build. ggml's RPC backend runs
+tensor operations for any peer that connects, and upstream's remote-code-execution advisory for it
+lists no patched version, so Onyx never builds it: `CMakeLists.txt` forces `GGML_RPC` off and stops
+the configure if a `ggml-rpc` target exists, and the script fails if the cache says otherwise or
+any built binary or library carries the backend's functions.
+
+The `sanitizers` job builds with the `sanitize` preset (AddressSanitizer and
+UndefinedBehaviorSanitizer over Onyx and llama.cpp, `RelWithDebInfo`, no OpenMP) and runs the unit
+tests and `scripts/smoke-test.sh` on it. Reports go to files, and any report fails the job;
+undefined behaviour aborts at the first finding. Leak checking is off, because the smoke suite
+checks exit codes that LeakSanitizer would change. To reproduce it locally (GCC or Clang):
+
+```bash
+cmake --preset sanitize && cmake --build --preset sanitize -j 8
+ASAN_OPTIONS=detect_leaks=0 bash scripts/smoke-test.sh build/sanitize/onyx-engine
+```
+
 The `build-paths` job proves the two ways to build from a clone: `cmake-only` removes Node from
 the runner, configures with the `release` preset (CMake fetches llama.cpp into `.deps/`), checks
 the fetched commit against the pin and runs `--version`; `npm` runs `npm ci && npm run build`.
+
+The `pin-bump` workflow is not a check: once a month it opens a draft pull request that moves the
+llama.cpp pin ([vendoring](vendoring.md#moving-the-pin)), and dispatches `ci.yml` on its branch.
 
 ## The nightly QA profile
 

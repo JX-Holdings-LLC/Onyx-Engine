@@ -32,6 +32,13 @@ set(GGML_METAL ${ONYX_ENGINE_METAL} CACHE BOOL "" FORCE)
 set(GGML_HIP ${ONYX_ENGINE_HIP} CACHE BOOL "" FORCE)
 set(GGML_BLAS ${ONYX_ENGINE_BLAS} CACHE BOOL "" FORCE)
 
+# ggml's RPC backend is never built: its server executes tensor operations for
+# any peer that connects, and upstream's advisory GHSA-j8rj-fmpv-wcxw (remote
+# code execution) lists no patched version. Forced off here, and the configure
+# fails below if a ggml-rpc target appears anyway (a pin that turns it on by
+# default, say); CI also checks the built binaries (scripts/check-no-rpc.sh).
+set(GGML_RPC OFF CACHE BOOL "" FORCE)
+
 # ---------------------------------------------------------------------------
 # Vendored llama.cpp — only the libraries, none of its tools/examples.
 #
@@ -143,6 +150,9 @@ endif()
 message(STATUS "onyx-engine: llama.cpp pin ${ONYX_LLAMA_PIN}")
 
 add_subdirectory(${ONYX_LLAMA_SRC} ${CMAKE_BINARY_DIR}/llama.cpp)
+if (TARGET ggml-rpc)
+    message(FATAL_ERROR "onyx-engine: llama.cpp defined the ggml-rpc target; the RPC backend must stay off (GGML_RPC)")
+endif()
 
 # ---------------------------------------------------------------------------
 # cpp-httplib (third_party/cpp-httplib) - onyx-engine's own vendored copy.
