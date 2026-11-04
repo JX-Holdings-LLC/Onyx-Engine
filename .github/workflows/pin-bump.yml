@@ -53,13 +53,13 @@ jobs:
       # The branch the run started from: main on schedule.
       BASE_BRANCH: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           token: ${{ secrets.PIN_BUMP_TOKEN || github.token }}
 
       # The release toolkit advances the versions; same pin as release.yml and
       # release-validation.yml (keep the three equal).
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: JX-Holdings-LLC/release-infrastructure
           ref: d7f42f9910c075ef34915fa2b95cf28dd2be534a
