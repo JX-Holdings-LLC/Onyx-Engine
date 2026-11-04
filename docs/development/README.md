@@ -8,8 +8,8 @@ For people building, testing, vendoring or releasing the engine.
 |---|---|
 | [Code map](code-map.md) | Where the code lives, and one request followed through it |
 | [Building](building.md) | Prerequisites, fetching the pinned llama.cpp (CMake or npm), presets, CPU and GPU builds, the install target |
-| [Testing and CI](testing-and-ci.md) | The C++ unit tests, the offline smoke and conversion tests, the CI matrix, the nightly QA profile |
-| [Vendoring](vendoring.md) | Vendor specs, building and publishing the source packages, keeping the ggml pin in step |
+| [Testing and CI](testing-and-ci.md) | The C++ unit tests, the offline smoke and conversion tests, the CI matrix, the sanitizer job and RPC check, the nightly QA profile |
+| [Vendoring](vendoring.md) | Vendor specs, moving the pin (the monthly pin-bump pull request), building and publishing the source packages, keeping the ggml pin in step |
 | [Releasing](releasing.md) | The manual Release workflow, what gets published, and what the first attempt taught us |
 | [Documentation](documentation.md) | How these docs are organized, and how to rebuild the diagrams |
 
@@ -27,11 +27,11 @@ For people building, testing, vendoring or releasing the engine.
 | `src/` | The source files described in [architecture](../architecture/README.md#source-layout) and the [code map](code-map.md) |
 | `tests/unit/` | The C++ unit tests (ctest) and their one-header harness |
 | `cmake/` | `fetch-llama.cmake`, the Node-free llama.cpp fetch |
-| `scripts/` | Build, vendor, test-model generators, the safetensors converter, QA checks |
+| `scripts/` | Build, vendor and pin-bump scripts, test-model generators, the safetensors converter, the RPC check, QA checks |
 | `packaging/` | Vendor specs and the source-package builder |
 | `third_party/cpp-httplib/` | A verbatim copy of cpp-httplib v0.62.0 (MIT) with its provenance notes |
 | `third_party/nlohmann/` | nlohmann/json 3.12.0 (MIT) with llama.cpp's deep-nesting backport, the same bytes the pin vendors; used through `src/onyx_json.h` |
-| `.github/workflows/` | `ci.yml`, `release.yml`, `release-validation.yml`, `publish-vendor.yml` |
+| `.github/workflows/` | `ci.yml`, `release.yml`, `release-validation.yml`, `publish-vendor.yml`, `pin-bump.yml` |
 | `.github/ISSUE_TEMPLATE/`, `.github/pull_request_template.md` | Bug, feature and question templates; the PR checklist |
 | `Dockerfile` | The CPU and CUDA container images ([Docker](../guides/docker.md)) |
 | `.release/` | The unified-release configuration, version glue and per-version notes |

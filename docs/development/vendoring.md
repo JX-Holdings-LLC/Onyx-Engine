@@ -45,6 +45,48 @@ scripts/check-ggml-pin.sh ../BackTrack/packaging/vendor/ggml.conf
 
 It prints `ok`, or the ggml commit to move to and exits 1.
 
+## Moving the pin
+
+`scripts/bump-llama-pin.sh` moves both pins in one step. It finds upstream's newest `bNNNN`
+release (or the one given with `--build`), points `llama.cpp.conf` at its commit, build number and
+CMake version, points `ggml.conf` at the revision that release's `scripts/sync-ggml.last` records,
+and writes two files to `packaging/dist/pin-bump/` (or `--out DIR`): `headers.diff`, the upstream
+diff of every header Onyx compiles against (all of `common/`, `llama.h`, `llama-cpp.h`,
+`llama-ext.h`, `mtmd.h` and `mtmd-helper.h`), and `pr-body.md`, which also lists the docs that name
+the old pin.
+
+```bash
+scripts/bump-llama-pin.sh --dry-run               # what would move, and the header diff; edits nothing
+scripts/bump-llama-pin.sh                         # edit the pins and the versions
+scripts/bump-llama-pin.sh --build b12111          # a particular release
+```
+
+Without `--dry-run` it also advances the versions through the pinned release toolkit at `.toolkit`
+(see [releasing](releasing.md)): `vendor-llama-cpp` and `vendor-ggml` to their new package
+versions, `onyx-engine` by a patch (a pin bump is a patch release unless a stable surface moves;
+see the [stability page](../reference/stability.md)). It writes their release notes and a
+changelog entry for the reviewer to complete, and runs `scripts/check-ggml-pin.sh`. It never
+commits. When the pin is already at or past the target it prints `up to date` and exits 0.
+
+**The scheduled pull request.** `.github/workflows/pin-bump.yml` runs the script at 04:17 UTC on
+the first of each month, commits the result to a `pin-bump/bNNNN` branch, runs
+`release.mjs validate` against the base, and opens a draft pull request whose body is
+`pr-body.md`; the whole `headers.diff` is the run's `pin-bump` artifact. A release already proposed
+(its branch exists) is skipped. Run it by hand from Actions → `pin-bump` with `dry_run` on to see
+the diff without a pull request, or off with `build` set to take a particular release.
+
+A pull request opened with the default `GITHUB_TOKEN` starts no other workflow, so the run
+dispatches `ci.yml` on the branch itself. To have the pull request's own checks (`ci` and
+`versions`) run, store a fine-grained token with contents and pull-requests write access as the
+`PIN_BUMP_TOKEN` secret; without one, close and reopen the pull request. The repository setting
+"Allow GitHub Actions to create and approve pull requests" has to be on.
+
+**Finishing a bump** is still a person's job: fix what the header diff broke (three files include
+upstream headers beyond `llama.h` and mtmd's: the chat seam `src/onyx_chat.cpp` (`chat.h`,
+`common.h`), `src/decision.cpp` (`common.h`, `llama-ext.h`) and `src/engine.cpp` (`llama-ext.h`)), complete the changelog
+entry and `.release/notes/onyx-engine/`, update the docs the body lists, and move BackTrack's ggml
+pin.
+
 ## Building a package
 
 ```bash

@@ -1,6 +1,6 @@
 # Onyx Engine roadmap
 
-What's next for Onyx Engine and what needs an owner decision, as of 2026-10-31. It summarises
+What's next for Onyx Engine and what needs an owner decision, as of 2026-11-04. It summarises
 the research reports, docs and open issues, and adds no scope of its own. **R1** is
 [Onyx Engine improvement opportunities][R1] and **R2** is [Replacing llama cpp common code][R2].
 
@@ -8,11 +8,12 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
 
 ## Where Onyx Engine stands
 
-- **Version 0.8.1;** the last published release predates it, and `.release/README.md` records
+- **Version 0.8.2;** the last published release predates it, and `.release/README.md` records
   no dry run of the new release workflow yet.
 - **llama.cpp pinned at b11820** (`d77256999`, 2026-10-22, the latest release when it moved);
   ggml pinned at `f1aa6a3` to match. CMake (or `npm ci`) fetches the source with Git; no Node is
-  needed to build.
+  needed to build. From 0.8.2 a monthly `pin-bump` workflow proposes the next pin as a draft pull
+  request with the upstream header diff ([vendoring](docs/development/vendoring.md#moving-the-pin)).
 - **Implemented:** OpenAI-compatible chat, completions, embeddings and models; llama-server-style
   utility endpoints; SSE with `usage` and `timings`; Jinja templates and tool calls through
   `common/`; GBNF and `json_schema`; parallel slots with continuous batching; context shift;
@@ -23,10 +24,12 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
   types and MoE offload (`-ctk`/`-ctv`, `--cpu-moe`, `--n-cpu-moe`, `-ot`); prefix reuse on
   sliding-window and recurrent models; structured output that fails with `400` when cut by length;
   embeddings `dimensions`; decision images for every family whose template takes them; Onyx's own
-  sampler, chat seam and JSON (Stage 1 of the `common/` plan). Release binaries for
+  sampler, chat seam and JSON (Stage 1 of the `common/` plan); an ASan/UBSan CI job and a check
+  that ggml's RPC backend is never built (0.8.2). Release binaries for
   nine platform variants (CPU, baseline x64, arm64 Linux, Vulkan) and a CPU Docker image.
 - **Independent-tool plan:** items 1 to 8 of [`reports/independent-tool-plan.md`](reports/independent-tool-plan.md)
-  landed in 0.6.0; item 9 (conformance suite, benchmarks, real-model nightly, sanitizers) is open.
+  landed in 0.6.0; item 9 (conformance suite, benchmarks, real-model nightly, fuzzing) is open
+  apart from the sanitizer job (0.8.2).
 - **How JX Runtime uses it:** its `onyxengine` adapter spawns one `onyx-engine` per loaded model,
   polls `/health`, proxies chat, completion, embeddings and `/v1/systemone`, probes `--help` before passing a
   flag, and installs release archives ([integration doc](docs/integration/jx-runtime.md)).
@@ -46,15 +49,23 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
 - **Hardening:** done in 0.6.0 (loopback Host allowlist, constant-time key compare, explicit
   payload cap, non-loopback `--host` refusal) and 0.7.0 (a 30 s read timeout, cpp-httplib
   v0.54.1 → v0.62.0, a 64-level JSON nesting cap) and 0.8.0 (`--api-key-file` and
-  `ONYX_ENGINE_API_KEY`, `--max-request-bytes`, `--timeout`). ([R1 hardening][R1-hard])
+  `ONYX_ENGINE_API_KEY`, `--max-request-bytes`, `--timeout`); from Next, 0.8.2 adds an ASan/UBSan
+  CI job over the unit and smoke tests (the `sanitize` preset) and the RPC-off assertion (forced
+  off in CMake, checked in every CI build by `scripts/check-no-rpc.sh`). ([R1 hardening][R1-hard])
 - **Stage 1 of the `common/` plan:** done in 0.8.0 ([#84][i84]): Onyx-owned tokenize, batch and
   log helpers and the SWA/recurrent reuse gate (0.7.0); the Onyx sampler on `llama.h`
   (`src/sampler.*`, token-for-token equal to `common_sampler` on three models), the memory-capability
   probe, the chat seam (`src/onyx_chat.*`, the only includer of `common/chat.h`) and
   `nlohmann::ordered_json` in place of `common_json` (0.8.0). Left in `common/`: the chat layer,
   Jinja and the schema converter behind the seam (Stage 3), `common.h`'s string helpers in
-  `decision.cpp`, and the log threshold. #84's other asks (decision 2, one header for
-  `llama-ext.h`, the pin-bump pipeline) are still open. ([R2 stages][R2-stages])
+  `decision.cpp`, and the log threshold. Of #84's other asks the pin-bump pipeline is done (0.8.2,
+  below); decision 2 and one header for `llama-ext.h` are still open.
+  ([R2 stages][R2-stages])
+- **Pin-bump pipeline (from Next):** done in 0.8.2 ([#84][i84]): `scripts/bump-llama-pin.sh` moves both
+  pins and the versions and writes the diff of every upstream header Onyx compiles against;
+  `.github/workflows/pin-bump.yml` runs it monthly and opens a draft PR. Not yet run on GitHub.
+  Still open from [R1 ranking][R1-rank] #9: golden-output checks across a bump. Fixing what a bump
+  breaks stays a person's job.
 - **Song Deck structured output (its M1):** done in 0.7.0 on Onyx's side: two of Song Deck's
   schemas (OpenAI-strict and plain JSON-schema dialects) are a smoke-test regression check through
   `response_format` → GBNF; a length cut under `json_schema`/`response_format` answers `400`
@@ -68,9 +79,6 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
 
 ## Next: weeks
 
-- **Pin-bump pipeline:** a scheduled Action that updates the vendor specs and opens a PR with the
-  `common/` header diff. (The bump to b11820 itself was done by hand for #49.)
-  ([R1 ranking][R1-rank] #9)
 - **KV state (Stage 2):** context checkpoints and a host-RAM prompt cache, so SWA and hybrid
   models (Gemma 4, gpt-oss, Qwen3.5, Granite 4) get prefix reuse again; then slot save/restore and
   media-aware matching under `--mmproj`. 2.5–3.5 weeks; the b11820 pin carries upstream's
@@ -83,9 +91,9 @@ the research reports, docs and open issues, and adds no scope of its own. **R1**
   (0.8.0) are done. ([R1 API][R1-api]; [ranking][R1-rank] #5)
 - **`/v1/responses` and `/v1/messages`** for Codex and Claude Code, 1–2 weeks each; JX Runtime
   needs new `KIND_PATHS` entries to route them. ([R1 API][R1-api])
-- **CI and distribution:** an ASan/UBSan smoke-test job, fuzz harnesses, an RPC-off assertion,
-  build attestations and immutable releases (baseline-x64, arm64 Linux and Vulkan builds landed
-  in 0.6.0). ([R1 hardening][R1-hard])
+- **CI and distribution:** fuzz harnesses, build attestations and immutable releases (the
+  sanitizer job and the RPC-off assertion landed in 0.8.2, under Hardening; baseline-x64, arm64
+  Linux and Vulkan builds in 0.6.0). ([R1 hardening][R1-hard])
 - **Release convention** (`docs/release-convention.md`) for JX Runtime's installer and the audio
   apps, before Song Deck's M3. ([Song Deck plan][SD-onyx], step 2)
 

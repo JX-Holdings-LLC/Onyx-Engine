@@ -95,6 +95,7 @@ cmake --build build --target onyx-engine -j "$(nproc 2>/dev/null || sysctl -n hw
 | `release` | Release, CPU |
 | `debug` | Debug, CPU |
 | `static` | Release, static, no host-native tuning, no OpenMP: how the release archives are configured |
+| `sanitize` | `RelWithDebInfo` with AddressSanitizer and UndefinedBehaviorSanitizer, no OpenMP, GCC or Clang; also builds the unit tests ([testing and CI](testing-and-ci.md#ci)) |
 | `cuda`, `vulkan`, `metal`, `hip` | Release with that GPU backend (needs the backend's SDK) |
 
 ```bash

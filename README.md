@@ -191,7 +191,7 @@ bash scripts/smoke-test.sh          # offline end-to-end test on tiny generated 
 bash scripts/safetensors-test.sh    # the converter and its cache, end to end
 ```
 
-CI builds on Linux, macOS and Windows for every change and runs the unit tests and the smoke test on all three, plus a Node-free build from a bare clone. [`CONTRIBUTING.md`](CONTRIBUTING.md) gets you from a clone to a pull request. Releases are cut by hand from `main` with a dry run first; a failed platform blocks the whole release, so a partial set never ships. See [testing and CI](docs/development/testing-and-ci.md) and [releasing](docs/development/releasing.md).
+CI builds on Linux, macOS and Windows for every change and runs the unit tests and the smoke test on all three, plus a Node-free build from a bare clone and the same tests under AddressSanitizer and UndefinedBehaviorSanitizer. Once a month a workflow proposes the next llama.cpp release as a draft pull request with the upstream header diff. [`CONTRIBUTING.md`](CONTRIBUTING.md) gets you from a clone to a pull request. Releases are cut by hand from `main` with a dry run first; a failed platform blocks the whole release, so a partial set never ships. See [testing and CI](docs/development/testing-and-ci.md) and [releasing](docs/development/releasing.md).
 
 ## Brand
 
